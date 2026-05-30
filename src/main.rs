@@ -6,20 +6,73 @@ mod api;
 mod config;
 mod context;
 mod dispatcher;
+mod init;
 mod path;
 mod tool;
 mod tools;
 mod tui;
 
+use clap::{Parser, Subcommand};
 use dispatcher::ToolDispatcher;
 use path::PathManager;
 use tools::builtin_registry;
 use tui::App;
 
+// ---------------------------------------------------------------------------
+// CLI 入口
+// ---------------------------------------------------------------------------
+
+#[derive(Parser)]
+#[command(name = "rhermes")]
+#[command(about = "Reasonix x Hermes — 自进化的终端 AI 编程 Agent", long_about = None)]
+#[command(version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// 🚀 启动编程 Agent（默认）
+    Code {
+        /// 项目目录（默认当前目录）
+        #[arg(short, long)]
+        dir: Option<String>,
+    },
+    /// ⚙️ 交互式初始化向导（API Key / 模型 / 部署方式）
+    Init,
+}
+
+// ---------------------------------------------------------------------------
+// 主函数
+// ---------------------------------------------------------------------------
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::Init) => {
+            // 运行 init 向导
+            if let Err(e) = init::run_init() {
+                eprintln!("[RHermes] 初始化失败: {e}");
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            // 默认：启动编程 Agent (code)
+            run_code().await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// code 子命令
+// ---------------------------------------------------------------------------
+
+async fn run_code() {
     // 检测部署模式并初始化路径管理器
     let path_mgr = PathManager::detect();
 
@@ -55,7 +108,7 @@ async fn main() {
         }
     };
 
-    // 创建 TUI（传入 dispatcher）
+    // 创建 TUI
     let mut app = App::new(path_mgr.mode().name(), dispatcher);
 
     // 如果已有 API Key，初始化 API 客户端
@@ -64,10 +117,8 @@ async fn main() {
         app.init_api(config, &path_mgr);
     } else {
         tracing::warn!("未检测到 API Key，运行在模拟模式");
-        let _ = config;
-
         app.messages.push(tui::Message::system(
-            "⚠ 未检测到 API Key。请创建配置文件或设置环境变量。",
+            "⚠ 未配置 API Key。输入 /init 启动初始化向导，或运行 rhermes init。",
         ));
         app.messages.push(tui::Message::system(format!(
             "   配置文件路径: {}",
