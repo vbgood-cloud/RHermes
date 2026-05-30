@@ -2,6 +2,8 @@
 //!
 //! 引导用户完成首次配置：API Key、模型选择、部署方式。
 
+use std::path::Path;
+
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 
 use crate::config::Config;
@@ -174,10 +176,19 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
 
     let config_path = path_mgr.config_path();
 
+    // 保存非敏感配置到 config.toml
     if let Err(e) = config.save(&config_path) {
         eprintln!("❌ 配置保存失败: {e}");
         return Err(e.into());
     }
+
+    // 保存 API Key 到 .env
+    if let Err(e) = config.save_api_key(&config_path) {
+        eprintln!("❌ API Key 保存失败: {e}");
+        return Err(e.into());
+    }
+
+    let env_path = config_path.parent().unwrap_or(Path::new(".")).join(".env");
 
     println!("┌────────────────────────────────────────────┐");
     println!("│          ✅ 初始化完成！                    │");
@@ -185,9 +196,11 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("│  部署方式: {}", if portable { "可移动模式 📦" } else { "传统模式 🏠" });
     println!("│  数据目录: {}", path_mgr.data_root().display());
     println!("│  配置文件: {}", config_path.display());
+    println!("│  密钥文件: {}", env_path.display());
     println!("│  模型:     {}", config.model);
     println!("│  API Key:  sk-...{}", &api_key[api_key.len().saturating_sub(4)..]);
     println!("├────────────────────────────────────────────┤");
+    println!("│  ✅ API Key 已保存到 .env 文件              │");
     println!("│  运行 rhermes code 开始编程！               │");
     println!("└────────────────────────────────────────────┘");
 

@@ -4,3 +4,6 @@
 *~
 .DS_Store
 Thumbs.db
+
+# 敏感配置（API Key）
+.env
