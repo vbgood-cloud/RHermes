@@ -8,6 +8,7 @@ mod context;
 mod dispatcher;
 mod init;
 mod path;
+mod repair;
 mod tool;
 mod tools;
 mod tui;
