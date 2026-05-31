@@ -1,0 +1,965 @@
+$ cargo check 2>&1 && cargo test 2>&1
+[exit 101]
+    Checking rhermes v0.1.0 (E:\lab\RHermes)
+warning: struct `ChatResponse` is never constructed
+  --> src\api.rs:42:12
+   |
+42 | pub struct ChatResponse {
+   |            ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `Choice` is never constructed
+  --> src\api.rs:49:12
+   |
+49 | pub struct Choice {
+   |            ^^^^^^
+
+warning: struct `ResponseMessage` is never constructed
+  --> src\api.rs:56:12
+   |
+56 | pub struct ResponseMessage {
+   |            ^^^^^^^^^^^^^^^
+
+warning: field `total_tokens` is never read
+  --> src\api.rs:66:9
+   |
+63 | pub struct Usage {
+   |            ----- field in this struct
+...
+66 |     pub total_tokens: u32,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `Usage` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: enum `StreamEvent` is never used
+  --> src\api.rs:75:10
+   |
+75 | pub enum StreamEvent {
+   |          ^^^^^^^^^^^
+
+warning: variant `Usage` is never constructed
+  --> src\api.rs:92:5
+   |
+86 | pub enum ApiEvent {
+   |          -------- variant in this enum
+...
+92 |     Usage(Usage),
+   |     ^^^^^
+   |
+   = note: `ApiEvent` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `with_params`, `chat`, and `chat_with_retry` are never used
+   --> src\api.rs:122:12
+    |
+108 | impl DeepSeekClient {
+    | ------------------- associated items in this implementation
+...
+122 |     pub fn with_params(api_key: String, base_url: String, model: String) -> Self {
+    |            ^^^^^^^^^^^
+...
+133 |     pub async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ApiError> {
+    |                  ^^^^
+...
+237 |     pub async fn chat_with_retry(&self, request: ChatRequest) -> Result<ChatResponse, ApiError> {
+    |                  ^^^^^^^^^^^^^^^
+
+warning: field `finish_reason` is never read
+   --> src\api.rs:299:9
+    |
+296 | struct StreamChoice {
+    |        ------------ field in this struct
+...
+299 |     pub finish_reason: Option<String>,
+    |         ^^^^^^^^^^^^^
+    |
+    = note: `StreamChoice` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `role` is never read
+   --> src\api.rs:304:9
+    |
+303 | struct StreamDelta {
+    |        ----------- field in this struct
+304 |     pub role: Option<String>,
+    |         ^^^^
+    |
+    = note: `StreamDelta` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: variants `Parse` and `RetryExhausted` are never constructed
+   --> src\api.rs:319:5
+    |
+313 | pub enum ApiError {
+    |          -------- variants in this enum
+...
+319 |     Parse(reqwest::Error),
+    |     ^^^^^
+320 |     /// 重试耗尽
+321 |     RetryExhausted,
+    |     ^^^^^^^^^^^^^^
+    |
+    = note: `ApiError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: method `is_retryable` is never used
+   --> src\api.rs:326:12
+    |
+324 | impl ApiError {
+    | ------------- method in this implementation
+325 |     /// 是否可重试
+326 |     pub fn is_retryable(&self) -> bool {
+    |            ^^^^^^^^^^^^
+
+warning: fields `append_only_log`, `scratch`, and `system_prompt` are never read
+  --> src\context.rs:84:5
+   |
+79 | pub struct Context {
+   |            ------- fields in this struct
+...
+84 |     append_only_log: Vec<u8>,
+   |     ^^^^^^^^^^^^^^^
+...
+87 |     scratch: Vec<Message>,
+   |     ^^^^^^^
+...
+90 |     system_prompt: String,
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `Context` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+   --> src\context.rs:121:12
+    |
+ 93 | impl Context {
+    | ------------ associated items in this implementation
+...
+121 |     pub fn push_to_log(&mut self, msg: Message) {
+    |            ^^^^^^^^^^^
+...
+127 |     pub fn push_to_scratch(&mut self, msg: Message) {
+    |            ^^^^^^^^^^^^^^^
+...
+132 |     pub fn clear_scratch(&mut self) {
+    |            ^^^^^^^^^^^^^
+...
+137 |     pub fn distill_scratch_to_log(&mut self) {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+146 |     pub fn build_request_body(&self) -> Vec<u8> {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+154 |     pub fn prefix_len(&self) -> usize {
+    |            ^^^^^^^^^^
+...
+159 |     pub fn log_len(&self) -> usize {
+    |            ^^^^^^^
+...
+164 |     pub fn scratch_count(&self) -> usize {
+    |            ^^^^^^^^^^^^^
+...
+169 |     pub fn all_messages(&self) -> Vec<Message> {
+    |            ^^^^^^^^^^^^
+...
+196 |     fn serialize_message(msg: &Message) -> Vec<u8> {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> src\context.rs:224:12
+    |
+223 | impl Message {
+    | ------------ associated function in this implementation
+224 |     pub fn new(role: Role, content: impl Into<String>) -> Self {
+    |            ^^^
+
+warning: enum `ModelTier` is never used
+  --> src\cost.rs:19:10
+   |
+19 | pub enum ModelTier {
+   |          ^^^^^^^^^
+
+warning: methods `model_name`, `cost_multiplier`, `input_price_per_m`, and `output_price_per_m` are never used
+  --> src\cost.rs:28:12
+   |
+26 | impl ModelTier {
+   | -------------- methods in this implementation
+27 |     /// 模型名称（DeepSeek API 使用）
+28 |     pub fn model_name(&self) -> &'static str {
+   |            ^^^^^^^^^^
+...
+36 |     pub fn cost_multiplier(&self) -> f64 {
+   |            ^^^^^^^^^^^^^^^
+...
+44 |     pub fn input_price_per_m(&self) -> f64 {
+   |            ^^^^^^^^^^^^^^^^^
+...
+52 |     pub fn output_price_per_m(&self) -> f64 {
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: enum `CostPreset` is never used
+  --> src\cost.rs:66:10
+   |
+66 | pub enum CostPreset {
+   |          ^^^^^^^^^^
+
+warning: methods `name` and `initial_tier` are never used
+  --> src\cost.rs:76:12
+   |
+75 | impl CostPreset {
+   | --------------- methods in this implementation
+76 |     pub fn name(&self) -> &'static str {
+   |            ^^^^
+...
+85 |     pub fn initial_tier(&self) -> ModelTier {
+   |            ^^^^^^^^^^^^
+
+warning: struct `CostBreakdown` is never constructed
+  --> src\cost.rs:99:12
+   |
+99 | pub struct CostBreakdown {
+   |            ^^^^^^^^^^^^^
+
+warning: associated items `calculate` and `cache_hit_rate` are never used
+   --> src\cost.rs:110:12
+    |
+108 | impl CostBreakdown {
+    | ------------------ associated items in this implementation
+109 |     /// 根据 Token 用量和模型级别计算成本
+110 |     pub fn calculate(input: u32, output: u32, cache_hit: u32, cache_miss: u32, tier: ModelTier) -> Self {
+    |            ^^^^^^^^^
+...
+127 |     pub fn cache_hit_rate(&self) -> f64 {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `NeedsProDetector` is never constructed
+   --> src\cost.rs:145:12
+    |
+145 | pub struct NeedsProDetector;
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated function `detect` is never used
+   --> src\cost.rs:151:12
+    |
+147 | impl NeedsProDetector {
+    | --------------------- associated function in this implementation
+...
+151 |     pub fn detect(content: &str) -> (&str, bool) {
+    |            ^^^^^^
+
+warning: struct `ResultCompressor` is never constructed
+   --> src\cost.rs:177:12
+    |
+177 | pub struct ResultCompressor {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `compress`, and `needs_compress` are never used
+   --> src\cost.rs:197:12
+    |
+196 | impl ResultCompressor {
+    | --------------------- associated items in this implementation
+197 |     pub fn new(threshold: usize, head_chars: usize, tail_chars: usize) -> Self {
+    |            ^^^
+...
+208 |     pub fn compress(&self, content: &str) -> String {
+    |            ^^^^^^^^
+...
+225 |     pub fn needs_compress(&self, content: &str) -> bool {
+    |            ^^^^^^^^^^^^^^
+
+warning: struct `CostController` is never constructed
+   --> src\cost.rs:237:12
+    |
+237 | pub struct CostController {
+    |            ^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> src\cost.rs:254:12
+    |
+252 | impl CostController {
+    | ------------------- associated items in this implementation
+253 |     /// 创建新的成本控制器
+254 |     pub fn new(preset: CostPreset) -> Self {
+    |            ^^^
+...
+269 |     pub fn preset(&self) -> &CostPreset {
+    |            ^^^^^^
+...
+274 |     pub fn set_preset(&mut self, preset: CostPreset) {
+    |            ^^^^^^^^^^
+...
+280 |     pub fn current_tier(&self) -> ModelTier {
+    |            ^^^^^^^^^^^^
+...
+285 |     pub fn current_model(&self) -> &'static str {
+    |            ^^^^^^^^^^^^^
+...
+294 |     pub fn process_response<'a>(&mut self, content: &'a str) -> (&'a str, bool) {
+    |            ^^^^^^^^^^^^^^^^
+...
+310 |     pub fn end_round(&mut self) {
+    |            ^^^^^^^^^
+...
+324 |     pub fn record_cost(&mut self, breakdown: &CostBreakdown) {
+    |            ^^^^^^^^^^^
+...
+329 |     pub fn round_cost(&self) -> f64 {
+    |            ^^^^^^^^^^
+...
+334 |     pub fn total_cost(&self) -> f64 {
+    |            ^^^^^^^^^^
+...
+339 |     pub fn reset_total(&mut self) {
+    |            ^^^^^^^^^^^
+...
+347 |     pub fn compress_result(&self, content: &str) -> String {
+    |            ^^^^^^^^^^^^^^^
+...
+352 |     pub fn needs_compress(&self, content: &str) -> bool {
+    |            ^^^^^^^^^^^^^^
+...
+359 |     pub fn auxiliary_tier() -> ModelTier {
+    |            ^^^^^^^^^^^^^^
+...
+364 |     pub fn estimate_auxiliary_cost(input_tokens: u32, output_tokens: u32) -> f64 {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `max_concurrency` is never read
+  --> src\dispatcher.rs:39:5
+   |
+36 | pub struct ToolDispatcher {
+   |            -------------- field in this struct
+...
+39 |     max_concurrency: usize,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `ToolDispatcher` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: methods `with_max_concurrency`, `dispatch`, `execute_parallel`, and `execute_single` are never used
+   --> src\dispatcher.rs:52:12
+    |
+ 42 | impl ToolDispatcher {
+    | ------------------- methods in this implementation
+...
+ 52 |     pub fn with_max_concurrency(mut self, n: usize) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^
+...
+ 70 |     pub async fn dispatch(&self, calls: Vec<ToolCall>) -> Vec<ToolResult> {
+    |                  ^^^^^^^^
+...
+107 |     async fn execute_parallel(&self, calls: Vec<ToolCall>) -> Vec<ToolResult> {
+    |              ^^^^^^^^^^^^^^^^
+...
+142 |     async fn execute_single(&self, call: ToolCall) -> ToolResult {
+    |              ^^^^^^^^^^^^^^
+
+warning: function `execute_tool_call` is never used
+   --> src\dispatcher.rs:151:10
+    |
+151 | async fn execute_tool_call(registry: &ToolRegistry, call: ToolCall) -> ToolResult {
+    |          ^^^^^^^^^^^^^^^^^
+
+warning: struct `RepairedResponse` is never constructed
+  --> src\repair.rs:21:12
+   |
+21 | pub struct RepairedResponse {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: struct `RepairedToolCall` is never constructed
+  --> src\repair.rs:33:12
+   |
+33 | pub struct RepairedToolCall {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: enum `RepairAction` is never used
+  --> src\repair.rs:40:10
+   |
+40 | pub enum RepairAction {
+   |          ^^^^^^^^^^^^
+
+warning: struct `FlattenRepair` is never constructed
+  --> src\repair.rs:56:12
+   |
+56 | pub struct FlattenRepair;
+   |            ^^^^^^^^^^^^^
+
+warning: associated functions `flatten`, `flatten_recursive`, `unflatten`, and `set_nested` are never used
+   --> src\repair.rs:60:12
+    |
+ 58 | impl FlattenRepair {
+    | ------------------ associated functions in this implementation
+ 59 |     /// 压平嵌套参数（发送给模型前使用）
+ 60 |     pub fn flatten(args: &Value) -> Value {
+    |            ^^^^^^^
+...
+ 66 |     fn flatten_recursive(
+    |        ^^^^^^^^^^^^^^^^^
+...
+ 89 |     pub fn unflatten(flat: &Value) -> Value {
+    |            ^^^^^^^^^
+...
+103 |     fn set_nested(map: &mut serde_json::Map<String, Value>, parts: &[&str], value: Value) {
+    |        ^^^^^^^^^^
+
+warning: struct `ScavengeRepair` is never constructed
+   --> src\repair.rs:126:12
+    |
+126 | pub struct ScavengeRepair;
+    |            ^^^^^^^^^^^^^^
+
+warning: associated functions `scavenge`, `scan_json_objects`, `parse_tool_call`, and `extract_think_block` are never used
+   --> src\repair.rs:130:12
+    |
+128 | impl ScavengeRepair {
+    | ------------------- associated functions in this implementation
+129 |     /// 从文本中扫描丢失的 tool-call JSON
+130 |     pub fn scavenge(text: &str) -> Vec<RepairedToolCall> {
+    |            ^^^^^^^^
+...
+180 |     fn scan_json_objects(text: &str, found: &mut Vec<RepairedToolCall>) {
+    |        ^^^^^^^^^^^^^^^^^
+...
+202 |     fn parse_tool_call(val: &Value) -> Option<RepairedToolCall> {
+    |        ^^^^^^^^^^^^^^^
+...
+221 |     fn extract_think_block(text: &str) -> Option<String> {
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: struct `TruncationRepair` is never constructed
+   --> src\repair.rs:242:12
+    |
+242 | pub struct TruncationRepair;
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated functions `repair`, `is_truncated`, `close_braces`, `close_brackets`, `close_quotes`, and `in_open_string` are never used
+   --> src\repair.rs:246:12
+    |
+244 | impl TruncationRepair {
+    | --------------------- associated functions in this implementation
+245 |     /// 检测并修复截断的 JSON
+246 |     pub fn repair(text: &str) -> String {
+    |            ^^^^^^
+...
+263 |     fn is_truncated(text: &str) -> bool {
+    |        ^^^^^^^^^^^^
+...
+272 |     fn close_braces(text: &str) -> String {
+    |        ^^^^^^^^^^^^
+...
+282 |     fn close_brackets(text: &str) -> String {
+    |        ^^^^^^^^^^^^^^
+...
+292 |     fn close_quotes(text: &str) -> String {
+    |        ^^^^^^^^^^^^
+...
+302 |     fn in_open_string(text: &str) -> bool {
+    |        ^^^^^^^^^^^^^^
+
+warning: type alias `ArgsSignature` is never used
+   --> src\repair.rs:326:6
+    |
+326 | type ArgsSignature = String;
+    |      ^^^^^^^^^^^^^
+
+warning: struct `StormSuppression` is never constructed
+   --> src\repair.rs:332:12
+    |
+332 | pub struct StormSuppression {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `filter`, `suppressed_count`, and `args_signature` are never used
+   --> src\repair.rs:355:12
+    |
+354 | impl StormSuppression {
+    | --------------------- associated items in this implementation
+355 |     pub fn new(window_secs: u64, max_repeats: u32) -> Self {
+    |            ^^^
+...
+365 |     pub fn filter(&mut self, calls: Vec<RepairedToolCall>) -> (Vec<RepairedToolCall>, bool) {
+    |            ^^^^^^
+...
+398 |     pub fn suppressed_count(&self) -> u64 {
+    |            ^^^^^^^^^^^^^^^^
+...
+402 |     fn args_signature(args: &Value) -> String {
+    |        ^^^^^^^^^^^^^^
+
+warning: struct `RepairPipeline` is never constructed
+   --> src\repair.rs:415:12
+    |
+415 | pub struct RepairPipeline {
+    |            ^^^^^^^^^^^^^^
+
+warning: associated items `new` and `repair` are never used
+   --> src\repair.rs:429:12
+    |
+427 | impl RepairPipeline {
+    | ------------------- associated items in this implementation
+428 |     /// 创建一个新的 RepairPipeline
+429 |     pub fn new(window_secs: u64, max_repeats: u32) -> Self {
+    |            ^^^
+...
+436 |     pub fn repair(&mut self, content: &str) -> RepairedResponse {
+    |            ^^^^^^
+
+warning: enum `ParamType` is never used
+  --> src\tool.rs:20:10
+   |
+20 | pub enum ParamType {
+   |          ^^^^^^^^^
+
+warning: struct `ParamDef` is never constructed
+  --> src\tool.rs:47:12
+   |
+47 | pub struct ParamDef {
+   |            ^^^^^^^^
+
+warning: associated functions `new`, `required`, and `optional` are never used
+  --> src\tool.rs:55:18
+   |
+54 | impl ParamDef {
+   | ------------- associated functions in this implementation
+55 |     pub const fn new(
+   |                  ^^^
+...
+69 |     pub const fn required(name: &'static str, param_type: ParamType, description: &'static str) -> Self {
+   |                  ^^^^^^^^
+...
+73 |     pub const fn optional(name: &'static str, param_type: ParamType, description: &'static str) -> Self {
+   |                  ^^^^^^^^
+
+warning: struct `ToolCall` is never constructed
+  --> src\tool.rs:84:12
+   |
+84 | pub struct ToolCall {
+   |            ^^^^^^^^
+
+warning: struct `ToolResult` is never constructed
+  --> src\tool.rs:92:12
+   |
+92 | pub struct ToolResult {
+   |            ^^^^^^^^^^
+
+warning: associated functions `success` and `error` are never used
+   --> src\tool.rs:101:12
+    |
+100 | impl ToolResult {
+    | --------------- associated functions in this implementation
+101 |     pub fn success(call_id: String, name: String, output: String, duration_ms: u64) -> Self {
+    |            ^^^^^^^
+...
+111 |     pub fn error(call_id: String, name: String, error: String) -> Self {
+    |            ^^^^^
+
+warning: methods `parameters` and `execute` are never used
+   --> src\tool.rs:139:8
+    |
+128 | pub trait Tool: Send + Sync {
+    |           ---- methods in this trait
+...
+139 |     fn parameters(&self) -> Vec<ParamDef>;
+    |        ^^^^^^^^^^
+...
+142 |     async fn execute(&self, args: Value) -> Result<String, ToolError>;
+    |              ^^^^^^^
+
+warning: enum `ToolError` is never used
+   --> src\tool.rs:150:10
+    |
+150 | pub enum ToolError {
+    |          ^^^^^^^^^
+
+warning: methods `register_all` and `is_empty` are never used
+   --> src\tool.rs:204:12
+    |
+187 | impl ToolRegistry {
+    | ----------------- methods in this implementation
+...
+204 |     pub fn register_all(self, tools: Vec<Arc<dyn Tool>>) -> Self {
+    |            ^^^^^^^^^^^^
+...
+242 |     pub fn is_empty(&self) -> bool {
+    |            ^^^^^^^^
+
+warning: function `get_string_arg` is never used
+   --> src\tool.rs:257:8
+    |
+257 | pub fn get_string_arg(args: &Value, name: &str) -> Result<String, ToolError> {
+    |        ^^^^^^^^^^^^^^
+
+warning: function `get_optional_string` is never used
+   --> src\tool.rs:264:8
+    |
+264 | pub fn get_optional_string(args: &Value, name: &str) -> Option<String> {
+    |        ^^^^^^^^^^^^^^^^^^^
+
+warning: `rhermes` (bin "rhermes") generated 54 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.81s
+   Compiling rhermes v0.1.0 (E:\lab\RHermes)
+warning: struct `ChatResponse` is never constructed
+  --> src\api.rs:42:12
+   |
+42 | pub struct ChatResponse {
+   |            ^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: struct `Choice` is never constructed
+  --> src\api.rs:49:12
+   |
+49 | pub struct Choice {
+   |            ^^^^^^
+
+warning: struct `ResponseMessage` is never constructed
+  --> src\api.rs:56:12
+   |
+56 | pub struct ResponseMessage {
+   |            ^^^^^^^^^^^^^^^
+
+warning: field `total_tokens` is never read
+  --> src\api.rs:66:9
+   |
+63 | pub struct Usage {
+   |            ----- field in this struct
+...
+66 |     pub total_tokens: u32,
+   |         ^^^^^^^^^^^^
+   |
+   = note: `Usage` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: enum `StreamEvent` is never used
+  --> src\api.rs:75:10
+   |
+75 | pub enum StreamEvent {
+   |          ^^^^^^^^^^^
+
+warning: variant `Usage` is never constructed
+  --> src\api.rs:92:5
+   |
+86 | pub enum ApiEvent {
+   |          -------- variant in this enum
+...
+92 |     Usage(Usage),
+   |     ^^^^^
+   |
+   = note: `ApiEvent` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated items `with_params`, `chat`, and `chat_with_retry` are never used
+   --> src\api.rs:122:12
+    |
+108 | impl DeepSeekClient {
+    | ------------------- associated items in this implementation
+...
+122 |     pub fn with_params(api_key: String, base_url: String, model: String) -> Self {
+    |            ^^^^^^^^^^^
+...
+133 |     pub async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ApiError> {
+    |                  ^^^^
+...
+237 |     pub async fn chat_with_retry(&self, request: ChatRequest) -> Result<ChatResponse, ApiError> {
+    |                  ^^^^^^^^^^^^^^^
+
+warning: field `role` is never read
+   --> src\api.rs:304:9
+    |
+303 | struct StreamDelta {
+    |        ----------- field in this struct
+304 |     pub role: Option<String>,
+    |         ^^^^
+    |
+    = note: `StreamDelta` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: variant `Parse` is never constructed
+   --> src\api.rs:319:5
+    |
+313 | pub enum ApiError {
+    |          -------- variant in this enum
+...
+319 |     Parse(reqwest::Error),
+    |     ^^^^^
+    |
+    = note: `ApiError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `system_prompt` is never read
+  --> src\context.rs:90:5
+   |
+79 | pub struct Context {
+   |            ------- field in this struct
+...
+90 |     system_prompt: String,
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `Context` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: method `all_messages` is never used
+   --> src\context.rs:169:12
+    |
+ 93 | impl Context {
+    | ------------ method in this implementation
+...
+169 |     pub fn all_messages(&self) -> Vec<Message> {
+    |            ^^^^^^^^^^^^
+
+warning: method `cost_multiplier` is never used
+  --> src\cost.rs:36:12
+   |
+26 | impl ModelTier {
+   | -------------- method in this implementation
+...
+36 |     pub fn cost_multiplier(&self) -> f64 {
+   |            ^^^^^^^^^^^^^^^
+
+warning: method `name` is never used
+  --> src\cost.rs:76:12
+   |
+75 | impl CostPreset {
+   | --------------- method in this implementation
+76 |     pub fn name(&self) -> &'static str {
+   |            ^^^^
+
+warning: fields `input_tokens`, `output_tokens`, and `tier` are never read
+   --> src\cost.rs:100:9
+    |
+ 99 | pub struct CostBreakdown {
+    |            ------------- fields in this struct
+100 |     pub input_tokens: u32,
+    |         ^^^^^^^^^^^^
+101 |     pub output_tokens: u32,
+    |         ^^^^^^^^^^^^^
+...
+104 |     pub tier: ModelTier,
+    |         ^^^^
+    |
+    = note: `CostBreakdown` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `compressor` and `show_escalation` are never read
+   --> src\cost.rs:247:5
+    |
+237 | pub struct CostController {
+    |            -------------- fields in this struct
+...
+247 |     compressor: ResultCompressor,
+    |     ^^^^^^^^^^
+248 |     /// 是否显示升级提示
+249 |     show_escalation: bool,
+    |     ^^^^^^^^^^^^^^^
+
+warning: methods `preset`, `current_model`, `reset_total`, `compress_result`, and `needs_compress` are never used
+   --> src\cost.rs:269:12
+    |
+252 | impl CostController {
+    | ------------------- methods in this implementation
+...
+269 |     pub fn preset(&self) -> &CostPreset {
+    |            ^^^^^^
+...
+285 |     pub fn current_model(&self) -> &'static str {
+    |            ^^^^^^^^^^^^^
+...
+339 |     pub fn reset_total(&mut self) {
+    |            ^^^^^^^^^^^
+...
+347 |     pub fn compress_result(&self, content: &str) -> String {
+    |            ^^^^^^^^^^^^^^^
+...
+352 |     pub fn needs_compress(&self, content: &str) -> bool {
+    |            ^^^^^^^^^^^^^^
+
+warning: field `content` is never read
+  --> src\repair.rs:23:9
+   |
+21 | pub struct RepairedResponse {
+   |            ---------------- field in this struct
+22 |     /// 修复后的内容文本
+23 |     pub content: Option<String>,
+   |         ^^^^^^^
+   |
+   = note: `RepairedResponse` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `id` is never read
+  --> src\repair.rs:34:9
+   |
+33 | pub struct RepairedToolCall {
+   |            ---------------- field in this struct
+34 |     pub id: String,
+   |         ^^
+   |
+   = note: `RepairedToolCall` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Flattened`, `RestoredNested`, and `StormSuppressed` are never constructed
+  --> src\repair.rs:41:5
+   |
+40 | pub enum RepairAction {
+   |          ------------ variants in this enum
+41 |     Flattened,
+   |     ^^^^^^^^^
+42 |     RestoredNested,
+   |     ^^^^^^^^^^^^^^
+...
+45 |     StormSuppressed(String),
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `RepairAction` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Float`, `Boolean`, `Array`, and `Object` are never constructed
+  --> src\tool.rs:23:5
+   |
+20 | pub enum ParamType {
+   |          --------- variants in this enum
+...
+23 |     Float,
+   |     ^^^^^
+24 |     Boolean,
+   |     ^^^^^^^
+25 |     Array,
+   |     ^^^^^
+26 |     Object,
+   |     ^^^^^^
+   |
+   = note: `ParamType` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `name`, `param_type`, `description`, and `required` are never read
+  --> src\tool.rs:48:9
+   |
+47 | pub struct ParamDef {
+   |            -------- fields in this struct
+48 |     pub name: &'static str,
+   |         ^^^^
+49 |     pub param_type: ParamType,
+   |         ^^^^^^^^^^
+50 |     pub description: &'static str,
+   |         ^^^^^^^^^^^
+51 |     pub required: bool,
+   |         ^^^^^^^^
+   |
+   = note: `ParamDef` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `call_id`, `name`, and `duration_ms` are never read
+  --> src\tool.rs:93:9
+   |
+92 | pub struct ToolResult {
+   |            ---------- fields in this struct
+93 |     pub call_id: String,
+   |         ^^^^^^^
+94 |     pub name: String,
+   |         ^^^^
+...
+97 |     pub duration_ms: u64,
+   |         ^^^^^^^^^^^
+   |
+   = note: `ToolResult` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `InvalidParam` is never constructed
+   --> src\tool.rs:152:5
+    |
+150 | pub enum ToolError {
+    |          --------- variant in this enum
+151 |     MissingParam(String),
+152 |     InvalidParam(String),
+    |     ^^^^^^^^^^^^
+    |
+    = note: `ToolError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `register_all` and `is_empty` are never used
+   --> src\tool.rs:204:12
+    |
+187 | impl ToolRegistry {
+    | ----------------- methods in this implementation
+...
+204 |     pub fn register_all(self, tools: Vec<Arc<dyn Tool>>) -> Self {
+    |            ^^^^^^^^^^^^
+...
+242 |     pub fn is_empty(&self) -> bool {
+    |            ^^^^^^^^
+
+warning: `rhermes` (bin "rhermes" test) generated 24 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.11s
+     Running unittests src\main.rs (target\debug\deps\rhermes-61bf362acf7133d9.exe)
+
+running 92 tests
+test api::tests::test_api_error_is_retryable ... ok
+test api::tests::test_chat_request_serialization ... ok
+test api::tests::test_stream_chunk_with_tool_call ... ok
+test api::tests::test_stream_chunk_parsing ... ok
+test api::tests::test_usage_cache_fields ... ok
+test config::tests::test_config_load_not_found ... ok
+test context::tests::test_context_clear_scratch ... ok
+test api::tests::test_usage_cache_fields_default_zero ... ok
+test config::tests::test_config_default ... ok
+test context::tests::test_api_message_conversion ... ok
+test context::tests::test_context_distill_scratch_to_log ... ok
+test context::tests::test_context_extend_prefix ... ok
+test config::tests::test_config_roundtrip_no_api_key_in_toml ... ok
+test context::tests::test_context_build_request_includes_prefix_and_log ... ok
+test context::tests::test_context_multiple_rounds_prefix_stable ... ok
+test context::tests::test_context_new ... ok
+test context::tests::test_context_prefix_unchanged_after_log_push ... ok
+test context::tests::test_context_push_to_log_increases_size ... ok
+test context::tests::test_context_scratch_isolated ... ok
+test context::tests::test_serialize_message_format ... ok
+test cost::tests::test_auxiliary_always_flash ... ok
+test cost::tests::test_cache_hit_rate_zero_when_no_tokens ... ok
+test cost::tests::test_cache_hit_reduces_cost ... ok
+test cost::tests::test_compressor_below_threshold ... ok
+test cost::tests::test_compressor_above_threshold ... FAILED
+test cost::tests::test_compressor_preserves_head_and_tail ... FAILED
+test cost::tests::test_controller_auto_escalation ... ok
+test cost::tests::test_controller_cost_accumulation ... FAILED
+test cost::tests::test_controller_flash_preset_no_escalation ... ok
+test cost::tests::test_controller_initial_state ... ok
+test cost::tests::test_controller_pro_preset_stays_pro ... ok
+test cost::tests::test_controller_switch_preset ... ok
+test cost::tests::test_cost_breakdown_calculation ... ok
+test cost::tests::test_estimate_auxiliary_cost ... ok
+test cost::tests::test_flash_cheaper_than_pro ... ok
+test cost::tests::test_model_tier_names ... ok
+test cost::tests::test_needs_pro_no_false_positive ... ok
+test cost::tests::test_needs_pro_detection ... ok
+test cost::tests::test_needs_pro_with_reason ... ok
+test config::tests::test_config_toml_does_not_contain_api_key ... ok
+test cost::tests::test_preset_initial_tier ... ok
+test config::tests::test_no_env_file_fallback ... ok
+test dispatcher::tests::test_dispatch_empty ... ok
+test dispatcher::tests::test_dispatch_unknown_tool ... ok
+test config::tests::test_config_save_and_load ... ok
+test repair::tests::test_flatten_nested ... ok
+test repair::tests::test_flatten_roundtrip ... ok
+test repair::tests::test_flatten_simple ... ok
+test repair::tests::test_pipeline_scavenge_and_storm ... ok
+test repair::tests::test_pipeline_deduplicates ... ok
+test repair::tests::test_scavenge_json_block ... ok
+test repair::tests::test_pipeline_truncation_repair ... ok
+test repair::tests::test_scavenge_no_false_positive ... ok
+test repair::tests::test_scavenge_tool_call_tag ... ok
+test repair::tests::test_storm_allows_different_args ... ok
+test repair::tests::test_storm_allows_first_call ... ok
+test repair::tests::test_storm_suppressed_count ... ok
+test repair::tests::test_storm_suppresses_duplicate ... ok
+test repair::tests::test_truncation_is_truncated ... ok
+test repair::tests::test_truncation_missing_brace ... ok
+test repair::tests::test_truncation_no_truncation ... ok
+test repair::tests::test_unflatten ... ok
+test config::tests::test_env_with_whitespace ... ok
+test tool::tests::test_get_string_arg ... ok
+test config::tests::test_env_parse ... ok
+test tool::tests::test_registry_parallel_safe_names ... ok
+test tool::tests::test_tool_execution ... ok
+test tools::tests::test_builtin_registry ... ok
+test tools::tests::test_read_file_metadata ... ok
+test tools::tests::test_parallel_safe_classification ... ok
+test tools::tests::test_search_content_parallel_safe ... ok
+test tool::tests::test_tool_missing_param ... ok
+test tools::tests::test_write_file_not_parallel_safe ... ok
+test tool::tests::test_tool_registry_register_and_get ... ok
+test tools::tests::test_run_command_not_parallel_safe ... ok
+test tui::tests::test_app_initial_state ... ok
+test tui::tests::test_app_new_creates_welcome_messages ... ok
+test path::tests::test_sub_paths ... ok
+test tui::tests::test_handle_key_enter_without_api ... ok
+test tui::tests::test_handle_key_text_input ... ok
+test tui::tests::test_message_constructors ... ok
+test tui::tests::test_stats_default ... ok
+test tui::tests::test_handle_key_quit ... ok
+test tui::tests::test_stats_update_from_usage ... ok
+test tui::tests::test_stats_cache_rate_zero_when_no_cache_data ... ok
+test path::tests::test_traditional_mode_fallback ... ok
+test dispatcher::tests::test_dispatch_serial_write_then_read ... ok
+test dispatcher::test
+
+[… truncated 1378 chars …]

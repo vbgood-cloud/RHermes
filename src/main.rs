@@ -5,6 +5,7 @@
 mod api;
 mod config;
 mod context;
+mod cost;
 mod dispatcher;
 mod init;
 mod path;

@@ -1,5 +1,34 @@
 # CHANGELOG
 
+## v0.4.0 — 2026-05-30
+
+### 🚀 里程碑 1.4：Tool-Call Repair Pipeline
+
+**新增模块：**
+- `src/repair.rs` — Tool-Call Repair Pipeline（4 道工序）
+
+**四道工序：**
+
+| 工序 | 功能 | 实现 |
+|------|------|------|
+| **Flatten** | 参数嵌套转 dot-notation，dispatch 时还原 | `flatten()` / `unflatten()` |
+| **Scavenge** | 从 reasoning/think 块捞取丢失的 tool-call | 支持 `<tool_call>` / ` ```json` / JSON 扫描 |
+| **Truncation** | 检测并补全截断 JSON（brace/bracket/quote） | `is_truncated()` + 自动闭合 |
+| **Storm** | 滑动窗口抑制相同 (tool, args) 重复调用 | 可配置窗口 + 重复上限 + 反思注入 |
+
+**17 个新增测试覆盖：**
+- Flatten: 简单/嵌套/roundtrip
+- Scavenge: tool_call 标签/json 块/think 块/无假阳性
+- Truncation: 无截断/缺括号/截断检测
+- Storm: 首次放行/重复抑制/不同参数放行/计数
+- Pipeline: 综合捞取/去重/截断修复
+
+**验证：**
+- `cargo check` — ✅ 零错误
+- `cargo test` — ✅ **72/72 通过**
+
+---
+
 ## v0.3.0 — 2026-05-30
 
 ### 🚀 里程碑 1.3：并行工具调度系统
