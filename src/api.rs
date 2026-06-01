@@ -28,6 +28,107 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ToolDef>>,
+}
+
+/// 工具定义（OpenAI 格式）
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolDef {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+/// 构建默认工具列表
+pub fn default_tools() -> Vec<ToolDef> {
+    vec![
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "read_file".into(),
+                description: "读取文件内容，支持 head/tail/range 参数".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "文件路径"},
+                        "head": {"type": "integer", "description": "只返回前 N 行"},
+                        "tail": {"type": "integer", "description": "只返回后 N 行"},
+                        "range": {"type": "string", "description": "行范围如 50-100"}
+                    },
+                    "required": ["path"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "write_file".into(),
+                description: "写入文件（创建或覆盖），自动创建父目录".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "文件路径"},
+                        "content": {"type": "string", "description": "文件内容"}
+                    },
+                    "required": ["path", "content"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "search_content".into(),
+                description: "在文件中搜索文本模式，支持正则".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "搜索模式"},
+                        "path": {"type": "string", "description": "搜索目录"},
+                        "glob": {"type": "string", "description": "文件名过滤"}
+                    },
+                    "required": ["pattern"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "run_command".into(),
+                description: "在 shell 中执行命令".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "要执行的命令"},
+                        "timeout": {"type": "integer", "description": "超时秒数"}
+                    },
+                    "required": ["command"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "glob".into(),
+                description: "按 glob 模式列出文件".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "glob 模式如 **/*.rs"},
+                        "path": {"type": "string", "description": "搜索目录"}
+                    },
+                    "required": ["pattern"]
+                }),
+            },
+        },
+    ]
 }
 
 /// API 消息格式
@@ -81,18 +182,21 @@ pub enum StreamEvent {
     Error(String),
 }
 
+/// 余额信息
+#[derive(Debug, Clone, Deserialize)]
+pub struct BalanceInfo {
+    pub currency: String,
+    #[serde(default)]
+    pub total_balance: String,
+}
+
 /// 余额响应
 #[derive(Debug, Clone, Deserialize)]
 pub struct BalanceResponse {
-    /// 是否无限额度
     #[serde(default)]
-    pub is_infinite: bool,
-    /// 当前可用余额（元）
+    pub is_available: bool,
     #[serde(default)]
-    pub balance: f64,
-    /// 总余额
-    #[serde(default)]
-    pub total_balance: f64,
+    pub balance_infos: Vec<BalanceInfo>,
 }
 
 /// API → TUI 事件（GUI 友好格式）
@@ -320,11 +424,15 @@ impl DeepSeekClient {
             return Err(ApiError::HttpStatus(resp.status().as_u16()));
         }
         let balance_resp: BalanceResponse = resp.json().await.map_err(ApiError::Parse)?;
-        if balance_resp.is_infinite {
-            Ok(f64::MAX) // 无限额度
-        } else {
-            Ok(balance_resp.balance)
+        // 提取 CNY 余额
+        for info in &balance_resp.balance_infos {
+            if info.currency == "CNY" {
+                if let Ok(b) = info.total_balance.parse::<f64>() {
+                    return Ok(b);
+                }
+            }
         }
+        Ok(0.0)
     }
 
     /// 获取当前使用的模型名
@@ -486,6 +594,7 @@ mod tests {
             stream: true,
             max_tokens: Some(4096),
             temperature: None,
+            tools: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();

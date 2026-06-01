@@ -27,8 +27,8 @@ const ENV_FILE_NAME: &str = ".env";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// DeepSeek API Key（仅在内存中，不序列化到 toml）
-    #[serde(skip)]
+    /// DeepSeek API Key（从 .env 或 config.toml 读取，不写出到 toml）
+    #[serde(default, skip_serializing)]
     pub api_key: String,
 
     /// 模型名称

@@ -288,15 +288,17 @@ impl App {
             let balance_client = client.clone();
             tokio::spawn(async move {
                 match balance_client.get_balance().await {
-                    Ok(b) if b == f64::MAX => {
-                        let _ = balance_tx.send(ApiEvent::Balance(-1.0));
-                    }
                     Ok(b) => {
                         let _ = balance_tx.send(ApiEvent::Balance(b));
                     }
-                    Err(_) => {}
+                    Err(e) => {
+                        tracing::warn!("余额查询失败: {e}");
+                        let _ = balance_tx.send(ApiEvent::Balance(0.0));
+                    }
                 }
             });
+            // 初始显示模型信息
+            let _ = event_tx.send(ApiEvent::Balance(0.0));
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
                     AppCommand::SendMessage(msg) => {
@@ -314,6 +316,7 @@ impl App {
                                 stream: true,
                                 max_tokens: Some(4096),
                                 temperature: None,
+                                tools: Some(crate::api::default_tools()),
                             };
 
                             // 3. 调用流式 API
@@ -942,9 +945,7 @@ impl App {
 
             // 余额
             {
-                if s.balance_cny < 0.0 {
-                    Span::styled(" ♾️ 无限 ", Style::default().fg(Color::Green))
-                } else if s.balance_cny > 0.0 {
+                if s.balance_cny > 0.0 {
                     Span::styled(
                         format!(" 💰 ¥{:.2} ", s.balance_cny),
                         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
