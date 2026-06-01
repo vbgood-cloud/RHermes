@@ -3,6 +3,7 @@
 //! 每个工具都实现了 `Tool` trait，并声明 `parallel_safe` 标志。
 
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -686,6 +687,163 @@ impl Tool for DelegateTask {
 }
 
 // ---------------------------------------------------------------------------
+// run_skill — 非并行安全（子 Agent 调用）
+// ---------------------------------------------------------------------------
+
+/// 执行已安装的技能
+pub struct RunSkill;
+
+#[async_trait]
+impl Tool for RunSkill {
+    fn name(&self) -> &'static str {
+        "run_skill"
+    }
+    fn description(&self) -> &'static str {
+        "执行一个已安装的技能并返回结果"
+    }
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::required("name", ParamType::String, "技能名称"),
+            ParamDef::required("arguments", ParamType::String, "传给技能的任务描述"),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let name = get_string_arg(&args, "name")?;
+        let arguments = get_string_arg(&args, "arguments")?;
+
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| {
+            ToolError::ExecutionFailed("技能引擎未初始化".into())
+        })?;
+
+        // 查找技能（锁作用域，在 await 前释放）
+        let skill = {
+            let engine = engine_arc.lock().map_err(|e| {
+                ToolError::ExecutionFailed(format!("技能引擎锁定失败: {e}"))
+            })?;
+            engine.get(&name).cloned().ok_or_else(|| {
+                ToolError::ExecutionFailed(format!("技能「{name}」不存在"))
+            })?
+        };
+
+        let result = skill.run(&arguments).await;
+
+        // 记录使用情况
+        if let Ok(mut engine) = engine_arc.lock() {
+            let _ = engine.record_usage(&name, result.success, result.duration_ms as u64);
+        }
+
+        if result.success {
+            Ok(format!("【技能「{name}」结果】\n{}\n【耗时: {}ms】", result.output, result.duration_ms))
+        } else {
+            Ok(format!("【技能「{name}」执行失败】\n{}", result.output))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// skill_list — 并行安全（纯查询）
+// ---------------------------------------------------------------------------
+pub struct SkillList;
+
+#[async_trait]
+impl Tool for SkillList {
+    fn name(&self) -> &'static str { "skill_list" }
+    fn description(&self) -> &'static str { "列出所有已安装的技能名称和描述" }
+    fn parallel_safe(&self) -> bool { true }
+    fn parameters(&self) -> Vec<ParamDef> { vec![] }
+    async fn execute(&self, _args: Value) -> Result<String, ToolError> {
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("技能引擎未初始化".into()))?;
+        let engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("锁定失败: {e}")))?;
+        let skills = engine.list();
+        if skills.is_empty() {
+            Ok("暂无已安装的技能。可以通过 skill_create 创建新技能。".into())
+        } else {
+            let mut out = format!("可用技能 ({}):", skills.len());
+            for s in &skills {
+                out.push_str(&format!("\n- {}: {} (使用 {} 次, 成功率 {:.0}%)", s.name, s.description, s.use_count, s.success_rate() * 100.0));
+            }
+            Ok(out)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// skill_search — 并行安全（纯查询）
+// ---------------------------------------------------------------------------
+pub struct SkillSearch;
+
+#[async_trait]
+impl Tool for SkillSearch {
+    fn name(&self) -> &'static str { "skill_search" }
+    fn description(&self) -> &'static str { "按关键词搜索已安装的技能" }
+    fn parallel_safe(&self) -> bool { true }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![ParamDef::required("query", ParamType::String, "搜索关键词")]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let query = get_string_arg(&args, "query")?;
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("技能引擎未初始化".into()))?;
+        let engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("锁定失败: {e}")))?;
+        let results = engine.search(&query);
+        if results.is_empty() {
+            Ok(format!("未找到与「{query}」相关的技能"))
+        } else {
+            let mut out = format!("找到 {} 个相关技能:", results.len());
+            for s in &results { out.push_str(&format!("\n- {}: {} ({:.0}%)", s.name, s.description, s.success_rate() * 100.0)); }
+            Ok(out)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// skill_create — 非并行安全（写磁盘）
+// ---------------------------------------------------------------------------
+pub struct SkillCreate;
+
+#[async_trait]
+impl Tool for SkillCreate {
+    fn name(&self) -> &'static str { "skill_create" }
+    fn description(&self) -> &'static str { "创建新的可复用技能，让 AI 不断积累最佳实践" }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::required("name", ParamType::String, "技能名称（小写英文+短横线）"),
+            ParamDef::required("description", ParamType::String, "一句话描述该技能的用途"),
+            ParamDef::required("body", ParamType::String, "技能正文 Markdown，描述执行步骤和注意事项"),
+            ParamDef::optional("category", ParamType::String, "技能分类目录（如 analysis/utils/debug），不填则放根目录"),
+            ParamDef::optional("allowed_tools", ParamType::String, "允许的工具列表，逗号分隔"),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let name = get_string_arg(&args, "name")?;
+        let description = get_string_arg(&args, "description")?;
+        let body = get_string_arg(&args, "body")?;
+        let category = get_optional_string(&args, "category");
+        let category_str = category.as_deref();
+        let allowed_tools = get_optional_string(&args, "allowed_tools").unwrap_or_default();
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("技能引擎未初始化".into()))?;
+        let tools_str = if allowed_tools.is_empty() { String::new() } else {
+            format!("\nallowed_tools:\n  - {}", allowed_tools.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>().join("\n  - "))
+        };
+        let skill_body = format!("---\nname: {name}\ndescription: {description}\nrun_as: subagent{tools_str}\n---\n\n# {name}\n\n{body}");
+        { let mut engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("锁定失败: {e}")))?;
+          engine.create_with_category(&name, category_str, &description, &skill_body, crate::agent::RunAs::Subagent).map_err(|e| ToolError::ExecutionFailed(format!("创建失败: {e}")))?; }
+        Ok(format!("✅ 技能「{name}」已创建！\n描述: {description}\n\n现在可以使用 run_skill(name=\"{name}\") 来调用此技能。"))
+    }
+}
+
+/// 全局技能引擎（供所有 skill_* 工具使用）
+static GLOBAL_SKILL_ENGINE: OnceLock<Arc<std::sync::Mutex<crate::agent::SkillEngine>>> = OnceLock::new();
+
+/// 设置全局技能引擎
+pub fn set_global_skill_engine(engine: Arc<std::sync::Mutex<crate::agent::SkillEngine>>) -> bool {
+    GLOBAL_SKILL_ENGINE.set(engine).is_ok()
+}
+
+// ---------------------------------------------------------------------------
 // 注册所有内置工具
 // ---------------------------------------------------------------------------
 
@@ -708,6 +866,10 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(WriteFile)
         .register(RunCommand)
         .register(GetCurrentTime)
+        .register(RunSkill)
+        .register(SkillList)
+        .register(SkillSearch)
+        .register(SkillCreate)
         .register(WebSearch)
         .register(WebFetch)
         .register(DelegateTask)
@@ -751,13 +913,17 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 9);
+        assert_eq!(reg.len(), 13);
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());
         assert!(reg.get("search_content").is_some());
         assert!(reg.get("glob").is_some());
         assert!(reg.get("get_current_time").is_some());
+        assert!(reg.get("run_skill").is_some());
+        assert!(reg.get("skill_list").is_some());
+        assert!(reg.get("skill_search").is_some());
+        assert!(reg.get("skill_create").is_some());
         assert!(reg.get("web_search").is_some());
         assert!(reg.get("web_fetch").is_some());
         assert!(reg.get("delegate_task").is_some());

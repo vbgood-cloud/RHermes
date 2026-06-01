@@ -150,14 +150,32 @@ async fn run_code(resume: bool) {
         }
     };
 
+    // 初始化技能引擎
+    let skills_dir = path_mgr.skills_dir();
+    let skill_engine = match crate::agent::SkillEngine::load(&skills_dir) {
+        Ok(se) => {
+            tracing::info!("技能引擎已就绪: {} 个技能", se.count());
+            Some(Arc::new(Mutex::new(se)))
+        }
+        Err(e) => {
+            tracing::warn!("技能引擎加载失败: {e}");
+            None
+        }
+    };
+
     // 设置全局配置（供子 Agent 工具使用）
     if config.is_configured() {
         let _ = crate::tools::set_global_config(config.clone());
     }
 
+    // 设置全局技能引擎（供 run_skill 工具使用）
+    if let Some(ref se) = skill_engine {
+        let _ = crate::tools::set_global_skill_engine(Arc::clone(se));
+    }
+
     // 创建 TUI
     let config_path_buf = config_path.clone();
-    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, resume, config_path_buf);
+    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, skill_engine, resume, config_path_buf);
 
     // 如果已有 API Key，初始化 API 客户端
     if config.is_configured() {

@@ -173,6 +173,59 @@ pub fn default_tools() -> Vec<ToolDef> {
         ToolDef {
             tool_type: "function".into(),
             function: ToolFunction {
+                name: "skill_list".into(),
+                description: "列出所有已安装的技能名称和描述".into(),
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "skill_search".into(),
+                description: "按关键词搜索已安装的技能".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "description": "搜索关键词"}},
+                    "required": ["query"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "skill_create".into(),
+                description: "创建新的可复用技能，让 AI 不断积累最佳实践".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "技能名称（小写英文+短横线）"},
+                        "description": {"type": "string", "description": "一句话描述该技能的用途"},
+                        "body": {"type": "string", "description": "技能正文 Markdown，描述执行步骤和注意事项"},
+                        "category": {"type": "string", "description": "技能分类目录（如 analysis/utils/debug）"},
+                        "allowed_tools": {"type": "string", "description": "允许的工具列表，逗号分隔"}
+                    },
+                    "required": ["name", "description", "body"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "run_skill".into(),
+                description: "执行一个已安装的技能并返回结果".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "技能名称"},
+                        "arguments": {"type": "string", "description": "传给技能的任务描述"}
+                    },
+                    "required": ["name", "arguments"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
                 name: "delegate_task".into(),
                 description: "将子任务委托给独立的子 Agent 执行，返回分析结果".into(),
                 parameters: serde_json::json!({

@@ -208,6 +208,9 @@ pub struct App {
     /// 长期记忆系统
     memory: Option<Arc<Mutex<MemorySystem>>>,
 
+    /// 技能引擎
+    skill_engine: Option<Arc<Mutex<crate::agent::SkillEngine>>>,
+
     /// 会话持久化路径
     session_path: PathBuf,
 
@@ -233,6 +236,8 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/quit",      "退出程序"),
     ("/exit",      "退出程序"),
     ("/tool",      "查看工具信息"),
+    ("/skill",     "管理技能（list/create/search/delete）"),
+    ("/skills",    "管理技能（list/create/search/delete）"),
     ("/归档",      "归档当前对话到长期记忆"),
     ("/archive",   "归档当前对话到长期记忆"),
     ("/回忆",      "搜索跨会话记忆"),
@@ -243,7 +248,7 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
 impl App {
     /// 创建新的 App 实例
     /// 创建新的 App 实例
-    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, resume: bool, config_path: PathBuf) -> Self {
+    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, skill_engine: Option<Arc<Mutex<crate::agent::SkillEngine>>>, resume: bool, config_path: PathBuf) -> Self {
         let (_event_tx, event_rx) = mpsc::unbounded_channel();
 
         // 会话保存路径
@@ -268,6 +273,7 @@ impl App {
             session_path,
             config_path,
             current_config: None,
+            skill_engine,
             messages: saved_messages,
             input: String::new(),
             cursor_pos: 0,
@@ -324,6 +330,31 @@ impl App {
              - search_content: 搜索文本\n\
              - run_command: 执行命令\n\
              - glob: 文件匹配\n\
+             \n## 可用技能\n",
+        );
+
+        // 注入已安装的技能列表
+        let skills_text = if let Some(ref se) = self.skill_engine {
+            if let Ok(engine) = se.lock() {
+                let skills = engine.list();
+                if skills.is_empty() {
+                    String::new()
+                } else {
+                    let mut skill_intro = "\n## 技能库（优先使用）\n当有已安装的技能可处理当前任务时，优先使用 skill_list 查找技能并用 run_skill 执行，再考虑 web_search 等通用工具。\n".to_string();
+                    for s in &skills {
+                        skill_intro.push_str(&format!("- {}: {}\n", s.name, s.description));
+                    }
+                    skill_intro
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        let system_prompt = format!(
+            "{system_prompt}{skills_text}\
              \n## 当前环境\n\
              工作目录: {}\n部署模式: {}",
             path_mgr.data_root().display(),
@@ -682,6 +713,7 @@ impl App {
   /clear       — 清空对话
   /quit  /exit — 退出程序
   /tool <name> — 查看工具信息
+  /skill       — 管理技能 (list/create/search/delete)
   /回忆 <关键词> — 搜索跨会话记忆
   /归档       — 将当前对话摘要存入记忆
 
@@ -732,6 +764,113 @@ impl App {
                             cfg.agent.max_rounds,
                         );
                         self.messages.push(Message::system(info));
+                    }
+                    cmd if cmd == "/skill" || cmd == "/skills" => {
+                        let skill_list = self.skill_engine.as_ref().map(|se| {
+                            se.lock().map(|engine| {
+                                let skills = engine.list();
+                                if skills.is_empty() {
+                                    "暂无技能。使用 /skill create <名称> 创建新技能。".into()
+                                } else {
+                                    let mut out = format!("可用技能 ({}):", skills.len());
+                                    for s in &skills {
+                                        out.push_str(&format!(
+                                            "\n  {} ({}) · 使用 {} 次 · 成功率 {:.0}%",
+                                            s.name,
+                                            s.model.as_deref().unwrap_or("flash"),
+                                            s.use_count,
+                                            s.success_rate() * 100.0,
+                                        ));
+                                    }
+                                    out
+                                }
+                            }).unwrap_or_else(|e| format!("技能引擎错误: {e}"))
+                        }).unwrap_or_else(|| "技能系统未初始化".into());
+                        self.messages.push(Message::system(skill_list));
+                    }
+                    cmd if cmd.starts_with("/skill ") || cmd.starts_with("/skills ") => {
+                        let rest = cmd.trim_start_matches("/skill ").trim_start_matches("/skills ");
+                        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                        let action = parts[0];
+                        let arg = parts.get(1).copied().unwrap_or("");
+                        match action {
+                            "list" => {
+                                // 复用上面的展示逻辑
+                                let list = self.skill_engine.as_ref().map(|se| {
+                                    se.lock().map(|engine| {
+                                        let skills = engine.list();
+                                        if skills.is_empty() {
+                                            "暂无技能".into()
+                                        } else {
+                                            let mut out = format!("技能列表 ({}):", skills.len());
+                                            for s in &skills {
+                                                out.push_str(&format!(
+                                                    "\n  {} · {}次 · {:.0}%",
+                                                    s.name, s.use_count, s.success_rate() * 100.0,
+                                                ));
+                                            }
+                                            out
+                                        }
+                                    }).unwrap_or_else(|e| format!("错误: {e}"))
+                                }).unwrap_or_else(|| "技能系统未初始化".into());
+                                self.messages.push(Message::system(list));
+                            }
+                            "create" if !arg.is_empty() => {
+                                let name = arg.to_string();
+                                if let Some(ref se) = self.skill_engine {
+                                    if let Ok(mut engine) = se.lock() {
+                                        let default_body = format!(
+                                            "---\nname: {name}\ndescription: 新技能\nallowed_tools:\n  - read_file\n  - search_content\nrun_as: subagent\n---\n\n# {name}\n\n请描述此技能的功能"
+                                        );
+                                        match engine.create(&name, &default_body, &"rhermes", crate::agent::RunAs::Subagent) {
+                                            Ok(_) => self.messages.push(Message::system(
+                                                format!("✅ 技能「{name}」已创建。编辑 skills/{name}.md 来定义内容。"))),
+                                            Err(e) => self.messages.push(Message::system(
+                                                format!("⚠ 创建失败: {e}"))),
+                                        }
+                                    }
+                                } else {
+                                    self.messages.push(Message::system("⚠ 技能系统未初始化"));
+                                }
+                            }
+                            "search" if !arg.is_empty() => {
+                                let query = arg;
+                                if let Some(ref se) = self.skill_engine {
+                                    if let Ok(engine) = se.lock() {
+                                        let results = engine.search(query);
+                                        if results.is_empty() {
+                                            self.messages.push(Message::system(
+                                                format!("未找到与「{query}」相关的技能")));
+                                        } else {
+                                            let mut out = format!("搜索结果 ({}):", results.len());
+                                            for s in &results {
+                                                out.push_str(&format!("\n  {} · {:.0}%", s.name, s.success_rate() * 100.0));
+                                            }
+                                            self.messages.push(Message::system(out));
+                                        }
+                                    }
+                                }
+                            }
+                            "delete" if !arg.is_empty() => {
+                                let name = arg;
+                                if let Some(ref se) = self.skill_engine {
+                                    if let Ok(mut engine) = se.lock() {
+                                        match engine.delete(name) {
+                                            Ok(true) => self.messages.push(Message::system(
+                                                format!("🗑 技能「{name}」已删除"))),
+                                            Ok(false) => self.messages.push(Message::system(
+                                                format!("⚠ 技能「{name}」不存在"))),
+                                            Err(e) => self.messages.push(Message::system(
+                                                format!("⚠ 删除失败: {e}"))),
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                self.messages.push(Message::system(
+                                    "用法:\n  /skill list            — 列出所有技能\n  /skill create <名称>  — 创建新技能\n  /skill search <关键词> — 搜索技能\n  /skill delete <名称>  — 删除技能"));
+                            }
+                        }
                     }
                     cmd if cmd.starts_with("/回忆 ") || cmd.starts_with("/回忆　")
                         || cmd.starts_with("/recall ") || cmd.starts_with("/remember ") => {
@@ -1453,7 +1592,7 @@ mod tests {
 
     #[test]
     fn test_app_new_creates_welcome_messages() {
-        let app = App::new("portable", test_dispatcher(), None, false, PathBuf::from(""));
+        let app = App::new("portable", test_dispatcher(), None, None, false, PathBuf::from(""));
         assert!(!app.messages.is_empty());
         assert!(app.messages[0].content.contains("RHermes v"));
         assert!(app.messages[0].content.contains("portable"));
@@ -1461,7 +1600,7 @@ mod tests {
 
     #[test]
     fn test_app_initial_state() {
-        let app = App::new("traditional", test_dispatcher(), None, false, PathBuf::from(""));
+        let app = App::new("traditional", test_dispatcher(), None, None, false, PathBuf::from(""));
         assert!(!app.should_quit);
         assert!(!app.running);
         assert!(app.input.is_empty());
@@ -1504,7 +1643,7 @@ mod tests {
 
     #[test]
     fn test_handle_key_enter_without_api() {
-        let mut app = App::new("test", test_dispatcher(), None, false, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""));
         app.input = "hello".into();
         app.cursor_pos = 5;
 
@@ -1520,14 +1659,14 @@ mod tests {
 
     #[test]
     fn test_handle_key_quit() {
-        let mut app = App::new("test", test_dispatcher(), None, false, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""));
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_handle_key_text_input() {
-        let mut app = App::new("test", test_dispatcher(), None, false, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""));
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.input, "a");
         assert_eq!(app.cursor_pos, 1);

@@ -51,6 +51,8 @@ impl RunAs {
 pub struct Skill {
     /// 技能名称（标识符）
     pub name: String,
+    /// 分类目录（如 "analysis" "utils"，空 = 根目录）
+    pub category: Option<String>,
     /// 一句话描述
     pub description: String,
     /// Markdown 正文
@@ -102,11 +104,28 @@ impl Skill {
     pub fn needs_attention(&self) -> bool {
         self.use_count > 0 && self.success_rate() < 0.3
     }
+
+    /// 执行技能
+    pub async fn run(&self, arguments: &str) -> crate::agent::SubAgentResult {
+        let config = crate::core::Config::load(Path::new(""))
+            .unwrap_or_default();
+        let context = format!("{}\n\n## 任务\n{}", self.body, arguments);
+        crate::agent::run_sub_agent(&context, "", &config).await
+    }
 }
 
 // ---------------------------------------------------------------------------
 // 技能引擎
 // ---------------------------------------------------------------------------
+
+/// 获取技能文件路径（按目录分类）
+fn skill_file_path(base: &Path, name: &str, category: Option<&str>) -> PathBuf {
+    if let Some(cat) = category {
+        base.join(cat).join(format!("{name}.md"))
+    } else {
+        base.join(format!("{name}.md"))
+    }
+}
 
 /// 技能引擎 — 管理技能的加载、创建、执行统计和进化
 pub struct SkillEngine {
@@ -132,36 +151,43 @@ impl SkillEngine {
         Ok(engine)
     }
 
-    /// 重新加载所有技能（从磁盘）
+    /// 重新加载所有技能（从磁盘，递归扫描子目录）
     pub fn reload(&mut self) -> Result<(), SkillError> {
         self.skills.clear();
-
-        if !self.dir.exists() {
+        let dir = self.dir.clone();
+        if !dir.exists() {
             return Ok(());
         }
+        self.load_dir_recursive(&dir)?;
+        Ok(())
+    }
 
-        let entries = fs::read_dir(&self.dir).map_err(SkillError::Io)?;
-
+    /// 递归加载目录下的所有 .md 技能文件
+    fn load_dir_recursive(&mut self, dir: &Path) -> Result<(), SkillError> {
+        if !dir.is_dir() {
+            return Ok(());
+        }
+        let entries = fs::read_dir(dir).map_err(SkillError::Io)?;
         for entry in entries {
             let entry = entry.map_err(SkillError::Io)?;
             let path = entry.path();
-
+            if path.is_dir() {
+                self.load_dir_recursive(&path)?;
+                continue;
+            }
             // 只处理 .md 文件
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
                 continue;
             }
-
             match Self::load_skill_file(&path) {
                 Ok(skill) => {
                     self.skills.insert(skill.name.clone(), skill);
                 }
                 Err(e) => {
-                    // 解析失败时跳过，不中断加载
                     eprintln!("[Skill] 跳过无效技能文件 {}: {e}", path.display());
                 }
             }
         }
-
         Ok(())
     }
 
@@ -211,6 +237,18 @@ impl SkillEngine {
         body: &str,
         run_as: RunAs,
     ) -> Result<&Skill, SkillError> {
+        self.create_with_category(name, None, description, body, run_as)
+    }
+
+    /// 创建新技能（指定目录分类）
+    pub fn create_with_category(
+        &mut self,
+        name: &str,
+        category: Option<&str>,
+        description: &str,
+        body: &str,
+        run_as: RunAs,
+    ) -> Result<&Skill, SkillError> {
         // 名称校验
         if name.is_empty() {
             return Err(SkillError::InvalidName("技能名称不能为空".into()));
@@ -226,9 +264,16 @@ impl SkillEngine {
         if self.skills.contains_key(name) {
             return Err(SkillError::AlreadyExists(name.into()));
         }
+        // 分类校验
+        if let Some(cat) = category {
+            if !cat.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                return Err(SkillError::InvalidName("分类名称只能包含字母、数字、下划线和连字符".into()));
+            }
+        }
 
         let skill = Skill {
             name: name.to_string(),
+            category: category.map(|s| s.to_string()),
             description: description.to_string(),
             body: body.to_string(),
             run_as,
@@ -252,15 +297,14 @@ impl SkillEngine {
 
     /// 删除技能
     pub fn delete(&mut self, name: &str) -> Result<bool, SkillError> {
-        if !self.skills.contains_key(name) {
-            return Ok(false);
-        }
-
-        let file_path = self.dir.join(format!("{name}.md"));
+        let skill = match self.skills.get(name) {
+            Some(s) => s.clone(),
+            None => return Ok(false),
+        };
+        let file_path = skill_file_path(&self.dir, &skill.name, skill.category.as_deref());
         if file_path.exists() {
             fs::remove_file(&file_path).map_err(SkillError::Io)?;
         }
-
         self.skills.remove(name);
         Ok(true)
     }
@@ -367,6 +411,7 @@ impl SkillEngine {
         };
 
         let mut name = default_name;
+        let mut category: Option<String> = None;
         let mut description = String::new();
         let mut run_as = RunAs::Inline;
         let mut allowed_tools: Vec<String> = Vec::new();
@@ -381,6 +426,11 @@ impl SkillEngine {
 
                     match key {
                         "name" => name = value.to_string(),
+                        "category" => {
+                            if !value.is_empty() && value != "null" {
+                                category = Some(value.to_string());
+                            }
+                        }
                         "description" => description = value.to_string(),
                         "run_as" => run_as = RunAs::from_str(value),
                         "model" => model = Some(value.to_string()),
@@ -402,8 +452,19 @@ impl SkillEngine {
             description = body.lines().find(|l| !l.is_empty()).unwrap_or("").to_string();
         }
 
+        // 从路径推断分类（如果 frontmatter 没指定）
+        if category.is_none() {
+            if let Some(parent) = path.parent() {
+                let skills_dir = Path::new("skills");
+                if parent != skills_dir && parent.file_name().is_some() {
+                    category = parent.file_name().and_then(|s| s.to_str()).map(|s| s.to_string());
+                }
+            }
+        }
+
         Ok(Skill {
             name,
+            category,
             description,
             body: body.to_string(),
             run_as,
@@ -418,11 +479,19 @@ impl SkillEngine {
     }
 
     fn save_skill_to_disk(&self, skill: &Skill) -> Result<(), SkillError> {
-        let file_path = self.dir.join(format!("{}.md", skill.name));
+        let file_path = skill_file_path(&self.dir, &skill.name, skill.category.as_deref());
+
+        // 确保父目录存在
+        if let Some(parent) = file_path.parent() {
+            fs::create_dir_all(parent).map_err(SkillError::Io)?;
+        }
 
         // 构建 frontmatter
         let mut fm = String::new();
         fm.push_str(&format!("description: \"{}\"\n", skill.description));
+        if let Some(ref cat) = skill.category {
+            fm.push_str(&format!("category: {cat}\n"));
+        }
         fm.push_str(&format!("run_as: {}\n", skill.run_as.as_str()));
 
         if !skill.allowed_tools.is_empty() {
@@ -664,6 +733,7 @@ model: deepseek-v4-pro
     fn dummy_skill() -> Skill {
         Skill {
             name: "dummy".into(),
+            category: None,
             description: "".into(),
             body: "".into(),
             run_as: RunAs::Inline,
