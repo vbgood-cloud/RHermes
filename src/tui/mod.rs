@@ -218,11 +218,16 @@ pub struct App {
 
 /// 可用命令列表（命令, 说明）
 const ALL_COMMANDS: &[(&str, &str)] = &[
-    ("/help",   "显示此帮助"),
-    ("/clear",  "清空对话"),
-    ("/quit",   "退出程序"),
-    ("/exit",   "退出程序"),
-    ("/tool",   "查看工具信息"),
+    ("/help",      "显示此帮助"),
+    ("/clear",     "清空对话"),
+    ("/quit",      "退出程序"),
+    ("/exit",      "退出程序"),
+    ("/tool",      "查看工具信息"),
+    ("/归档",      "归档当前对话到长期记忆"),
+    ("/archive",   "归档当前对话到长期记忆"),
+    ("/回忆",      "搜索跨会话记忆"),
+    ("/recall",    "搜索跨会话记忆"),
+    ("/remember",  "搜索跨会话记忆"),
 ];
 
 impl App {
@@ -322,7 +327,8 @@ impl App {
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
         let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
-        let memory = self.memory.take();
+        // 克隆 Arc 保持 TUI 端也能访问记忆系统
+        let agent_memory = self.memory.clone();
 
         // 后台 Agent Loop
         tokio::spawn(async move {
@@ -362,7 +368,7 @@ impl App {
                             let mut tool_calls: Vec<ToolCallData> = Vec::new();
 
                             // 2a. 记忆召回：搜索相关记忆注入 Context
-                            if let Some(ref mem) = memory {
+                            if let Some(ref mem) = agent_memory {
                                 if let Ok(mut mem_lock) = mem.lock() {
                                     if let Ok(results) = mem_lock.search(&msg, 5) {
                                         if !results.is_empty() {
@@ -465,7 +471,7 @@ impl App {
                                         format!("工具「{}」执行失败:\n{}", r.name, output)
                                     };
                                     ctx.push_to_log(crate::core::Message::new(
-                                        crate::tui::Role::Assistant,
+                                        crate::tui::Role::User,
                                         &result_msg,
                                     ));
                                 }
@@ -483,7 +489,7 @@ impl App {
                             }
                             // 6a. 记忆写入：记录关键内容到长期记忆
                             if !final_text.is_empty() && !msg.is_empty() {
-                                if let Some(ref mem) = memory {
+                                if let Some(ref mem) = agent_memory {
                                     if let Ok(mut mem_lock) = mem.lock() {
                                         let tags = vec!["auto", "conversation"];
                                         let _ = mem_lock.remember(
@@ -603,6 +609,7 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+                self.archive_session();
                 self.save_session();
                 self.should_quit = true;
             }
@@ -619,6 +626,7 @@ impl App {
                 // 处理命令
                 match input.as_str() {
                     "/quit" | "/exit" => {
+                        self.archive_session();
                         self.save_session();
                         self.should_quit = true;
                     },
@@ -636,6 +644,8 @@ impl App {
   /clear       — 清空对话
   /quit  /exit — 退出程序
   /tool <name> — 查看工具信息
+  /回忆 <关键词> — 搜索跨会话记忆
+  /归档       — 将当前对话摘要存入记忆
 
 快捷键:
   Ctrl+Q       — 退出
@@ -644,6 +654,71 @@ impl App {
   PageUp/Dn    — 滚动 10 行
   Home/End     — 光标到行首/行尾";
                         self.messages.push(Message::system(help_text));
+                    }
+                    cmd if cmd.starts_with("/回忆 ") || cmd.starts_with("/回忆　")
+                        || cmd.starts_with("/recall ") || cmd.starts_with("/remember ") => {
+                        let query = cmd
+                            .trim_start_matches("/回忆 ")
+                            .trim_start_matches("/回忆　")
+                            .trim();
+                        if query.is_empty() {
+                            self.messages.push(Message::system("用法: /回忆 <关键词>"));
+                        } else if let Some(ref mem) = self.memory {
+                            if let Ok(mut mem_lock) = mem.lock() {
+                                match mem_lock.search(query, 10) {
+                                    Ok(results) if results.is_empty() => {
+                                        self.messages.push(Message::system(
+                                            format!("未找到与「{}」相关的记忆", query)));
+                                    }
+                                    Ok(results) => {
+                                        self.messages.push(Message::system(
+                                            format!("找到 {} 条相关记忆:", results.len())));
+                                        for entry in &results {
+                                            self.messages.push(Message::system(format!(
+                                                "  [{:.9}] {}",
+                                                entry.memory_type.as_str(),
+                                                entry.content.lines().next().unwrap_or(""),
+                                            )));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        self.messages.push(Message::system(
+                                            format!("搜索失败: {e}")));
+                                    }
+                                }
+                            }
+                        } else {
+                            self.messages.push(Message::system("记忆系统未初始化"));
+                        }
+                    }
+                    "/归档" | "/archive" => {
+                        let text: String = self.messages.iter()
+                            .filter(|m| m.role != Role::System)
+                            .map(|m| format!("{}: {}", match m.role {
+                                Role::User => "用户",
+                                Role::Assistant => "AI",
+                                Role::System => "系统",
+                            }, m.content))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if text.is_empty() {
+                            self.messages.push(Message::system("没有可归档的对话内容"));
+                        } else if let Some(ref mem) = self.memory {
+                            if let Ok(mut mem_lock) = mem.lock() {
+                                let preview: String = text.chars().take(500).collect();
+                                let summary = format!("【会话摘要】\n{}", preview);
+                                match mem_lock.remember(&summary, &["归档", "会话"], "rhermes") {
+                                    Ok(_) => {
+                                        self.messages.push(Message::system("✅ 当前对话已归档到长期记忆"));
+                                    }
+                                    Err(e) => {
+                                        self.messages.push(Message::system(format!("归档失败: {e}")));
+                                    }
+                                }
+                            }
+                        } else {
+                            self.messages.push(Message::system("记忆系统未初始化"));
+                        }
                     }
                     _ => {
                         // 正常消息：发送给 API
@@ -820,11 +895,24 @@ impl App {
         let input = self.input.trim();
         if input.starts_with('/') && input.len() > 1 {
             let lower = input.to_lowercase();
-            let matches: Vec<&'static str> = ALL_COMMANDS
+            // 先按前缀匹配，再按 contains 匹配
+            let mut matches: Vec<&'static str> = ALL_COMMANDS
                 .iter()
                 .filter(|(cmd, _)| cmd.starts_with(&lower))
                 .map(|(cmd, _)| *cmd)
                 .collect();
+            // 如果前缀匹配为空，尝试 contains 匹配（更灵活）
+            if matches.is_empty() {
+                // 去掉开头的 / 再匹配，方便用户直接输入关键词
+                let search = lower.trim_start_matches('/');
+                matches = ALL_COMMANDS
+                    .iter()
+                    .filter(|(cmd, _)| {
+                        cmd.contains(&lower) || cmd.contains(search)
+                    })
+                    .map(|(cmd, _)| *cmd)
+                    .collect();
+            }
             if matches.len() == 1 && !self.just_autocompleted && input.len() < matches[0].len() {
                 // 唯一匹配 + 未刚补全 + 输入比匹配短 → 自动补全
                 self.input = matches[0].to_string();
@@ -833,15 +921,14 @@ impl App {
                 self.just_autocompleted = true;
                 return;
             }
-            self.cmd_suggestions = if matches.is_empty() {
-                ALL_COMMANDS.iter().map(|(cmd, _)| *cmd).collect()
-            } else {
-                matches
-            };
+            // 动态匹配：仅显示匹配的命令，无匹配则不显示
+            self.cmd_suggestions = matches;
             self.suggestion_idx = 0;
+            self.just_autocompleted = false;
         } else if input == "/" {
             self.cmd_suggestions = ALL_COMMANDS.iter().map(|(cmd, _)| *cmd).collect();
             self.suggestion_idx = 0;
+            self.just_autocompleted = false;
         } else {
             self.cmd_suggestions.clear();
             self.suggestion_idx = 0;
@@ -888,11 +975,11 @@ impl App {
         self.render_stats_bar(frame, chunks[2]);
         // 命令补全弹窗（位于输入栏上方）
         if !self.cmd_suggestions.is_empty() {
-            let height = self.cmd_suggestions.len().min(6) as u16;
+            let height = (self.cmd_suggestions.len() as u16).min(8);
             let popup_area = Rect {
                 x: chunks[3].x,
                 y: chunks[3].y.saturating_sub(height),
-                width: 20,
+                width: 44,
                 height,
             };
             self.render_suggestion_popup(frame, popup_area);
@@ -1201,6 +1288,29 @@ impl App {
                 }
             }
             Err(e) => tracing::warn!("会话序列化失败: {e}"),
+        }
+    }
+
+    /// 将会话归档到长期记忆
+    fn archive_session(&self) {
+        let text: String = self.messages.iter()
+            .filter(|m| m.role != Role::System)
+            .map(|m| format!("{}: {}", match m.role {
+                Role::User => "用户",
+                Role::Assistant => "AI",
+                Role::System => "系统",
+            }, m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.is_empty() {
+            return;
+        }
+        if let Some(ref mem) = self.memory {
+            if let Ok(mut mem_lock) = mem.lock() {
+                let preview: String = text.chars().take(500).collect();
+                let summary = format!("【会话】\n{}", preview);
+                let _ = mem_lock.remember(&summary, &["归档", "会话"], "rhermes");
+            }
         }
     }
 
