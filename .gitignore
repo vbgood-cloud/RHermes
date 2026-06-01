@@ -14,3 +14,6 @@ Thumbs.db
 
 # 日志
 rhermes.log
+
+# 会话文件
+session.json
