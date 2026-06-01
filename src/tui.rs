@@ -169,6 +169,12 @@ pub struct App {
     /// 退出标志
     pub should_quit: bool,
 
+    // ---- 命令补全 ----
+    /// 过滤后的命令建议列表
+    cmd_suggestions: Vec<&'static str>,
+    /// 当前选中的建议索引
+    suggestion_idx: usize,
+
     // ---- API 通信 ----
     /// 发送命令给后台 API 任务
     cmd_tx: Option<mpsc::UnboundedSender<AppCommand>>,
@@ -185,6 +191,9 @@ pub struct App {
     dispatcher: Option<ToolDispatcher>,
 }
 
+/// 可用命令列表（用于 / 补全）
+const ALL_COMMANDS: &[&str] = &["/help", "/clear", "/quit", "/exit", "/tool"];
+
 impl App {
     /// 创建新的 App 实例
     pub fn new(mode: &str, dispatcher: ToolDispatcher) -> Self {
@@ -198,6 +207,8 @@ impl App {
             stats: Stats::default(),
             running: false,
             should_quit: false,
+            cmd_suggestions: Vec::new(),
+            suggestion_idx: 0,
             cmd_tx: None,
             event_rx,
             streaming_buffer: String::new(),
@@ -411,6 +422,8 @@ impl App {
                 }
                 self.input.clear();
                 self.cursor_pos = 0;
+                self.cmd_suggestions.clear();
+                self.suggestion_idx = 0;
             }
 
             // ---- 退格：按字符删除 ----
@@ -420,6 +433,7 @@ impl App {
                     chars.remove(self.cursor_pos - 1);
                     self.input = chars.into_iter().collect();
                     self.cursor_pos -= 1;
+                    self.update_suggestions();
                 }
             }
 
@@ -450,14 +464,49 @@ impl App {
             KeyCode::Home => self.cursor_pos = 0,
             KeyCode::End => self.cursor_pos = self.input.chars().count(),
 
+            // ---- 命令补全选择 ----
+            KeyCode::Tab => {
+                if !self.cmd_suggestions.is_empty() {
+                    self.suggestion_idx = (self.suggestion_idx + 1) % self.cmd_suggestions.len();
+                }
+            }
+
             // ---- 字符输入（按字符索引插入） ----
             KeyCode::Char(ch) => {
                 let byte_pos = self.char_to_byte(self.cursor_pos);
                 self.input.insert(byte_pos, ch);
                 self.cursor_pos += 1;
+                self.update_suggestions();
             }
 
             _ => {}
+        }
+    }
+
+    // ---- 命令补全 ----
+
+    /// 更新命令建议列表
+    fn update_suggestions(&mut self) {
+        let input = self.input.trim();
+        if input.starts_with('/') && input.len() > 1 {
+            let lower = input.to_lowercase();
+            let matches: Vec<&'static str> = ALL_COMMANDS
+                .iter()
+                .filter(|cmd| cmd.starts_with(&lower))
+                .copied()
+                .collect();
+            if matches.is_empty() {
+                self.cmd_suggestions = ALL_COMMANDS.to_vec();
+            } else {
+                self.cmd_suggestions = matches;
+            }
+            self.suggestion_idx = 0;
+        } else if input == "/" {
+            self.cmd_suggestions = ALL_COMMANDS.to_vec();
+            self.suggestion_idx = 0;
+        } else {
+            self.cmd_suggestions.clear();
+            self.suggestion_idx = 0;
         }
     }
 
@@ -499,6 +548,16 @@ impl App {
         self.render_title_bar(frame, chunks[0]);
         self.render_main_panel(frame, chunks[1]);
         self.render_stats_bar(frame, chunks[2]);
+        // 命令补全弹窗（位于输入栏上方）
+        if !self.cmd_suggestions.is_empty() {
+            let popup_area = Rect {
+                x: chunks[3].x,
+                y: chunks[3].y.saturating_sub(1),
+                width: chunks[3].width,
+                height: 1,
+            };
+            self.render_suggestion_popup(frame, popup_area);
+        }
         self.render_input_bar(frame, chunks[3]);
     }
 
@@ -679,6 +738,37 @@ impl App {
 
         let bar = Paragraph::new(Line::from(parts))
             .style(Style::default().bg(Color::Black).fg(Color::White));
+        frame.render_widget(bar, area);
+    }
+
+    /// 命令补全弹窗（显示在输入栏上方）
+    fn render_suggestion_popup(&self, frame: &mut Frame, area: Rect) {
+        if self.cmd_suggestions.is_empty() {
+            return;
+        }
+        let idx = self.suggestion_idx.min(self.cmd_suggestions.len() - 1);
+        let _selected = self.cmd_suggestions[idx];
+
+        let mut spans = Vec::new();
+        for (i, cmd) in self.cmd_suggestions.iter().enumerate() {
+            if i == idx {
+                spans.push(Span::styled(
+                    format!("▶{cmd} "),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .bg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!(" {cmd} "),
+                    Style::default().fg(Color::White),
+                ));
+            }
+        }
+
+        let bar = Paragraph::new(Line::from(spans))
+            .style(Style::default().bg(Color::Black));
         frame.render_widget(bar, area);
     }
 
