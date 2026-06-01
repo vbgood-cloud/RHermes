@@ -456,8 +456,18 @@ impl App {
                                 tracing::info!("工具执行完成: {} 个结果", results.len());
 
                                 // 5c. 工具结果写回 Context（截断过长输出）
+                                let mut has_delegate = false;
                                 for r in &results {
                                     tracing::debug!("工具结果: {} ({}ms, success={})", r.name, r.duration_ms, r.success);
+                                    if r.name == "delegate_task" {
+                                        has_delegate = true;
+                                        final_text = r.output.clone();
+                                        // 子 Agent 结果直接显示，不写 Context（避免模型再处理）
+                                        if !final_text.is_empty() {
+                                            let _ = event_tx.send(ApiEvent::StreamChunk(final_text.clone()));
+                                        }
+                                        continue;
+                                    }
                                     let mut output = r.output.clone();
                                     let lines_before = output.lines().count();
                                     if output.len() > 2000 {
@@ -476,6 +486,11 @@ impl App {
                                     ));
                                 }
 
+                                if has_delegate {
+                                    // delegate_task 的结果直接作为最终回复，退出循环
+                                    let _ = event_tx.send(ApiEvent::Done);
+                                    break;
+                                }
                                 continue;
                             }
 

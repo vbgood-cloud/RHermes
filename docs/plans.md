@@ -20,8 +20,8 @@
 | **Phase 2** | 2.1 — 长期记忆系统（SQLite+FTS5） | ✅ **已完成** | 2026-06-01 |
 | | 2.2 — 自主 Skill 生成与进化 | ✅ **已完成** | 2026-06-01 |
 | | 2.3 — 记忆接入 Agent Loop + 会话持久化 | ✅ **已完成** | 2026-06-01 |
-| | 2.4 — 跨会话检索 | ⏳ 待开始 | — |
-| | 2.5 — 子 Agent 系统 | ⏳ 待开始 | — |
+| | 2.4 — 跨会话检索（/回忆 + /归档） | ✅ **已完成** | 2026-06-01 |
+| | 2.5 — 子 Agent 系统（delegate_task） | ✅ **已完成** | 2026-06-01 |
 | | 2.6 — 消息网关 | ⏳ 待开始 | — |
 
 ---
@@ -92,7 +92,7 @@ pub struct Context {
 | 模块 | 文件 | 说明 |
 |------|------|------|
 | 工具类型系统 | `src/tool.rs` | Tool trait + Registry + Call/Result/Error 类型 |
-| 内置工具 | `src/tools.rs` | 5 个工具（read_file, search, glob, write_file, run_command） |
+| 内置工具 | `src/tools/builtin.rs` | 6 个工具（read_file, search, glob, write_file, run_command, delegate_task） |
 | 并行调度器 | `src/dispatcher.rs` | JoinSet 批次 + 顺序保持 + Semaphore 限流 |
 
 **核心设计：**
@@ -246,22 +246,42 @@ src/                     旧: 14 个平铺文件
 
 ---
 
-### 里程碑 2.4 — 跨会话检索（待开始）
+### 里程碑 2.4 — 跨会话检索 ✅ 已完成
 
-**功能需求：**
-- [ ] 会话归档 + LLM 摘要
-- [ ] FTS5 全文索引
-- [ ] 跨会话自然语言查询
-- [ ] Honcho 式用户画像
+**完成内容：**
+
+| 功能 | 说明 |
+|------|------|
+| `/回忆 <关键词>` | FTS5 全文搜索跨会话记忆 |
+| `/归档` | 手动归档当前对话到长期记忆 |
+| `/archive` `/recall` `/remember` | 英文命令别名 |
+| 自动归档 | Ctrl+Q / /quit 时自动归档 |
+| 命令弹窗 | 动态过滤 + contains 后备匹配 |
 
 ---
 
-### 里程碑 2.5 — 子 Agent 系统（待开始）
+### 里程碑 2.5 — 子 Agent 系统 ✅ 已完成
+
+**完成内容：**
+
+| 功能 | 文件 | 说明 |
+|------|------|------|
+| 子 Agent 协议 | `src/agent/task.rs` | 独立 API 调用 + 专注 system prompt |
+| delegate_task 工具 | `src/tools/builtin.rs` | 第 6 个内置工具 |
+| 全局配置 | `OnceLock<Config>` | 工具内访问 API 客户端 |
+| 结果直接返回 | `src/tui/mod.rs` | delegate_task 结果跳过 Agent Loop 直接显示 |
+| 并行子 Agent | `run_parallel()` | 支持多个子 Agent 同时执行 |
+
+**新增工具数：** 5 → 6 个
+
+---
+
+### 里程碑 2.6 — 消息网关（待开始）
 
 **功能需求：**
-- [ ] 隔离 tokio task 运行时
-- [ ] 子 Agent 协议：任务描述 → 最终结论
-- [ ] 并行子 Agent、嵌套子 Agent
+- [ ] Telegram / Discord adapter
+- [ ] tokio channel 消息分发
+- [ ] 远程命令审批
 
 ---
 

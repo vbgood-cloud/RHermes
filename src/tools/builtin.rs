@@ -3,6 +3,7 @@
 //! 每个工具都实现了 `Tool` trait，并声明 `parallel_safe` 标志。
 
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -360,8 +361,64 @@ impl Tool for RunCommand {
 }
 
 // ---------------------------------------------------------------------------
+// delegate_task — 非并行安全（网络请求）
+// ---------------------------------------------------------------------------
+
+/// 将子任务委托给独立的子 Agent 执行
+///
+/// 子 Agent 会创建一个独立的 API 调用，专注于完成给定任务并返回结果。
+/// 适合需要深度分析或并行调研的场景。
+pub struct DelegateTask;
+
+#[async_trait]
+impl Tool for DelegateTask {
+    fn name(&self) -> &'static str {
+        "delegate_task"
+    }
+    fn description(&self) -> &'static str {
+        "将子任务委托给独立的子 Agent 执行，返回分析结果"
+    }
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::required("task", ParamType::String, "要子 Agent 完成的任务描述"),
+            ParamDef::optional("context", ParamType::String, "额外的上下文信息"),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let task = get_string_arg(&args, "task")?;
+        let context = get_optional_string(&args, "context").unwrap_or_default();
+
+        let config = GLOBAL_CONFIG.get().ok_or_else(|| {
+            ToolError::ExecutionFailed("子 Agent 配置未初始化".into())
+        })?;
+
+        let result = crate::agent::run_sub_agent(&task, &context, config).await;
+
+        if result.success {
+            Ok(format!(
+                "【子 Agent 结果】\n{}\n【耗时: {}ms】",
+                result.output, result.duration_ms
+            ))
+        } else {
+            Ok(format!("【子 Agent 失败】\n{}", result.output))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 注册所有内置工具
 // ---------------------------------------------------------------------------
+
+/// 全局配置（子 Agent 工具使用）
+static GLOBAL_CONFIG: OnceLock<crate::core::Config> = OnceLock::new();
+
+/// 设置全局配置（在 main.rs 中调用）
+pub fn set_global_config(config: crate::core::Config) {
+    let _ = GLOBAL_CONFIG.set(config);
+}
 
 use crate::tools::ToolRegistry;
 
@@ -373,6 +430,7 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(Glob)
         .register(WriteFile)
         .register(RunCommand)
+        .register(DelegateTask)
 }
 
 // ---------------------------------------------------------------------------
@@ -413,12 +471,13 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 5);
+        assert_eq!(reg.len(), 6);
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());
         assert!(reg.get("search_content").is_some());
         assert!(reg.get("glob").is_some());
+        assert!(reg.get("delegate_task").is_some());
     }
 
     #[test]

@@ -130,6 +130,21 @@ pub fn default_tools() -> Vec<ToolDef> {
                 }),
             },
         },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "delegate_task".into(),
+                description: "将子任务委托给独立的子 Agent 执行，返回分析结果".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": "要子 Agent 完成的任务描述"},
+                        "context": {"type": "string", "description": "额外的上下文信息"}
+                    },
+                    "required": ["task"]
+                }),
+            },
+        },
     ]
 }
 

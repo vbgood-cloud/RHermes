@@ -120,6 +120,7 @@ async fn run_code(resume: bool) {
     // 初始化工具系统
     let registry = builtin_registry();
     let dispatcher = ToolDispatcher::new(registry.clone());
+
     tracing::info!(
         "工具注册表已就绪 · {} 个工具 · {} 个可并行",
         registry.len(),
@@ -148,6 +149,11 @@ async fn run_code(resume: bool) {
             None
         }
     };
+
+    // 设置全局配置（供子 Agent 工具使用）
+    if config.is_configured() {
+        let _ = crate::tools::set_global_config(config.clone());
+    }
 
     // 创建 TUI
     let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, resume);
