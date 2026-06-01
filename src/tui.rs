@@ -174,6 +174,8 @@ pub struct App {
     cmd_suggestions: Vec<&'static str>,
     /// 当前选中的建议索引
     suggestion_idx: usize,
+    /// 是否刚完成自动补全（防回弹）
+    just_autocompleted: bool,
 
     // ---- 输入历史 ----
     /// 历史输入记录
@@ -221,6 +223,7 @@ impl App {
             should_quit: false,
             cmd_suggestions: Vec::new(),
             suggestion_idx: 0,
+            just_autocompleted: false,
             input_history: Vec::new(),
             history_idx: 0,
             cmd_tx: None,
@@ -456,7 +459,9 @@ impl App {
                     chars.remove(self.cursor_pos - 1);
                     self.input = chars.into_iter().collect();
                     self.cursor_pos -= 1;
-                    self.update_suggestions();
+                    // 退格时不触发自动补全，等用户输入下一字符
+                    self.cmd_suggestions.clear();
+                    self.just_autocompleted = false;
                 }
             }
 
@@ -570,11 +575,12 @@ impl App {
                 .filter(|(cmd, _)| cmd.starts_with(&lower))
                 .map(|(cmd, _)| *cmd)
                 .collect();
-            if matches.len() == 1 && matches[0] != input {
-                // 唯一匹配 → 自动补全
+            if matches.len() == 1 && !self.just_autocompleted && input.len() < matches[0].len() {
+                // 唯一匹配 + 未刚补全 + 输入比匹配短 → 自动补全
                 self.input = matches[0].to_string();
                 self.cursor_pos = self.input.chars().count();
                 self.cmd_suggestions.clear();
+                self.just_autocompleted = true;
                 return;
             }
             self.cmd_suggestions = if matches.is_empty() {
