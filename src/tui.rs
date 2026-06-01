@@ -464,11 +464,24 @@ impl App {
             KeyCode::Home => self.cursor_pos = 0,
             KeyCode::End => self.cursor_pos = self.input.chars().count(),
 
-            // ---- 命令补全选择 ----
+            // ---- 命令补全：Tab 补全 / 循环 ----
             KeyCode::Tab => {
-                if !self.cmd_suggestions.is_empty() {
-                    self.suggestion_idx = (self.suggestion_idx + 1) % self.cmd_suggestions.len();
+                if self.cmd_suggestions.is_empty() {
+                    return;
                 }
+                // 如果当前输入和选中的命令不完全匹配，直接补全
+                let selected = self.cmd_suggestions[self.suggestion_idx];
+                if self.input != selected {
+                    self.input = selected.to_string();
+                    self.cursor_pos = self.input.chars().count();
+                    self.update_suggestions();
+                    return;
+                }
+                // 已完全匹配，Tab 切换到下一条
+                self.suggestion_idx = (self.suggestion_idx + 1) % self.cmd_suggestions.len();
+                let next = self.cmd_suggestions[self.suggestion_idx];
+                self.input = next.to_string();
+                self.cursor_pos = self.input.chars().count();
             }
 
             // ---- 字符输入（按字符索引插入） ----
