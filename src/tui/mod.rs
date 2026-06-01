@@ -27,11 +27,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::api::{ApiEvent, ApiMessage, DeepSeekClient, ToolCallData, Usage};
-use crate::config::Config;
-use crate::context::Context;
-use crate::dispatcher::ToolDispatcher;
-use crate::memory::MemorySystem;
-use crate::tool::ToolCall;
+use crate::core::Config;
+use crate::core::Context;
+use crate::agent::MemorySystem;
+use crate::tools::ToolCall;
+use crate::tools::ToolDispatcher;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -288,7 +288,7 @@ impl App {
     }
 
     /// 初始化 API 客户端 + Agent Loop
-    pub fn init_api(&mut self, config: Config, path_mgr: &crate::path::PathManager) {
+    pub fn init_api(&mut self, config: Config, path_mgr: &crate::core::PathManager) {
         self.stats.model = config.model.clone();
 
         // 构建系统提示词
@@ -346,7 +346,7 @@ impl App {
                 match cmd {
                     AppCommand::SendMessage(msg) => {
                         // 1. 用户消息 → Context
-                        ctx.push_to_log(crate::context::Message::new(crate::tui::Role::User, &msg));
+                        ctx.push_to_log(crate::core::Message::new(crate::tui::Role::User, &msg));
 
                         // Agent Loop: 反复调用 API 直到获得最终文本回复（最多 5 轮）
                         let mut round = 0u32;
@@ -372,7 +372,7 @@ impl App {
                                                 .join("\n");
                                             tracing::debug!("召回 {} 条记忆", results.len());
                                             // 注入系统提示（写日志而非 scratch，避免污染 API 请求）
-                                            ctx.push_to_log(crate::context::Message::new(
+                                            ctx.push_to_log(crate::core::Message::new(
                                                 crate::tui::Role::System,
                                                 &format!("【相关记忆】\n{}", recall),
                                             ));
@@ -464,7 +464,7 @@ impl App {
                                     } else {
                                         format!("工具「{}」执行失败:\n{}", r.name, output)
                                     };
-                                    ctx.push_to_log(crate::context::Message::new(
+                                    ctx.push_to_log(crate::core::Message::new(
                                         crate::tui::Role::Assistant,
                                         &result_msg,
                                     ));
@@ -476,7 +476,7 @@ impl App {
                             // 6. 最终文本回复 → 写入 Context + 结束
                             tracing::info!("Agent Loop 完成, final_text_len={}", final_text.len());
                             if !final_text.is_empty() {
-                                ctx.push_to_log(crate::context::Message::new(
+                                ctx.push_to_log(crate::core::Message::new(
                                     crate::tui::Role::Assistant,
                                     &final_text,
                                 ));
@@ -1253,8 +1253,8 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatcher::ToolDispatcher;
-    use crate::tool::ToolRegistry;
+    use crate::tools::ToolDispatcher;
+    use crate::tools::ToolRegistry;
     use crossterm::event::KeyEvent;
 
     fn test_dispatcher() -> ToolDispatcher {

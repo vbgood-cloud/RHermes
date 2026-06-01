@@ -13,7 +13,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 
 
-use crate::config::Config;
+use crate::core::Config;
 
 // ---------------------------------------------------------------------------
 // 请求 / 响应结构

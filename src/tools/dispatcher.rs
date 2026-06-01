@@ -24,8 +24,8 @@ use std::time::Instant;
 
 use tokio::sync::Semaphore;
 
-use crate::tool::{ToolRegistry, ToolResult};
-use crate::tool::ToolCall;
+use crate::tools::{ToolRegistry, ToolResult};
+use crate::tools::ToolCall;
 
 // ---------------------------------------------------------------------------
 // 调度器

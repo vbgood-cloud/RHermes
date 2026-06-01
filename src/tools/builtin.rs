@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::tool::{
+use crate::tools::{
     get_optional_string, get_string_arg, ParamDef, ParamType, Tool, ToolError,
 };
 
@@ -363,7 +363,7 @@ impl Tool for RunCommand {
 // 注册所有内置工具
 // ---------------------------------------------------------------------------
 
-use crate::tool::ToolRegistry;
+use crate::tools::ToolRegistry;
 
 /// 创建包含所有内置工具的注册表
 pub fn builtin_registry() -> ToolRegistry {

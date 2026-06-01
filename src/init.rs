@@ -6,8 +6,8 @@ use std::path::Path;
 
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
 
-use crate::config::Config;
-use crate::path::PathManager;
+use crate::core::Config;
+use crate::core::PathManager;
 
 /// 运行 init 初始化向导
 pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {

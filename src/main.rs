@@ -2,17 +2,11 @@
 //!
 //! 终端 AI 编程 Agent，融合极致 Token 缓存优化与自进化学习闭环。
 
+mod agent;
 mod api;
-mod config;
-mod context;
+mod core;
 mod cost;
-mod dispatcher;
 mod init;
-mod memory;
-mod path;
-mod repair;
-mod skill;
-mod tool;
 mod tools;
 mod tui;
 
@@ -22,9 +16,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
-use dispatcher::ToolDispatcher;
-use path::PathManager;
+use crate::core::Config;
+use crate::core::PathManager;
 use tools::builtin_registry;
+use tools::ToolDispatcher;
 use tui::App;
 
 // ---------------------------------------------------------------------------
@@ -133,17 +128,17 @@ async fn run_code(resume: bool) {
 
     // 加载配置
     let config_path = path_mgr.config_path();
-    let config = match config::Config::load(&config_path) {
+    let config = match Config::load(&config_path) {
         Ok(cfg) => cfg,
         Err(e) => {
             eprintln!("[RHermes] 配置加载失败: {e}");
-            config::Config::default()
+            Config::default()
         }
     };
 
     // 初始化记忆系统
     let memory_path = path_mgr.data_root().join("memories.db");
-    let memory = match memory::MemorySystem::open(&memory_path) {
+    let memory = match crate::agent::MemorySystem::open(&memory_path) {
         Ok(m) => {
             tracing::info!("记忆系统已就绪: {}", memory_path.display());
             Some(Arc::new(Mutex::new(m)))
