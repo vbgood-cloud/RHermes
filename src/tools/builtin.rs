@@ -835,6 +835,58 @@ impl Tool for SkillCreate {
     }
 }
 
+// ---------------------------------------------------------------------------
+// skill_patch — 非并行安全（写磁盘）
+// ---------------------------------------------------------------------------
+
+/// 更新已有技能的内容（打补丁进化）
+pub struct SkillPatch;
+
+#[async_trait]
+impl Tool for SkillPatch {
+    fn name(&self) -> &'static str { "skill_patch" }
+    fn description(&self) -> &'static str { "更新已有技能的内容（打补丁进化），保留使用统计" }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::required("name", ParamType::String, "要更新的技能名称"),
+            ParamDef::optional("description", ParamType::String, "新的描述，留空不覆盖"),
+            ParamDef::optional("body", ParamType::String, "新的技能正文 Markdown，留空不覆盖"),
+            ParamDef::optional("allowed_tools", ParamType::String, "新的工具列表，逗号分隔，留空不覆盖"),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let name = get_string_arg(&args, "name")?;
+        let new_description = get_optional_string(&args, "description");
+        let new_body = get_optional_string(&args, "body");
+        let allowed_tools_str = get_optional_string(&args, "allowed_tools");
+
+        let new_allowed_tools: Option<Vec<String>> = allowed_tools_str.map(|s| {
+            s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+        });
+
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| {
+            ToolError::ExecutionFailed("技能引擎未初始化".into())
+        })?;
+
+        {
+            let mut engine = engine_arc.lock().map_err(|e| {
+                ToolError::ExecutionFailed(format!("锁定失败: {e}"))
+            })?;
+
+            engine.update_skill(
+                &name,
+                new_description.as_deref(),
+                new_body.as_deref(),
+                new_allowed_tools.as_deref(),
+                None,
+            ).map_err(|e| ToolError::ExecutionFailed(format!("更新技能失败: {e}")))?;
+        }
+
+        Ok(format!("✅ 技能「{name}」已更新！使用记录（次数/成功率）已保留。"))
+    }
+}
+
 /// 全局技能引擎（供所有 skill_* 工具使用）
 static GLOBAL_SKILL_ENGINE: OnceLock<Arc<std::sync::Mutex<crate::agent::SkillEngine>>> = OnceLock::new();
 
@@ -870,6 +922,7 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(SkillList)
         .register(SkillSearch)
         .register(SkillCreate)
+        .register(SkillPatch)
         .register(WebSearch)
         .register(WebFetch)
         .register(DelegateTask)
@@ -913,7 +966,7 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 13);
+        assert_eq!(reg.len(), 14);
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());
@@ -924,6 +977,7 @@ mod tests {
         assert!(reg.get("skill_list").is_some());
         assert!(reg.get("skill_search").is_some());
         assert!(reg.get("skill_create").is_some());
+        assert!(reg.get("skill_patch").is_some());
         assert!(reg.get("web_search").is_some());
         assert!(reg.get("web_fetch").is_some());
         assert!(reg.get("delegate_task").is_some());

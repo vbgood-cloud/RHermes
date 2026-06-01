@@ -356,7 +356,11 @@ impl App {
         let system_prompt = format!(
             "{system_prompt}{skills_text}\
              \n## 当前环境\n\
-             工作目录: {}\n部署模式: {}",
+             工作目录: {}\n部署模式: {}\
+             \n## 自我进化（重要！）\
+             \n当你完成了一个可复用的任务模式，或者发现了一个可以固化的最佳实践，请调用 skill_create 创建新的技能，\
+             让未来的自己能直接复用。技能越多，系统越智能。\
+             \n输入 /skill optimize 可以查看所有技能的进化建议。",
             path_mgr.data_root().display(),
             path_mgr.mode().name(),
         );
@@ -372,8 +376,9 @@ impl App {
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
         let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
-        // 克隆 Arc 保持 TUI 端也能访问记忆系统
+        // 克隆 Arc 保持 TUI 端也能访问记忆系统和技能引擎
         let agent_memory = self.memory.clone();
+        let skill_engine = self.skill_engine.clone();
 
         // 后台 Agent Loop
         tokio::spawn(async move {
@@ -419,7 +424,22 @@ impl App {
                                 &time_str.to_string(),
                             ));
 
-                            // 2b. 记忆召回：搜索相关记忆注入 Context
+                            // 2c. 每 5 轮展示进化建议（让模型自我优化）
+                            if round % 5 == 0 && round > 0 {
+                                if let Some(ref se) = skill_engine {
+                                    if let Ok(engine) = se.lock() {
+                                        let suggestions = engine.suggest_optimizations();
+                                        if suggestions.len() > 1 || !suggestions[0].starts_with("✅") {
+                                            let msg = format!("📊 进化建议:\n{}", suggestions.join("\n"));
+                                            ctx.push_to_log(crate::core::Message::new(
+                                                crate::tui::Role::System, &msg,
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 2d. 记忆召回：搜索相关记忆注入 Context
                             if let Some(ref mem) = agent_memory {
                                 if let Ok(mut mem_lock) = mem.lock() {
                                     if let Ok(results) = mem_lock.search(&msg, 5) {
@@ -833,6 +853,15 @@ impl App {
                                     self.messages.push(Message::system("⚠ 技能系统未初始化"));
                                 }
                             }
+                            "optimize" | "suggest" => {
+                                let suggestions = self.skill_engine.as_ref().map(|se| {
+                                    se.lock().map(|engine| {
+                                        engine.suggest_optimizations().join("\n")
+                                    }).unwrap_or_else(|e| format!("错误: {e}"))
+                                }).unwrap_or_else(|| "技能系统未初始化".into());
+                                self.messages.push(Message::system(
+                                    format!("📊 进化建议:\n{}", suggestions)));
+                            }
                             "search" if !arg.is_empty() => {
                                 let query = arg;
                                 if let Some(ref se) = self.skill_engine {
@@ -847,6 +876,25 @@ impl App {
                                                 out.push_str(&format!("\n  {} · {:.0}%", s.name, s.success_rate() * 100.0));
                                             }
                                             self.messages.push(Message::system(out));
+                                        }
+                                    }
+                                }
+                            }
+                            "edit" | "update" | "patch" if !arg.is_empty() => {
+                                let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+                                let target_name = parts[0];
+                                // 剩余作为新的 body 内容
+                                let new_body = parts.get(1).copied().unwrap_or("");
+                                if new_body.is_empty() {
+                                    self.messages.push(Message::system(
+                                        "用法: /skill edit <名称> <新的正文内容>"));
+                                } else if let Some(ref se) = self.skill_engine {
+                                    if let Ok(mut engine) = se.lock() {
+                                        match engine.update_skill(target_name, None, Some(new_body), None, None) {
+                                            Ok(_) => self.messages.push(Message::system(
+                                                format!("✅ 技能「{target_name}」已更新（补丁进化）"))),
+                                            Err(e) => self.messages.push(Message::system(
+                                                format!("⚠ 更新失败: {e}"))),
                                         }
                                     }
                                 }

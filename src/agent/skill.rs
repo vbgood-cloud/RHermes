@@ -203,6 +203,42 @@ impl SkillEngine {
         self.skills.get_mut(name)
     }
 
+    /// 更新技能内容（打补丁方式，只覆盖指定字段）
+    pub fn update_skill(
+        &mut self,
+        name: &str,
+        new_description: Option<&str>,
+        new_body: Option<&str>,
+        new_allowed_tools: Option<&[String]>,
+        new_model: Option<&str>,
+    ) -> Result<(), SkillError> {
+        let key = name.to_string();
+        if !self.skills.contains_key(&key) {
+            return Err(SkillError::NotFound(name.into()));
+        }
+
+        // 克隆旧数据，修改后写回
+        let mut skill = self.skills[&key].clone();
+        if let Some(desc) = new_description {
+            skill.description = desc.to_string();
+        }
+        if let Some(body) = new_body {
+            skill.body = body.to_string();
+        }
+        if let Some(tools) = new_allowed_tools {
+            skill.allowed_tools = tools.to_vec();
+        }
+        if let Some(model) = new_model {
+            let m = model.to_string();
+            skill.model = if m.is_empty() { None } else { Some(m) };
+        }
+
+        // 写回磁盘
+        self.save_skill_to_disk(&skill)?;
+        self.skills.insert(key, skill);
+        Ok(())
+    }
+
     /// 列出所有技能
     pub fn list(&self) -> Vec<&Skill> {
         let mut skills: Vec<&Skill> = self.skills.values().collect();

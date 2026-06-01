@@ -211,6 +211,23 @@ pub fn default_tools() -> Vec<ToolDef> {
         ToolDef {
             tool_type: "function".into(),
             function: ToolFunction {
+                name: "skill_patch".into(),
+                description: "更新已有技能的内容（打补丁进化），保留使用统计".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "要更新的技能名称"},
+                        "description": {"type": "string", "description": "新的描述"},
+                        "body": {"type": "string", "description": "新的技能正文"},
+                        "allowed_tools": {"type": "string", "description": "新的工具列表，逗号分隔"}
+                    },
+                    "required": ["name"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
                 name: "run_skill".into(),
                 description: "执行一个已安装的技能并返回结果".into(),
                 parameters: serde_json::json!({
