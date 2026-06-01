@@ -11,6 +11,7 @@ mod init;
 mod memory;
 mod path;
 mod repair;
+mod skill;
 mod tool;
 mod tools;
 mod tui;
