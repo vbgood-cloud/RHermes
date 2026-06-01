@@ -372,45 +372,73 @@ impl App {
                 self.cursor_pos = 0;
             }
 
+            // ---- 退格：按字符删除 ----
             KeyCode::Backspace => {
                 if self.cursor_pos > 0 {
-                    let before = self.input.split_off(self.cursor_pos);
-                    self.input.pop();
-                    self.input.push_str(&before);
+                    let mut chars: Vec<char> = self.input.chars().collect();
+                    chars.remove(self.cursor_pos - 1);
+                    self.input = chars.into_iter().collect();
                     self.cursor_pos -= 1;
                 }
             }
 
+            // ---- 删除：按字符删除 ----
             KeyCode::Delete => {
-                if self.cursor_pos < self.input.len() {
+                let char_count = self.input.chars().count();
+                if self.cursor_pos < char_count {
                     let mut chars: Vec<char> = self.input.chars().collect();
                     chars.remove(self.cursor_pos);
                     self.input = chars.into_iter().collect();
                 }
             }
 
+            // ---- 滚动 ----
             KeyCode::Up => self.scroll_offset += 1,
             KeyCode::Down => self.scroll_offset = self.scroll_offset.saturating_sub(1),
             KeyCode::PageUp => self.scroll_offset += 10,
             KeyCode::PageDown => self.scroll_offset = self.scroll_offset.saturating_sub(10),
 
+            // ---- 光标移动（按字符，非字节） ----
             KeyCode::Left => self.cursor_pos = self.cursor_pos.saturating_sub(1),
             KeyCode::Right => {
-                if self.cursor_pos < self.input.len() {
+                let char_count = self.input.chars().count();
+                if self.cursor_pos < char_count {
                     self.cursor_pos += 1;
                 }
             }
             KeyCode::Home => self.cursor_pos = 0,
-            KeyCode::End => self.cursor_pos = self.input.len(),
+            KeyCode::End => self.cursor_pos = self.input.chars().count(),
 
+            // ---- 字符输入（按字符索引插入） ----
             KeyCode::Char(ch) => {
-                let pos = self.cursor_pos;
-                self.input.insert(pos, ch);
-                self.cursor_pos += ch.len_utf8();
+                let byte_pos = self.char_to_byte(self.cursor_pos);
+                self.input.insert(byte_pos, ch);
+                self.cursor_pos += 1;
             }
 
             _ => {}
         }
+    }
+
+    // ---- 字符索引 ↔ 字节偏移 转换 ----
+
+    /// 将字符索引转换为字节偏移（用于 String::insert）
+    fn char_to_byte(&self, char_pos: usize) -> usize {
+        self.input
+            .chars()
+            .take(char_pos)
+            .map(|c| c.len_utf8())
+            .sum()
+    }
+
+    /// 获取当前光标前的文本的**显示宽度**（用于终端光标定位）
+    /// 中文等宽字符占 2 列，英文占 1 列
+    fn visual_cursor_x(&self) -> usize {
+        self.input
+            .chars()
+            .take(self.cursor_pos)
+            .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+            .sum()
     }
 
     // ---- 渲染 ----
@@ -605,7 +633,8 @@ impl App {
         frame.render_widget(bar, area);
 
         if !self.running {
-            let cursor_x = (4 + self.cursor_pos) as u16;
+            let visual_x = 3 + self.visual_cursor_x(); // " > " = 3 列
+            let cursor_x = visual_x as u16;
             let cursor_y = area.y;
             frame.set_cursor_position(ratatui::layout::Position::new(
                 area.x + cursor_x.min(area.width.saturating_sub(1)),
