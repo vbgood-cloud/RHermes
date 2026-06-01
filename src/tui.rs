@@ -389,8 +389,8 @@ impl App {
 
                             // 5. 如果有工具调用 → 执行 → 继续循环
                             if !tool_calls.is_empty() {
-                                // 5a. Repair
-                                let repaired = repair.repair(&final_text);
+                                let calls_str = tool_calls.iter().map(|c| format!("{}: {}", c.name, c.arguments)).collect::<Vec<_>>().join("\n");
+                                let repaired = repair.repair(&calls_str);
                                 let calls_to_dispatch: Vec<ToolCall> = repaired
                                     .tool_calls
                                     .into_iter()
