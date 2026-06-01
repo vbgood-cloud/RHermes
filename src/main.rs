@@ -16,6 +16,9 @@ mod tool;
 mod tools;
 mod tui;
 
+use std::fs::OpenOptions;
+use std::io::Write;
+
 use clap::{Parser, Subcommand};
 use dispatcher::ToolDispatcher;
 use path::PathManager;
@@ -53,7 +56,27 @@ enum Commands {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // 日志文件 + 控制台
+    let log_file = OpenOptions::new()
+        .create(true).append(true).open("rhermes.log").ok();
+    let _ = log_file.as_ref().map(|mut f| writeln!(f, "--- RHermes v{} ---", env!("CARGO_PKG_VERSION")));
+
+    // 同时输出到 stderr（控制台）和 rhermes.log
+    let make_writer = move || -> Box<dyn Write + Send + 'static> {
+        if let Ok(file) = OpenOptions::new().create(true).append(true).open("rhermes.log") {
+            Box::new(file)
+        } else {
+            Box::new(std::io::stderr())
+        }
+    };
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rhermes=debug".into()),
+        )
+        .with_ansi(false)
+        .with_writer(make_writer)
+        .init();
 
     let cli = Cli::parse();
 

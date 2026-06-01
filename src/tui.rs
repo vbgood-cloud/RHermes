@@ -333,6 +333,14 @@ impl App {
                             match client.chat(request).await {
                                 Ok(response) => {
                                     if let Some(choice) = response.choices.first() {
+                                        let has_tool_calls = choice.message.tool_calls.is_some();
+                                        tracing::debug!(
+                                            "API 响应: finish_reason={:?}, text_len={}, has_tool_calls={}",
+                                            choice.finish_reason,
+                                            choice.message.content.as_ref().map(|s| s.len()).unwrap_or(0),
+                                            has_tool_calls,
+                                        );
+
                                         final_text = choice.message.content.clone().unwrap_or_default();
                                         // 转发非流式文本到 TUI
                                         if !final_text.is_empty() {
@@ -346,20 +354,24 @@ impl App {
                                                 arguments: tc.function.arguments.clone(),
                                             }).collect();
                                             if !tool_data.is_empty() {
+                                                tracing::debug!("检测到 {} 个工具调用", tool_data.len());
                                                 let _ = event_tx.send(ApiEvent::ToolCalls(tool_data));
                                             }
                                         }
                                     }
                                 }
                                 Err(e) => {
+                                    tracing::error!("API 调用失败: {e}");
                                     let _ = event_tx.send(ApiEvent::Error(format!("API 错误: {e}")));
                                 }
                             }
 
-                            // 4. final_text 已在非流式 API 中设置
+                            // 4a. 记录 Context 状态
+                            tracing::debug!("Context 消息数: {}", ctx.scratch_count());
 
                             // 5. 如果有工具调用 → 执行 → 继续循环
                             if !tool_calls.is_empty() {
+                                tracing::info!("开始执行 {} 个工具调用", tool_calls.len());
                                 let calls_str = tool_calls.iter().map(|c| format!("{}: {}", c.name, c.arguments)).collect::<Vec<_>>().join("\n");
                                 let repaired = repair.repair(&calls_str);
                                 let calls_to_dispatch: Vec<ToolCall> = repaired
@@ -374,9 +386,11 @@ impl App {
 
                                 // 5b. Dispatch 执行工具
                                 let results = dispatcher.dispatch(calls_to_dispatch).await;
+                                tracing::info!("工具执行完成: {} 个结果", results.len());
 
                                 // 5c. 工具结果写回 Context
                                 for r in &results {
+                                    tracing::debug!("工具结果: {} ({}ms, success={})", r.name, r.duration_ms, r.success);
                                     let result_msg = if r.success {
                                         format!("工具「{}」执行成功 ({}ms):\n{}", r.name, r.duration_ms, r.output)
                                     } else {
@@ -399,6 +413,7 @@ impl App {
                             }
 
                             // 6. 最终文本回复 → 写入 Context + 结束
+                            tracing::info!("Agent Loop 完成, final_text_len={}", final_text.len());
                             if !final_text.is_empty() {
                                 ctx.push_to_log(crate::context::Message::new(
                                     crate::tui::Role::Assistant,
@@ -406,6 +421,7 @@ impl App {
                                 ));
                             }
                             let _ = event_tx.send(ApiEvent::Done);
+
                             break; // 退出 Agent Loop
                         }
                     }
