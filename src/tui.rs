@@ -17,7 +17,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Paragraph},
     Frame, Terminal,
 };
 use tokio::sync::mpsc;
@@ -26,7 +26,6 @@ use crate::api::{ApiEvent, ApiMessage, DeepSeekClient, ToolCallData, Usage};
 use crate::config::Config;
 use crate::context::Context;
 use crate::dispatcher::ToolDispatcher;
-use crate::repair::RepairPipeline;
 use crate::tool::ToolCall;
 use serde::{Deserialize, Serialize};
 
@@ -286,7 +285,6 @@ impl App {
         // 构建 Agent Loop 所需的所有组件
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
-        let mut repair = RepairPipeline::new(5, 1);
         let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
 
         // 后台 Agent Loop
@@ -313,8 +311,15 @@ impl App {
                         // 1. 用户消息 → Context
                         ctx.push_to_log(crate::context::Message::new(crate::tui::Role::User, &msg));
 
-                        // Agent Loop: 反复调用 API 直到获得最终文本回复
+                        // Agent Loop: 反复调用 API 直到获得最终文本回复（最多 5 轮）
+                        let mut round = 0u32;
                         loop {
+                            round += 1;
+                            if round > 5 {
+                                tracing::warn!("Agent Loop 超过 5 轮，强制终止");
+                                let _ = event_tx.send(ApiEvent::Error("工具调用次数过多，已终止".into()));
+                                break;
+                            }
                             // 2. 从 Context 获取消息列表
                             let mut final_text = String::new();
                             let mut tool_calls: Vec<ToolCallData> = Vec::new();
@@ -346,16 +351,16 @@ impl App {
                                         if !final_text.is_empty() {
                                             let _ = event_tx.send(ApiEvent::StreamChunk(final_text.clone()));
                                         }
-                                        // 从响应中提取 tool_calls
+                                        // 从响应中提取 tool_calls（赋给循环变量）
                                         if let Some(ref calls) = choice.message.tool_calls {
-                                            let tool_data: Vec<ToolCallData> = calls.iter().map(|tc| ToolCallData {
+                                            tool_calls = calls.iter().map(|tc| ToolCallData {
                                                 id: tc.id.clone(),
                                                 name: tc.function.name.clone(),
                                                 arguments: tc.function.arguments.clone(),
                                             }).collect();
-                                            if !tool_data.is_empty() {
-                                                tracing::debug!("检测到 {} 个工具调用", tool_data.len());
-                                                let _ = event_tx.send(ApiEvent::ToolCalls(tool_data));
+                                            if !tool_calls.is_empty() {
+                                                tracing::debug!("检测到 {} 个工具调用", tool_calls.len());
+                                                let _ = event_tx.send(ApiEvent::ToolCalls(tool_calls.clone()));
                                             }
                                         }
                                     }
@@ -372,15 +377,13 @@ impl App {
                             // 5. 如果有工具调用 → 执行 → 继续循环
                             if !tool_calls.is_empty() {
                                 tracing::info!("开始执行 {} 个工具调用", tool_calls.len());
-                                let calls_str = tool_calls.iter().map(|c| format!("{}: {}", c.name, c.arguments)).collect::<Vec<_>>().join("\n");
-                                let repaired = repair.repair(&calls_str);
-                                let calls_to_dispatch: Vec<ToolCall> = repaired
-                                    .tool_calls
-                                    .into_iter()
+                                // tool_calls 已由 API 响应解析好，直接分发
+                                let calls_to_dispatch: Vec<ToolCall> = tool_calls
+                                    .iter()
                                     .map(|tc| ToolCall {
-                                        id: tc.id,
-                                        name: tc.name,
-                                        arguments: tc.arguments,
+                                        id: tc.id.clone(),
+                                        name: tc.name.clone(),
+                                        arguments: serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null),
                                     })
                                     .collect();
 
@@ -388,13 +391,20 @@ impl App {
                                 let results = dispatcher.dispatch(calls_to_dispatch).await;
                                 tracing::info!("工具执行完成: {} 个结果", results.len());
 
-                                // 5c. 工具结果写回 Context
+                                // 5c. 工具结果写回 Context（截断过长输出）
                                 for r in &results {
                                     tracing::debug!("工具结果: {} ({}ms, success={})", r.name, r.duration_ms, r.success);
+                                    let mut output = r.output.clone();
+                                    let lines_before = output.lines().count();
+                                    if output.len() > 2000 {
+                                        let truncated: String = output.chars().take(2000).collect();
+                                        let lines_after = truncated.lines().count();
+                                        output = format!("{}\n... (共{}行, 截断{}行)", truncated, lines_before, lines_before - lines_after);
+                                    }
                                     let result_msg = if r.success {
-                                        format!("工具「{}」执行成功 ({}ms):\n{}", r.name, r.duration_ms, r.output)
+                                        format!("工具「{}」执行成功 ({}ms):\n{}", r.name, r.duration_ms, output)
                                     } else {
-                                        format!("工具「{}」执行失败:\n{}", r.name, r.output)
+                                        format!("工具「{}」执行失败:\n{}", r.name, output)
                                     };
                                     ctx.push_to_log(crate::context::Message::new(
                                         crate::tui::Role::Assistant,
@@ -402,13 +412,6 @@ impl App {
                                     ));
                                 }
 
-                                // 继续循环（可能还有更多工具调用）
-                                if repaired.injected_reflection {
-                                    ctx.push_to_log(crate::context::Message::new(
-                                        crate::tui::Role::System,
-                                        "检测到重复工具调用，已抑制。请基于已有结果继续回答。",
-                                    ));
-                                }
                                 continue;
                             }
 
@@ -468,10 +471,14 @@ impl App {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
                 ApiEvent::StreamChunk(chunk) => {
+                    // 移除之前的系统提示（⏳🔧），让位给实际回复
+                    self.messages.retain(|m| !(m.role == Role::System && m.content.starts_with("⏳")));
                     self.streaming_buffer.push_str(&chunk);
                     self.running = true;
                 }
                 ApiEvent::Done => {
+                    // 清除所有系统提示（⏳🔧），只保留实际对话
+                    self.messages.retain(|m| !(m.role == Role::System && (m.content.starts_with("⏳") || m.content.starts_with("🔧"))));
                     // 流结束，停止计时
                     if let Some(start) = self.response_start.take() {
                         self.last_response_secs = start.elapsed().as_secs();
@@ -781,7 +788,7 @@ impl App {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Min(1),
-                Constraint::Length(1),
+                Constraint::Length(2),
                 Constraint::Length(1),
             ])
             .split(area);
@@ -911,7 +918,6 @@ impl App {
         };
 
         let paragraph = Paragraph::new(Text::from(visible_lines))
-            .wrap(Wrap { trim: false })
             .style(Style::default().fg(Color::White).bg(Color::Black));
         frame.render_widget(paragraph, inner);
     }

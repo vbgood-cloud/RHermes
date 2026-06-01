@@ -11,3 +11,6 @@ Thumbs.db
 # AI 辅助工具目录
 .reasonix/
 .history/
+
+# 日志
+rhermes.log
