@@ -14,13 +14,15 @@
 | | 1.3 — 并行工具调度 + 5 个内置工具 | ✅ **已完成** | 2026-05-30 |
 | | 1.4 — Tool-Call Repair Pipeline 四道工序 | ✅ **已完成** | 2026-06-01 |
 | | 1.5 — 成本控制体系 | ✅ **已完成** | 2026-06-01 |
-| | 1.6 — Agent Loop 串联（Context→API→Repair→Dispatch→循环） | ✅ **已完成** | 2026-06-01 |
+| | 1.6 — Agent Loop 串联（非流式 API + 工具调用） | ✅ **已完成** | 2026-06-01 |
 | | 1.7 — TUI 交互优化（计时器/余额/日志/搜索） | ✅ **已完成** | 2026-06-01 |
+| | 1.8 — 代码目录结构重组 | ✅ **已完成** | 2026-06-01 |
 | **Phase 2** | 2.1 — 长期记忆系统（SQLite+FTS5） | ✅ **已完成** | 2026-06-01 |
 | | 2.2 — 自主 Skill 生成与进化 | ✅ **已完成** | 2026-06-01 |
-| | 2.3 — 跨会话检索 | ⏳ 待开始 | — |
-| | 2.4 — 子 Agent 系统 | ⏳ 待开始 | — |
-| | 2.5 — 消息网关 | ⏳ 待开始 | — |
+| | 2.3 — 记忆接入 Agent Loop + 会话持久化 | ✅ **已完成** | 2026-06-01 |
+| | 2.4 — 跨会话检索 | ⏳ 待开始 | — |
+| | 2.5 — 子 Agent 系统 | ⏳ 待开始 | — |
+| | 2.6 — 消息网关 | ⏳ 待开始 | — |
 
 ---
 
@@ -161,8 +163,29 @@ pub struct Context {
 | 全人民币结算 | 移除 USD，统一 ¥ 显示 |
 | 响应计时器 | ⏱ Xs 显示响应耗时 |
 | 状态图标 | 💬 空闲 / ⏳ 思考中 / 🔧 执行工具 |
+| 工具名显示 | 🔧 run_command(dir) 显示具体调用 |
 | 文件日志 | rhermes.log 记录 Agent Loop 各阶段 |
 | search_content 原生实现 | 用 regex crate 替代 rg 二进制 |
+
+---
+
+### 里程碑 1.8 — 代码目录结构重组 ✅ 已完成
+
+**目标：** 扁平 14 文件 → 6 子目录，方便后续扩展
+
+```
+src/                     旧: 14 个平铺文件
+├── main.rs              入口
+├── init.rs              初始化向导
+├── cost.rs              成本计算
+├── core/                核心基础设施 (config/context/path)
+├── api/                 DeepSeek API 客户端
+├── agent/               智能体大脑 (repair/memory/skill)
+├── tools/               工具系统 (registry/builtin/dispatcher)
+└── tui/                 终端界面
+```
+
+**不变量：** 所有 `crate::xxx` 导入路径不变，113 测试全过
 
 ---
 
@@ -202,7 +225,28 @@ pub struct Context {
 
 ---
 
-### 里程碑 2.3 — 跨会话检索（待开始）
+### 里程碑 2.3 — 记忆接入 Agent Loop + 会话持久化 ✅ 已完成
+
+**完成内容：**
+
+| 功能 | 文件 | 说明 |
+|------|------|------|
+| 记忆自动召回 | `src/agent/memory.rs` + `src/tui/mod.rs` | 用户输入前 FTS5 搜索相关记忆，注入 Context |
+| 记忆自动写入 | `src/agent/memory.rs` + `src/tui/mod.rs` | AI 回复后【问题+回答】存入长期记忆 |
+| 会话持久化 | `src/tui/mod.rs` | Ctrl+Q 保存 session.json，-r 启动恢复 |
+| CLI 参数 | `src/main.rs` | `-r`/`--resume` 标记控制恢复 |
+| 线程安全 | `Arc<Mutex<MemorySystem>>` | 跨 tokio task 共享 |
+
+**Agent Loop 中的记忆流：**
+```
+用户输入 → FTS5 搜索 → 注入 Context → API 调用
+                          ↑                   ↓
+                    记忆写入 ←←←←←← 提取问题+回答
+```
+
+---
+
+### 里程碑 2.4 — 跨会话检索（待开始）
 
 **功能需求：**
 - [ ] 会话归档 + LLM 摘要
@@ -212,7 +256,7 @@ pub struct Context {
 
 ---
 
-### 里程碑 2.4 — 子 Agent 系统（待开始）
+### 里程碑 2.5 — 子 Agent 系统（待开始）
 
 **功能需求：**
 - [ ] 隔离 tokio task 运行时
@@ -221,7 +265,7 @@ pub struct Context {
 
 ---
 
-### 里程碑 2.5 — 消息网关（可选）
+### 里程碑 2.6 — 消息网关（可选）
 
 **功能需求：**
 - [ ] Telegram / Discord adapter
@@ -303,17 +347,24 @@ pub struct Context {
 
 ---
 
-## 四、技术栈
+## 四、技术栈（当前依赖）
 
-| 层 | 选型 | 版本 | 用途 |
-|----|------|------|------|
-| 语言 | Rust | 2024 edition | 主语言 |
-| 异步 | tokio | 1.x | 运行时 / 并行 / 流式 |
-| HTTP | reqwest | 0.12 | DeepSeek API + SSE |
-| 序列化 | serde + serde_json | 1.x | JSON 序列化 |
-| 字节 | bytes | 1.x | 零拷贝前缀共享 |
-| TUI | ratatui | 0.29 | 终端交互界面 |
-| 数据库 | rusqlite | 0.32 | 记忆/会话存储 |
-| 配置 | toml + serde | 0.8 / 1.x | 配置文件 |
-| 日志 | tracing + tracing-subscriber | 0.1 / 0.3 | 结构化日志 |
-| 路径 | dirs | 6.0 | 跨平台系统路径 |
+当前 `Cargo.toml` 实际依赖：
+
+| 层 | 选型 | 用途 |
+|----|------|------|
+| 语言 | Rust 2024 edition | 主语言 |
+| 异步 | tokio (full) | 运行时 / 并行 |
+| HTTP | reqwest (json+stream) | DeepSeek API + SSE |
+| 序列化 | serde + serde_json + toml | 配置 / 协议 / 会话 |
+| 正则 | regex | search_content 工具 |
+| TUI | ratatui + crossterm | 终端交互界面 |
+| 数据库 | rusqlite (bundled+vtab) | 记忆存储 + FTS5 |
+| 日志 | tracing + tracing-subscriber | 结构化日志 + 文件输出 |
+| 路径 | dirs | 跨平台系统路径 |
+| CLI | clap (derive) | 命令行参数解析 |
+| 交互 | dialoguer | 初始化向导 |
+| 时间 | chrono | 时间格式化 |
+| unicode | unicode-width | 光标定位 |
+| 异步 trait | async-trait | Tool trait |
+| 流式 | futures-util | SSE 流式读取 |
