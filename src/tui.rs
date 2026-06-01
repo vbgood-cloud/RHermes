@@ -423,7 +423,9 @@ impl App {
 
 快捷键:
   Ctrl+Q       — 退出
-  ↑↓ PageUp/Dn — 滚动对话
+  ↑↓           — 滚动对话
+  Alt+↑↓       — 浏览输入历史
+  PageUp/Dn    — 滚动 10 行
   Home/End     — 光标到行首/行尾";
                         self.messages.push(Message::system(help_text));
                     }
@@ -504,26 +506,24 @@ impl App {
                 }
             }
 
-            // ---- 滚动 / 命令选择 / 历史浏览 ----
+            // ---- 滚动（↑↓ 滚动对话，Alt+↑↓ 浏览输入历史） ----
             KeyCode::Up => {
                 if !self.cmd_suggestions.is_empty() {
                     // 命令补全模式：向上选择
                     let len = self.cmd_suggestions.len();
                     self.suggestion_idx = (self.suggestion_idx + len - 1) % len;
-                } else {
-                    // 普通模式：浏览输入历史（上一条）
+                } else if key.modifiers == KeyModifiers::ALT {
+                    // Alt+↑：浏览输入历史（上一条）
                     if !self.input_history.is_empty() {
-                        if self.history_idx == self.input_history.len() {
-                            // 首次按上，保存当前输入
-                        }
                         if self.history_idx > 0 {
                             self.history_idx -= 1;
                         }
                         self.input = self.input_history[self.history_idx].clone();
                         self.cursor_pos = self.input.chars().count();
-                    } else {
-                        self.scroll_offset += 1;
                     }
+                } else {
+                    // ↑：滚动对话向上
+                    self.scroll_offset += 1;
                 }
             }
             KeyCode::Down => {
@@ -531,8 +531,8 @@ impl App {
                     // 命令补全模式：向下选择
                     let len = self.cmd_suggestions.len();
                     self.suggestion_idx = (self.suggestion_idx + 1) % len;
-                } else {
-                    // 普通模式：浏览输入历史（下一条）
+                } else if key.modifiers == KeyModifiers::ALT {
+                    // Alt+↓：浏览输入历史（下一条）
                     if !self.input_history.is_empty() && self.history_idx < self.input_history.len() {
                         self.history_idx += 1;
                         if self.history_idx < self.input_history.len() {
@@ -541,9 +541,10 @@ impl App {
                             self.input.clear();
                         }
                         self.cursor_pos = self.input.chars().count();
-                    } else {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
                     }
+                } else {
+                    // ↓：滚动对话向下
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
                 }
             }
             KeyCode::PageUp => self.scroll_offset += 10,
