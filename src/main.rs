@@ -8,6 +8,7 @@ mod context;
 mod cost;
 mod dispatcher;
 mod init;
+mod memory;
 mod path;
 mod repair;
 mod tool;
