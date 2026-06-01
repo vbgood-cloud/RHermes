@@ -121,6 +121,8 @@ impl Context {
     pub fn push_to_log(&mut self, msg: Message) {
         let serialized = Self::serialize_message(&msg);
         self.append_only_log.extend_from_slice(&serialized);
+        // 同时追加到 scratch 以保持 all_messages() 可用
+        self.scratch.push(msg);
     }
 
     /// 追加消息到 Scratch（每轮重置）
@@ -136,9 +138,13 @@ impl Context {
     /// 将 Scratch 中的消息蒸馏后追加到 Log
     pub fn distill_scratch_to_log(&mut self) {
         let scratch_msgs: Vec<Message> = self.scratch.drain(..).collect();
-        for msg in scratch_msgs {
-            self.push_to_log(msg);
+        for msg in &scratch_msgs {
+            // 直接追加到 append_only_log，避免 push_to_log 回写 scratch
+            let serialized = Self::serialize_message(msg);
+            self.append_only_log.extend_from_slice(&serialized);
         }
+        // 消息放回 scratch（all_messages() 依赖它）
+        self.scratch.extend(scratch_msgs);
     }
 
     /// 构建发送到 API 的完整请求 body（不含 scratch）
@@ -148,6 +154,30 @@ impl Context {
         body.extend_from_slice(&self.immutable_prefix);
         body.extend_from_slice(&self.append_only_log);
         body
+    }
+
+    /// 获取所有消息（用于构建 ChatRequest）
+    pub fn get_messages(&self) -> Vec<crate::api::ApiMessage> {
+        let mut msgs = Vec::new();
+        // 从 log bytes 中解析消息
+        // 简化：用 all_messages() 遍历
+        for msg in &self.all_messages() {
+            let role = match msg.role {
+                crate::tui::Role::User => "user",
+                crate::tui::Role::Assistant => "assistant",
+                crate::tui::Role::System => "system",
+            };
+            msgs.push(crate::api::ApiMessage {
+                role: role.to_string(),
+                content: msg.content.clone(),
+            });
+        }
+        msgs
+    }
+
+    /// 获取所有消息的只读引用
+    pub fn messages(&self) -> &[Message] {
+        &self.scratch
     }
 
     /// 获取 immutable prefix 的字节长度
@@ -290,7 +320,8 @@ mod tests {
         assert_eq!(ctx.scratch_count(), 1);
 
         ctx.distill_scratch_to_log();
-        assert_eq!(ctx.scratch_count(), 0);
+        // scratch 保留（all_messages() 依赖它），日志长度增加
+        assert_eq!(ctx.scratch_count(), 1);
         assert!(ctx.log_len() > 0);
     }
 

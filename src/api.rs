@@ -90,8 +90,18 @@ pub enum ApiEvent {
     Done,
     /// 收到用量信息
     Usage(Usage),
+    /// 工具调用（名称和参数字符串）
+    ToolCalls(Vec<ToolCallData>),
     /// 错误
     Error(String),
+}
+
+/// 流式工具调用数据
+#[derive(Debug, Clone)]
+pub struct ToolCallData {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -217,8 +227,22 @@ impl DeepSeekClient {
                                             .send(ApiEvent::StreamChunk(content.to_string()))
                                             .is_err()
                                         {
-                                            // 接收端已关闭
                                             return Ok(());
+                                        }
+                                    }
+                                    // 检测工具调用结束
+                                    if let Some(ref reason) = choice.finish_reason {
+                                        if reason == "tool_calls" {
+                                            if let Some(ref calls) = choice.delta.tool_calls {
+                                                let tool_data: Vec<ToolCallData> = calls.iter().map(|tc| ToolCallData {
+                                                    id: tc.id.clone().unwrap_or_default(),
+                                                    name: tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default(),
+                                                    arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()).unwrap_or_default(),
+                                                }).collect();
+                                                if !tool_data.is_empty() {
+                                                    let _ = tx.send(ApiEvent::ToolCalls(tool_data));
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -310,6 +334,27 @@ struct StreamChoice {
 struct StreamDelta {
     pub role: Option<String>,
     pub content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Option<Vec<StreamToolCall>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StreamToolCall {
+    pub index: i32,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(rename = "type")]
+    pub call_type: Option<String>,
+    #[serde(default)]
+    pub function: Option<StreamToolCallFunction>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StreamToolCallFunction {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub arguments: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

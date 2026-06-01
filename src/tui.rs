@@ -22,10 +22,12 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
-use crate::api::{ApiEvent, ApiMessage, DeepSeekClient, Usage};
+use crate::api::{ApiEvent, ApiMessage, DeepSeekClient, ToolCallData, Usage};
 use crate::config::Config;
 use crate::context::Context;
 use crate::dispatcher::ToolDispatcher;
+use crate::repair::RepairPipeline;
+use crate::tool::ToolCall;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -243,82 +245,147 @@ impl App {
         app
     }
 
-    /// 初始化 API 客户端（设置 API Key 后调用）
+    /// 初始化 API 客户端 + Agent Loop
     pub fn init_api(&mut self, config: Config, path_mgr: &crate::path::PathManager) {
         self.stats.model = config.model.clone();
 
-        // 初始化 Context
+        // 构建系统提示词
         let system_prompt = format!(
             "## 你的身份\n\
-             \n\
-             你的名字是 **RHermes**。\
-             \n\
-             ## 严格规则\n\
+             \n你的名字是 **RHermes**。\
+             \n## 严格规则\n\
              1. 禁止在任何情况下说出「我是DeepSeek」这句话。\
              2. 禁止提及「深度求索」或「深度求索公司」。\
              3. 自我介绍时只能说「我是RHermes」。\
              4. 不能告诉用户你是由任何公司开发的。\
-             \n\
-             ## 一句话自我介绍模板\n\
-             当用户问你是谁时，这样回答：「我是 RHermes —— 融合了 Reasonix 的省 Token 引擎和 Hermes 的自进化大脑的终端 AI 编程 Agent。」\
-             \n\
-             ## 核心优势\
-             \n\
-             1. 极致省钱：三段式 Context 缓存架构，99%+ 缓存命中率，Token 成本比同类低 5 倍\
-             2. 越用越聪明：自动沉淀技能、长期记忆、跨会话学习\
-             3. 双模部署：可移动模式（./home/ 随身带走）或传统模式（系统路径）\
-             4. 真正的并行：tokio 并行引擎，读文件/搜索可同时执行\
-             5. 零依赖单文件：~5MB 静态编译二进制，curl 即用\
-             \n\
-             ## 技术栈\
-             \n\
-             - 语言: Rust (2024 edition)\
-             - 后端: DeepSeek API（用户配置的 API Key）\
-             - UI: ratatui 终端界面\
-             - 存储: SQLite + FTS5\
-             \n\
-             ## 当前环境\
-             \n\
-             工作目录: {}\
-             部署模式: {}",
+             \n## 可用工具\n\
+             - read_file: 读取文件内容\n\
+             - write_file: 写入文件\n\
+             - search_content: 搜索文本\n\
+             - run_command: 执行命令\n\
+             - glob: 文件匹配\n\
+             \n## 当前环境\n\
+             工作目录: {}\n部署模式: {}",
             path_mgr.data_root().display(),
             path_mgr.mode().name(),
         );
-        let mut ctx = Context::new(system_prompt);
-        ctx.extend_prefix("\n---\n工具: read_file, write_file, search, run_command\n".as_bytes());
-        self.context = Some(ctx);
 
-        // 创建事件通道（API → TUI）
+        // 创建事件和命令通道
         let (event_tx, event_rx) = mpsc::unbounded_channel::<ApiEvent>();
         self.event_rx = event_rx;
-
-        // 创建命令通道（TUI → API）
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<AppCommand>();
         self.cmd_tx = Some(cmd_tx);
 
+        // 构建 Agent Loop 所需的所有组件
         let client = DeepSeekClient::new(config);
+        let mut ctx = Context::new(system_prompt);
+        let mut repair = RepairPipeline::new(5, 1);
+        let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
 
-        // 后台 API 任务
+        // 后台 Agent Loop
         tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
                     AppCommand::SendMessage(msg) => {
-                        // 构建请求
-                        let request = crate::api::ChatRequest {
-                            model: client.model().to_string(),
-                            messages: vec![ApiMessage {
-                                role: "user".into(),
-                                content: msg,
-                            }],
-                            stream: true,
-                            max_tokens: Some(4096),
-                            temperature: None,
-                        };
+                        // 1. 用户消息 → Context
+                        ctx.push_to_log(crate::context::Message::new(crate::tui::Role::User, &msg));
 
-                        // 调用流式 API
-                        let result = client.chat_stream(request, event_tx.clone()).await;
-                        if let Err(e) = result {
-                            let _ = event_tx.send(ApiEvent::Error(format!("API 错误: {e}")));
+                        // Agent Loop: 反复调用 API 直到获得最终文本回复
+                        loop {
+                            // 2. 从 Context 获取消息列表
+                            let messages: Vec<ApiMessage> = ctx.get_messages();
+
+                            let request = crate::api::ChatRequest {
+                                model: client.model().to_string(),
+                                messages,
+                                stream: true,
+                                max_tokens: Some(4096),
+                                temperature: None,
+                            };
+
+                            // 3. 调用流式 API
+                            let (round_tx, mut round_rx) = mpsc::unbounded_channel::<ApiEvent>();
+                            let client_clone = client.clone();
+                            let api_tx = event_tx.clone();
+
+                            tokio::spawn(async move {
+                                if let Err(e) = client_clone.chat_stream(request, round_tx).await {
+                                    let _ = api_tx.send(ApiEvent::Error(format!("API 错误: {e}")));
+                                }
+                            });
+
+                            // 4. 接收流式事件
+                            let mut final_text = String::new();
+                            let mut tool_calls: Vec<ToolCallData> = Vec::new();
+
+                            while let Some(event) = round_rx.recv().await {
+                                match event {
+                                    ApiEvent::StreamChunk(t) => {
+                                        final_text.push_str(&t);
+                                        let _ = event_tx.send(ApiEvent::StreamChunk(t));
+                                    }
+                                    ApiEvent::ToolCalls(calls) => {
+                                        tool_calls = calls;
+                                    }
+                                    ApiEvent::Usage(u) => {
+                                        let _ = event_tx.send(ApiEvent::Usage(u));
+                                    }
+                                    ApiEvent::Error(e) => {
+                                        let _ = event_tx.send(ApiEvent::Error(e));
+                                    }
+                                    ApiEvent::Done => {}
+                                }
+                            }
+
+                            // 5. 如果有工具调用 → 执行 → 继续循环
+                            if !tool_calls.is_empty() {
+                                // 5a. Repair
+                                let repaired = repair.repair(&final_text);
+                                let calls_to_dispatch: Vec<ToolCall> = repaired
+                                    .tool_calls
+                                    .into_iter()
+                                    .map(|tc| ToolCall {
+                                        id: tc.id,
+                                        name: tc.name,
+                                        arguments: tc.arguments,
+                                    })
+                                    .collect();
+
+                                // 5b. Dispatch 执行工具
+                                let results = dispatcher.dispatch(calls_to_dispatch).await;
+
+                                // 5c. 工具结果写回 Context
+                                for r in &results {
+                                    let result_msg = if r.success {
+                                        format!("工具「{}」执行成功 ({}ms):\n{}", r.name, r.duration_ms, r.output)
+                                    } else {
+                                        format!("工具「{}」执行失败:\n{}", r.name, r.output)
+                                    };
+                                    ctx.push_to_log(crate::context::Message::new(
+                                        crate::tui::Role::Assistant,
+                                        &result_msg,
+                                    ));
+                                }
+
+                                // 继续循环（可能还有更多工具调用）
+                                if repaired.injected_reflection {
+                                    ctx.push_to_log(crate::context::Message::new(
+                                        crate::tui::Role::System,
+                                        "检测到重复工具调用，已抑制。请基于已有结果继续回答。",
+                                    ));
+                                }
+                                continue;
+                            }
+
+                            // 6. 最终文本回复 → 写入 Context + 结束
+                            if !final_text.is_empty() {
+                                ctx.push_to_log(crate::context::Message::new(
+                                    crate::tui::Role::Assistant,
+                                    &final_text,
+                                ));
+                            }
+                            let _ = event_tx.send(ApiEvent::Done);
+                            break; // 退出 Agent Loop
                         }
                     }
                 }
@@ -376,6 +443,13 @@ impl App {
                     self.streaming_buffer.clear();
                     self.running = false;
                     self.scroll_offset = 0;
+                }
+                ApiEvent::ToolCalls(calls) => {
+                    let count = calls.len();
+                    self.messages.push(Message::system(format!(
+                        "🔧 正在执行 {} 个工具调用...", count
+                    )));
+                    self.running = true;
                 }
                 ApiEvent::Usage(usage) => {
                     self.stats.update_from_usage(&usage);
