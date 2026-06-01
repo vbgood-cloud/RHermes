@@ -316,76 +316,47 @@ impl App {
                         // Agent Loop: 反复调用 API 直到获得最终文本回复
                         loop {
                             // 2. 从 Context 获取消息列表
+                            let mut final_text = String::new();
+                            let mut tool_calls: Vec<ToolCallData> = Vec::new();
                             let messages: Vec<ApiMessage> = ctx.get_messages();
 
+                            // 3. 调用非流式 API（支持 tool_calls）
                             let request = crate::api::ChatRequest {
                                 model: client.model().to_string(),
                                 messages,
-                                stream: true,
+                                stream: false,
                                 max_tokens: Some(4096),
                                 temperature: None,
                                 tools: Some(crate::api::default_tools()),
                             };
 
-                            // 3. 调用流式 API
-                            let (round_tx, mut round_rx) = mpsc::unbounded_channel::<ApiEvent>();
-                            let client_clone = client.clone();
-                            let api_tx = event_tx.clone();
-
-                            tokio::spawn(async move {
-                                if let Err(e) = client_clone.chat_stream(request, round_tx).await {
-                                    let _ = api_tx.send(ApiEvent::Error(format!("API 错误: {e}")));
-                                }
-                            });
-
-                            // 4. 接收流式事件（最多等 60 秒）
-                            let mut final_text = String::new();
-                            let mut tool_calls: Vec<ToolCallData> = Vec::new();
-
-                            let timeout_dur = Duration::from_secs(60);
-                            let round_start = Instant::now();
-
-                            loop {
-                                let timeout = tokio::time::sleep(timeout_dur.saturating_sub(round_start.elapsed()));
-                                tokio::pin!(timeout);
-
-                                tokio::select! {
-                                    maybe_event = round_rx.recv() => {
-                                        match maybe_event {
-                                            Some(event) => {
-                                                match event {
-                                                    ApiEvent::StreamChunk(t) => {
-                                                        final_text.push_str(&t);
-                                                        let _ = event_tx.send(ApiEvent::StreamChunk(t));
-                                                    }
-                                                    ApiEvent::ToolCalls(calls) => {
-                                                        tool_calls = calls;
-                                                    }
-                                                    ApiEvent::Balance(b) => {
-                                                        let _ = event_tx.send(ApiEvent::Balance(b));
-                                                    }
-                                                    ApiEvent::Usage(u) => {
-                                                        let _ = event_tx.send(ApiEvent::Usage(u));
-                                                    }
-                                                    ApiEvent::Error(e) => {
-                                                        let _ = event_tx.send(ApiEvent::Error(e));
-                                                    }
-                                                    ApiEvent::Done => {
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                            None => {
-                                                break; // 通道关闭
+                            match client.chat(request).await {
+                                Ok(response) => {
+                                    if let Some(choice) = response.choices.first() {
+                                        final_text = choice.message.content.clone().unwrap_or_default();
+                                        // 转发非流式文本到 TUI
+                                        if !final_text.is_empty() {
+                                            let _ = event_tx.send(ApiEvent::StreamChunk(final_text.clone()));
+                                        }
+                                        // 从响应中提取 tool_calls
+                                        if let Some(ref calls) = choice.message.tool_calls {
+                                            let tool_data: Vec<ToolCallData> = calls.iter().map(|tc| ToolCallData {
+                                                id: tc.id.clone(),
+                                                name: tc.function.name.clone(),
+                                                arguments: tc.function.arguments.clone(),
+                                            }).collect();
+                                            if !tool_data.is_empty() {
+                                                let _ = event_tx.send(ApiEvent::ToolCalls(tool_data));
                                             }
                                         }
                                     }
-                                    _ = &mut timeout => {
-                                        let _ = event_tx.send(ApiEvent::Error("请求超时 (60s)".into()));
-                                        break;
-                                    }
+                                }
+                                Err(e) => {
+                                    let _ = event_tx.send(ApiEvent::Error(format!("API 错误: {e}")));
                                 }
                             }
+
+                            // 4. final_text 已在非流式 API 中设置
 
                             // 5. 如果有工具调用 → 执行 → 继续循环
                             if !tool_calls.is_empty() {

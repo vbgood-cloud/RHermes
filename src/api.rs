@@ -158,6 +158,22 @@ pub struct Choice {
 pub struct ResponseMessage {
     pub role: String,
     pub content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Option<Vec<ResponseToolCall>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResponseToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: Option<String>,
+    pub function: ResponseToolFunction,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResponseToolFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 /// Token 用量
