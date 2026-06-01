@@ -22,10 +22,15 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+
 use crate::api::{ApiEvent, ApiMessage, DeepSeekClient, ToolCallData, Usage};
 use crate::config::Config;
 use crate::context::Context;
 use crate::dispatcher::ToolDispatcher;
+use crate::memory::MemorySystem;
 use crate::tool::ToolCall;
 use serde::{Deserialize, Serialize};
 
@@ -53,7 +58,7 @@ pub enum Role {
 // 消息结构
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
     pub content: String,
@@ -198,6 +203,12 @@ pub struct App {
     /// 工具调度器
     dispatcher: Option<ToolDispatcher>,
 
+    /// 长期记忆系统
+    memory: Option<Arc<Mutex<MemorySystem>>>,
+
+    /// 会话持久化路径
+    session_path: PathBuf,
+
     // ---- 响应计时 ----
     /// 上次响应耗时（秒），0 = 无响应
     last_response_secs: u64,
@@ -216,11 +227,31 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
 
 impl App {
     /// 创建新的 App 实例
-    pub fn new(mode: &str, dispatcher: ToolDispatcher) -> Self {
+    /// 创建新的 App 实例
+    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, resume: bool) -> Self {
         let (_event_tx, event_rx) = mpsc::unbounded_channel();
 
+        // 会话保存路径
+        let session_path = if mode == "portable" {
+            // 可移动模式：exe 所在目录的 home/
+            let exe = std::env::current_exe().ok();
+            exe.and_then(|p| p.parent().map(|p| p.join("home").join("session.json")))
+                .unwrap_or_else(|| PathBuf::from("session.json"))
+        } else {
+            PathBuf::from("session.json")
+        };
+
+        // 加载上一次会话（仅当 -r/--resume 标志）
+        let saved_messages = if resume {
+            Self::load_session(&session_path)
+        } else {
+            Vec::new()
+        };
+        let has_session = !saved_messages.is_empty();
+
         let mut app = Self {
-            messages: Vec::new(),
+            session_path,
+            messages: saved_messages,
             input: String::new(),
             cursor_pos: 0,
             scroll_offset: 0,
@@ -237,16 +268,21 @@ impl App {
             streaming_buffer: String::new(),
             context: None,
             dispatcher: Some(dispatcher),
+            memory,
             last_response_secs: 0,
             response_start: None,
         };
         app.stats.mode = mode.to_string();
 
-        app.messages.push(Message::system(format!(
-            "RHermes v{} 已启动 · 部署模式: {} · 输入 /help 查看命令",
-            env!("CARGO_PKG_VERSION"),
-            mode,
-        )));
+        if has_session {
+            app.messages.push(Message::system("📂 已恢复上一次会话内容（输入 /clear 清空）"));
+        } else {
+            app.messages.push(Message::system(format!(
+                "RHermes v{} 已启动 · 部署模式: {} · 输入 /help 查看命令",
+                env!("CARGO_PKG_VERSION"),
+                mode,
+            )));
+        }
 
         app
     }
@@ -286,6 +322,7 @@ impl App {
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
         let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
+        let memory = self.memory.take();
 
         // 后台 Agent Loop
         tokio::spawn(async move {
@@ -323,6 +360,27 @@ impl App {
                             // 2. 从 Context 获取消息列表
                             let mut final_text = String::new();
                             let mut tool_calls: Vec<ToolCallData> = Vec::new();
+
+                            // 2a. 记忆召回：搜索相关记忆注入 Context
+                            if let Some(ref mem) = memory {
+                                if let Ok(mut mem_lock) = mem.lock() {
+                                    if let Ok(results) = mem_lock.search(&msg, 5) {
+                                        if !results.is_empty() {
+                                            let recall: String = results.iter()
+                                                .map(|e| format!("- [{}] {}", e.memory_type.as_str(), e.content))
+                                                .collect::<Vec<_>>()
+                                                .join("\n");
+                                            tracing::debug!("召回 {} 条记忆", results.len());
+                                            // 注入系统提示（写日志而非 scratch，避免污染 API 请求）
+                                            ctx.push_to_log(crate::context::Message::new(
+                                                crate::tui::Role::System,
+                                                &format!("【相关记忆】\n{}", recall),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+
                             let messages: Vec<ApiMessage> = ctx.get_messages();
 
                             // 3. 调用非流式 API（支持 tool_calls）
@@ -423,6 +481,20 @@ impl App {
                                     &final_text,
                                 ));
                             }
+                            // 6a. 记忆写入：记录关键内容到长期记忆
+                            if !final_text.is_empty() && !msg.is_empty() {
+                                if let Some(ref mem) = memory {
+                                    if let Ok(mut mem_lock) = mem.lock() {
+                                        let tags = vec!["auto", "conversation"];
+                                        let _ = mem_lock.remember(
+                                            &format!("【问题】{}\n【回答】{}", msg, final_text),
+                                            &tags,
+                                            "rhermes",
+                                        );
+                                        tracing::debug!("记忆已写入");
+                                    }
+                                }
+                            }
                             let _ = event_tx.send(ApiEvent::Done);
 
                             break; // 退出 Agent Loop
@@ -496,9 +568,20 @@ impl App {
                     self.stats.balance_cny = balance;
                 }
                 ApiEvent::ToolCalls(calls) => {
-                    let count = calls.len();
+                    let details: String = calls.iter()
+                        .map(|c| {
+                            // 提取参数摘要（截断过长参数）
+                            let args_preview: String = c.arguments.chars().take(60).collect();
+                            if args_preview.len() < c.arguments.len() {
+                                format!("{}({}…)", c.name, args_preview)
+                            } else {
+                                format!("{}({})", c.name, args_preview)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     self.messages.push(Message::system(format!(
-                        "🔧 正在执行 {} 个工具调用...", count
+                        "🔧 正在执行: {}", details
                     )));
                     self.running = true;
                 }
@@ -520,6 +603,7 @@ impl App {
     fn handle_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+                self.save_session();
                 self.should_quit = true;
             }
 
@@ -534,10 +618,16 @@ impl App {
 
                 // 处理命令
                 match input.as_str() {
-                    "/quit" | "/exit" => self.should_quit = true,
+                    "/quit" | "/exit" => {
+                        self.save_session();
+                        self.should_quit = true;
+                    },
                     "/clear" => {
+                        self.save_session();
                         self.messages.clear();
                         self.messages.push(Message::system("对话已清空"));
+                        // 删除会话文件
+                        let _ = std::fs::remove_file(&self.session_path);
                     }
                     "/help" | "/?" => {
                         let help_text = "\
@@ -1076,6 +1166,44 @@ impl App {
         frame.render_widget(bar, popup_area);
     }
 
+    /// 从文件加载会话
+    fn load_session(path: &PathBuf) -> Vec<Message> {
+        match std::fs::read_to_string(path) {
+            Ok(json) => {
+                match serde_json::from_str::<Vec<Message>>(&json) {
+                    Ok(msgs) => {
+                        tracing::info!("已加载会话: {} 条消息", msgs.len());
+                        msgs
+                    }
+                    Err(e) => {
+                        tracing::warn!("会话文件解析失败: {e}");
+                        Vec::new()
+                    }
+                }
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// 将会话保存到文件
+    fn save_session(&self) {
+        if self.messages.is_empty() {
+            return;
+        }
+        match serde_json::to_string(&self.messages) {
+            Ok(json) => {
+                if let Some(parent) = self.session_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::write(&self.session_path, &json) {
+                    Ok(_) => tracing::debug!("会话已保存: {} 条消息", self.messages.len()),
+                    Err(e) => tracing::warn!("会话保存失败: {e}"),
+                }
+            }
+            Err(e) => tracing::warn!("会话序列化失败: {e}"),
+        }
+    }
+
     fn render_input_bar(&self, frame: &mut Frame, area: Rect) {
         let input_style = if self.running {
             Style::default()
@@ -1135,7 +1263,7 @@ mod tests {
 
     #[test]
     fn test_app_new_creates_welcome_messages() {
-        let app = App::new("portable", test_dispatcher());
+        let app = App::new("portable", test_dispatcher(), None, false);
         assert!(!app.messages.is_empty());
         assert!(app.messages[0].content.contains("RHermes v"));
         assert!(app.messages[0].content.contains("portable"));
@@ -1143,7 +1271,7 @@ mod tests {
 
     #[test]
     fn test_app_initial_state() {
-        let app = App::new("traditional", test_dispatcher());
+        let app = App::new("traditional", test_dispatcher(), None, false);
         assert!(!app.should_quit);
         assert!(!app.running);
         assert!(app.input.is_empty());
@@ -1186,7 +1314,7 @@ mod tests {
 
     #[test]
     fn test_handle_key_enter_without_api() {
-        let mut app = App::new("test", test_dispatcher());
+        let mut app = App::new("test", test_dispatcher(), None, false);
         app.input = "hello".into();
         app.cursor_pos = 5;
 
@@ -1202,14 +1330,14 @@ mod tests {
 
     #[test]
     fn test_handle_key_quit() {
-        let mut app = App::new("test", test_dispatcher());
+        let mut app = App::new("test", test_dispatcher(), None, false);
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_handle_key_text_input() {
-        let mut app = App::new("test", test_dispatcher());
+        let mut app = App::new("test", test_dispatcher(), None, false);
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.input, "a");
         assert_eq!(app.cursor_pos, 1);

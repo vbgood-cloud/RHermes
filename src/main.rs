@@ -18,6 +18,8 @@ mod tui;
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
 use dispatcher::ToolDispatcher;
@@ -34,6 +36,10 @@ use tui::App;
 #[command(about = "Reasonix x Hermes — 自进化的终端 AI 编程 Agent", long_about = None)]
 #[command(version)]
 struct Cli {
+    /// 恢复上一次会话内容
+    #[arg(short = 'r', long)]
+    resume: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -90,7 +96,7 @@ async fn main() {
         }
         _ => {
             // 默认：启动编程 Agent (code)
-            run_code().await;
+            run_code(cli.resume).await;
         }
     }
 }
@@ -99,7 +105,7 @@ async fn main() {
 // code 子命令
 // ---------------------------------------------------------------------------
 
-async fn run_code() {
+async fn run_code(resume: bool) {
     // 检测部署模式并初始化路径管理器
     let path_mgr = PathManager::detect();
 
@@ -135,8 +141,21 @@ async fn run_code() {
         }
     };
 
+    // 初始化记忆系统
+    let memory_path = path_mgr.data_root().join("memories.db");
+    let memory = match memory::MemorySystem::open(&memory_path) {
+        Ok(m) => {
+            tracing::info!("记忆系统已就绪: {}", memory_path.display());
+            Some(Arc::new(Mutex::new(m)))
+        }
+        Err(e) => {
+            tracing::warn!("记忆系统初始化失败: {e}");
+            None
+        }
+    };
+
     // 创建 TUI
-    let mut app = App::new(path_mgr.mode().name(), dispatcher);
+    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, resume);
 
     // 如果已有 API Key，初始化 API 客户端
     if config.is_configured() {
