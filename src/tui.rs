@@ -338,29 +338,52 @@ impl App {
                                 }
                             });
 
-                            // 4. 接收流式事件
+                            // 4. 接收流式事件（最多等 60 秒）
                             let mut final_text = String::new();
                             let mut tool_calls: Vec<ToolCallData> = Vec::new();
 
-                            while let Some(event) = round_rx.recv().await {
-                                match event {
-                                    ApiEvent::StreamChunk(t) => {
-                                        final_text.push_str(&t);
-                                        let _ = event_tx.send(ApiEvent::StreamChunk(t));
+                            let timeout_dur = Duration::from_secs(60);
+                            let round_start = Instant::now();
+
+                            loop {
+                                let timeout = tokio::time::sleep(timeout_dur.saturating_sub(round_start.elapsed()));
+                                tokio::pin!(timeout);
+
+                                tokio::select! {
+                                    maybe_event = round_rx.recv() => {
+                                        match maybe_event {
+                                            Some(event) => {
+                                                match event {
+                                                    ApiEvent::StreamChunk(t) => {
+                                                        final_text.push_str(&t);
+                                                        let _ = event_tx.send(ApiEvent::StreamChunk(t));
+                                                    }
+                                                    ApiEvent::ToolCalls(calls) => {
+                                                        tool_calls = calls;
+                                                    }
+                                                    ApiEvent::Balance(b) => {
+                                                        let _ = event_tx.send(ApiEvent::Balance(b));
+                                                    }
+                                                    ApiEvent::Usage(u) => {
+                                                        let _ = event_tx.send(ApiEvent::Usage(u));
+                                                    }
+                                                    ApiEvent::Error(e) => {
+                                                        let _ = event_tx.send(ApiEvent::Error(e));
+                                                    }
+                                                    ApiEvent::Done => {
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            None => {
+                                                break; // 通道关闭
+                                            }
+                                        }
                                     }
-                                    ApiEvent::ToolCalls(calls) => {
-                                        tool_calls = calls;
+                                    _ = &mut timeout => {
+                                        let _ = event_tx.send(ApiEvent::Error("请求超时 (60s)".into()));
+                                        break;
                                     }
-                                    ApiEvent::Balance(b) => {
-                                        let _ = event_tx.send(ApiEvent::Balance(b));
-                                    }
-                                    ApiEvent::Usage(u) => {
-                                        let _ = event_tx.send(ApiEvent::Usage(u));
-                                    }
-                                    ApiEvent::Error(e) => {
-                                        let _ = event_tx.send(ApiEvent::Error(e));
-                                    }
-                                    ApiEvent::Done => {}
                                 }
                             }
 
@@ -458,10 +481,6 @@ impl App {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
                 ApiEvent::StreamChunk(chunk) => {
-                    // 首次收到 chunk 时启动计时
-                    if self.response_start.is_none() {
-                        self.response_start = Some(Instant::now());
-                    }
                     self.streaming_buffer.push_str(&chunk);
                     self.running = true;
                 }
@@ -549,6 +568,10 @@ impl App {
                         if let Some(tx) = &self.cmd_tx {
                             let _ = tx.send(AppCommand::SendMessage(input));
                             self.running = true;
+                            self.response_start = Some(Instant::now());
+                            // 清空旧的计时，显示等待状态
+                            self.streaming_buffer = String::new();
+                            self.messages.push(Message::system("⏳ 发送请求中..."));
                         } else {
                             // 无 API 配置时的模拟模式
                             if let Some(dispatcher) = &self.dispatcher {

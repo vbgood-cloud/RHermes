@@ -5,6 +5,7 @@
 //! - 自动重试（rate limit / 超时 / 网络错误）
 //! - Token 用量追踪
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -313,6 +314,8 @@ impl DeepSeekClient {
         // 解析 SSE 流
         let mut buffer = String::new();
         let mut stream = response.bytes_stream();
+        // 工具调用累计器（跨 chunk 合并）
+        let _tool_acc: HashMap<i32, ToolCallData> = HashMap::new();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(ApiError::Request)?;
@@ -341,6 +344,7 @@ impl DeepSeekClient {
                                 }
 
                                 if let Some(choice) = chunk_data.choices.first() {
+                                    // 转发文本块
                                     let content = choice.delta.content.as_deref().unwrap_or("");
                                     if !content.is_empty() {
                                         if tx
@@ -350,19 +354,15 @@ impl DeepSeekClient {
                                             return Ok(());
                                         }
                                     }
-                                    // 检测工具调用结束
-                                    if let Some(ref reason) = choice.finish_reason {
-                                        if reason == "tool_calls" {
-                                            if let Some(ref calls) = choice.delta.tool_calls {
-                                                let tool_data: Vec<ToolCallData> = calls.iter().map(|tc| ToolCallData {
-                                                    id: tc.id.clone().unwrap_or_default(),
-                                                    name: tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default(),
-                                                    arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()).unwrap_or_default(),
-                                                }).collect();
-                                                if !tool_data.is_empty() {
-                                                    let _ = tx.send(ApiEvent::ToolCalls(tool_data));
-                                                }
-                                            }
+                                    // 转发工具调用（每个 chunk 都可能携带部分数据）
+                                    if let Some(ref calls) = choice.delta.tool_calls {
+                                        let tool_data: Vec<ToolCallData> = calls.iter().map(|tc| ToolCallData {
+                                            id: tc.id.clone().unwrap_or_default(),
+                                            name: tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default(),
+                                            arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()).unwrap_or_default(),
+                                        }).collect();
+                                        if !tool_data.is_empty() {
+                                            let _ = tx.send(ApiEvent::ToolCalls(tool_data));
                                         }
                                     }
                                 }
