@@ -14,7 +14,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, BorderType, Borders, Paragraph, Wrap},
@@ -563,11 +563,12 @@ impl App {
         self.render_stats_bar(frame, chunks[2]);
         // 命令补全弹窗（位于输入栏上方）
         if !self.cmd_suggestions.is_empty() {
+            let height = self.cmd_suggestions.len().min(6) as u16;
             let popup_area = Rect {
                 x: chunks[3].x,
-                y: chunks[3].y.saturating_sub(1),
-                width: chunks[3].width,
-                height: 1,
+                y: chunks[3].y.saturating_sub(height),
+                width: 20,
+                height,
             };
             self.render_suggestion_popup(frame, popup_area);
         }
@@ -754,33 +755,40 @@ impl App {
         frame.render_widget(bar, area);
     }
 
-    /// 命令补全弹窗（显示在输入栏上方）
+    /// 命令补全弹窗（纵向列表，显示在输入栏上方）
     fn render_suggestion_popup(&self, frame: &mut Frame, area: Rect) {
         if self.cmd_suggestions.is_empty() {
             return;
         }
         let idx = self.suggestion_idx.min(self.cmd_suggestions.len() - 1);
-        let _selected = self.cmd_suggestions[idx];
 
-        let mut spans = Vec::new();
+        // 构建纵向列表
+        let mut lines = Vec::new();
         for (i, cmd) in self.cmd_suggestions.iter().enumerate() {
             if i == idx {
-                spans.push(Span::styled(
-                    format!("▶{cmd} "),
+                lines.push(Line::from(Span::styled(
+                    format!("▶ {cmd}"),
                     Style::default()
                         .fg(Color::Cyan)
                         .bg(Color::DarkGray)
                         .add_modifier(Modifier::BOLD),
-                ));
+                )));
             } else {
-                spans.push(Span::styled(
-                    format!(" {cmd} "),
+                lines.push(Line::from(Span::styled(
+                    format!("  {cmd}"),
                     Style::default().fg(Color::White),
-                ));
+                )));
             }
         }
 
-        let bar = Paragraph::new(Line::from(spans))
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(" 命令 ")
+            .title_alignment(Alignment::Left);
+
+        let bar = Paragraph::new(Text::from(lines))
+            .block(block)
             .style(Style::default().bg(Color::Black));
         frame.render_widget(bar, area);
     }
