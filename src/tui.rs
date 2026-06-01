@@ -191,8 +191,14 @@ pub struct App {
     dispatcher: Option<ToolDispatcher>,
 }
 
-/// 可用命令列表（用于 / 补全）
-const ALL_COMMANDS: &[&str] = &["/help", "/clear", "/quit", "/exit", "/tool"];
+/// 可用命令列表（命令, 说明）
+const ALL_COMMANDS: &[(&str, &str)] = &[
+    ("/help",   "显示此帮助"),
+    ("/clear",  "清空对话"),
+    ("/quit",   "退出程序"),
+    ("/exit",   "退出程序"),
+    ("/tool",   "查看工具信息"),
+];
 
 impl App {
     /// 创建新的 App 实例
@@ -505,17 +511,17 @@ impl App {
             let lower = input.to_lowercase();
             let matches: Vec<&'static str> = ALL_COMMANDS
                 .iter()
-                .filter(|cmd| cmd.starts_with(&lower))
-                .copied()
+                .filter(|(cmd, _)| cmd.starts_with(&lower))
+                .map(|(cmd, _)| *cmd)
                 .collect();
             if matches.is_empty() {
-                self.cmd_suggestions = ALL_COMMANDS.to_vec();
+                self.cmd_suggestions = ALL_COMMANDS.iter().map(|(cmd, _)| *cmd).collect();
             } else {
                 self.cmd_suggestions = matches;
             }
             self.suggestion_idx = 0;
         } else if input == "/" {
-            self.cmd_suggestions = ALL_COMMANDS.to_vec();
+            self.cmd_suggestions = ALL_COMMANDS.iter().map(|(cmd, _)| *cmd).collect();
             self.suggestion_idx = 0;
         } else {
             self.cmd_suggestions.clear();
@@ -762,24 +768,51 @@ impl App {
         }
         let idx = self.suggestion_idx.min(self.cmd_suggestions.len() - 1);
 
-        // 构建纵向列表
+        // 构建纵向列表（命令 + 说明）
         let mut lines = Vec::new();
         for (i, cmd) in self.cmd_suggestions.iter().enumerate() {
-            if i == idx {
-                lines.push(Line::from(Span::styled(
-                    format!("▶ {cmd}"),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .bg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                )));
+            // 查找命令对应的说明
+            let desc = ALL_COMMANDS
+                .iter()
+                .find(|(c, _)| c == cmd)
+                .map(|(_, d)| *d)
+                .unwrap_or("");
+
+            let style = if i == idx {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                lines.push(Line::from(Span::styled(
-                    format!("  {cmd}"),
-                    Style::default().fg(Color::White),
-                )));
-            }
+                Style::default().fg(Color::White)
+            };
+
+            let prefix = if i == idx { "▶" } else { " " };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} {}", prefix, cmd), style),
+                Span::styled(format!("  — {}", desc), Style::default().fg(Color::DarkGray)),
+            ]));
         }
+
+        // 计算弹窗宽度（命令 + 描述 + 边距）
+        let max_width = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.len())
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(30)
+            .min(60) as u16;
+
+        let popup_area = Rect {
+            x: area.x,
+            y: area.y,
+            width: max_width + 4, // +4 for borders
+            height: area.height,
+        };
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -790,7 +823,7 @@ impl App {
         let bar = Paragraph::new(Text::from(lines))
             .block(block)
             .style(Style::default().bg(Color::Black));
-        frame.render_widget(bar, area);
+        frame.render_widget(bar, popup_area);
     }
 
     fn render_input_bar(&self, frame: &mut Frame, area: Rect) {
