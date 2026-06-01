@@ -46,7 +46,7 @@ pub async fn run_sub_agent(
     let client = DeepSeekClient::new(config.clone());
 
     let request = ChatRequest {
-        model: config.model.clone(),
+        model: config.api.model.clone(),
         messages: vec![
             crate::api::ApiMessage {
                 role: "system".into(),

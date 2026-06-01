@@ -133,6 +133,35 @@ pub fn default_tools() -> Vec<ToolDef> {
         ToolDef {
             tool_type: "function".into(),
             function: ToolFunction {
+                name: "web_search".into(),
+                description: "搜索网络获取最新信息，无需 API Key".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "搜索关键词"}
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "web_fetch".into(),
+                description: "获取网页内容并提取可读文本".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string", "description": "要获取的网页 URL"},
+                        "max_chars": {"type": "integer", "description": "最大字符数（默认 5000）"}
+                    },
+                    "required": ["url"]
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
                 name: "delegate_task".into(),
                 description: "将子任务委托给独立的子 Agent 执行，返回分析结果".into(),
                 parameters: serde_json::json!({
@@ -271,7 +300,7 @@ pub struct DeepSeekClient {
 impl DeepSeekClient {
     /// 从配置创建客户端
     pub fn new(config: Config) -> Self {
-        let timeout = Duration::from_secs(config.timeout_secs);
+        let timeout = Duration::from_secs(config.request.timeout_secs);
 
         let http = reqwest::Client::builder()
             .timeout(timeout)
@@ -285,8 +314,7 @@ impl DeepSeekClient {
     pub fn with_params(api_key: String, base_url: String, model: String) -> Self {
         let config = Config {
             api_key,
-            model,
-            base_url,
+            api: crate::core::ApiConfig { model, base_url },
             ..Default::default()
         };
         Self::new(config)
@@ -294,7 +322,7 @@ impl DeepSeekClient {
 
     /// 聊天完成（非流式）
     pub async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ApiError> {
-        let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let url = format!("{}/chat/completions", self.config.api.base_url.trim_end_matches('/'));
 
         let mut req = request;
         req.stream = false;
@@ -323,7 +351,7 @@ impl DeepSeekClient {
         request: ChatRequest,
         tx: tokio::sync::mpsc::UnboundedSender<ApiEvent>,
     ) -> Result<(), ApiError> {
-        let url = format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'));
+        let url = format!("{}/chat/completions", self.config.api.base_url.trim_end_matches('/'));
 
         let mut req = request;
         req.stream = true;
@@ -416,7 +444,7 @@ impl DeepSeekClient {
 
     /// 带自动重试的聊天完成
     pub async fn chat_with_retry(&self, request: ChatRequest) -> Result<ChatResponse, ApiError> {
-        let max_retries = self.config.max_retries;
+        let max_retries = self.config.request.max_retries;
         let mut last_error = None;
 
         for attempt in 0..=max_retries {
@@ -444,7 +472,7 @@ impl DeepSeekClient {
 
     /// 查询账户余额（人民币元）
     pub async fn get_balance(&self) -> Result<f64, ApiError> {
-        let url = format!("{}/user/balance", self.config.base_url.trim_end_matches('/'));
+        let url = format!("{}/user/balance", self.config.api.base_url.trim_end_matches('/'));
         let resp = self
             .http
             .get(&url)
@@ -469,7 +497,7 @@ impl DeepSeekClient {
 
     /// 获取当前使用的模型名
     pub fn model(&self) -> &str {
-        &self.config.model
+        &self.config.api.model
     }
 
     // ---- 辅助方法 ----

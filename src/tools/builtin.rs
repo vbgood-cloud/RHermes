@@ -361,6 +361,256 @@ impl Tool for RunCommand {
 }
 
 // ---------------------------------------------------------------------------
+// web_search — 非并行安全（网络请求）
+// ---------------------------------------------------------------------------
+
+/// 搜索网络信息
+///
+/// 使用 DuckDuckGo Instant Answer API，无需 API Key。
+/// 返回搜索结果摘要和相关链接。
+pub struct WebSearch;
+
+#[async_trait]
+impl Tool for WebSearch {
+    fn name(&self) -> &'static str {
+        "web_search"
+    }
+    fn description(&self) -> &'static str {
+        "搜索网络获取最新信息"
+    }
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::required("query", ParamType::String, "搜索关键词"),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let query = get_string_arg(&args, "query")?;
+        let url = format!(
+            "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
+            urlencoding(&query)
+        );
+
+        let resp = reqwest::get(&url)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("搜索请求失败: {e}")))?;
+
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("解析搜索结果失败: {e}")))?;
+
+        let mut results = Vec::new();
+
+        // 摘要
+        if let Some(abstract_text) = body["AbstractText"].as_str() {
+            if !abstract_text.is_empty() {
+                results.push(format!("📝 摘要: {abstract_text}"));
+                if let Some(src) = body["AbstractSource"].as_str() {
+                    results.push(format!("   来源: {src}"));
+                }
+                if let Some(url) = body["AbstractURL"].as_str() {
+                    results.push(format!("   链接: {url}"));
+                }
+                results.push(String::new());
+            }
+        }
+
+        // 答案
+        if let Some(answer) = body["Answer"].as_str() {
+            if !answer.is_empty() {
+                results.push(format!("💡 答案: {answer}"));
+                if let Some(url) = body["AnswerURL"].as_str() {
+                    if !url.is_empty() {
+                        results.push(format!("   链接: {url}"));
+                    }
+                }
+                results.push(String::new());
+            }
+        }
+
+        // 相关结果
+        if let Some(topics) = body["RelatedTopics"].as_array() {
+            for topic in topics.iter().take(8) {
+                if let Some(text) = topic["Text"].as_str() {
+                    if let Some(url) = topic["FirstURL"].as_str() {
+                        results.push(format!("🔗 {text}"));
+                        results.push(format!("   {url}"));
+                    } else {
+                        results.push(format!("🔗 {text}"));
+                    }
+                }
+                // 处理嵌套的 Topics
+                if let Some(sub_topics) = topic["Topics"].as_array() {
+                    for sub in sub_topics.iter().take(3) {
+                        if let Some(text) = sub["Text"].as_str() {
+                            if let Some(url) = sub["FirstURL"].as_str() {
+                                results.push(format!("  • {text}"));
+                                results.push(format!("    {url}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if results.is_empty() {
+            Ok(format!("未找到与「{query}」相关的搜索结果"))
+        } else {
+            Ok(format!("搜索结果「{query}」:\n{}", results.join("\n")))
+        }
+    }
+}
+
+/// URL 编码（简单版本，仅编码中文和特殊字符）
+fn urlencoding(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            b' ' => result.push_str("%20"),
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
+// web_fetch — 非并行安全（网络请求）
+// ---------------------------------------------------------------------------
+
+/// 获取网页内容
+///
+/// 下载指定 URL 的内容并提取可读文本。
+pub struct WebFetch;
+
+#[async_trait]
+impl Tool for WebFetch {
+    fn name(&self) -> &'static str {
+        "web_fetch"
+    }
+    fn description(&self) -> &'static str {
+        "获取网页内容并提取可读文本"
+    }
+    fn parallel_safe(&self) -> bool {
+        false
+    }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::required("url", ParamType::String, "要获取的网页 URL"),
+            ParamDef::optional("max_chars", ParamType::Integer, "最大字符数（默认 5000）"),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let url = get_string_arg(&args, "url")?;
+        let max_chars = args
+            .get("max_chars")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5000) as usize;
+
+        let resp = reqwest::get(&url)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("请求失败: {e}")))?;
+
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("读取响应失败: {e}")))?;
+
+        // 提取可读文本（简单 HTML 标签剥离）
+        let text = if content_type.contains("text/html") {
+            strip_html_tags(&body)
+        } else {
+            body.clone()
+        };
+
+        // 截断
+        let text: String = text.chars().take(max_chars).collect();
+        let total_len = body.len();
+        let text_len = text.len();
+
+        let extra = if text_len < total_len {
+            format!("\n...(显示 {} 字符，共 {} 字符)", text_len, total_len)
+        } else {
+            String::new()
+        };
+        Ok(format!(
+            "[{}] HTTP {status} · {content_type}\n{}{}",
+            url, text, extra,
+        ))
+    }
+}
+
+/// 简单的 HTML 标签剥离
+fn strip_html_tags(html: &str) -> String {
+    let mut result = String::with_capacity(html.len());
+    let mut in_tag = false;
+    let mut in_script = false;
+    let mut in_style = false;
+
+    let lower = html.to_lowercase();
+    let bytes = html.as_bytes();
+    let lower_bytes = lower.as_bytes();
+
+    let mut i = 0;
+    while i < bytes.len() {
+        if !in_tag && bytes[i] == b'<' {
+            // 检测 <script 和 <style
+            let rest_lower = &lower[i..];
+            in_script = rest_lower.starts_with("<script");
+            in_style = rest_lower.starts_with("<style");
+            in_tag = true;
+            i += 1;
+            continue;
+        }
+        if in_tag && bytes[i] == b'>' {
+            // 检测 </script> 和 </style>
+            if (in_script && lower_bytes[i.saturating_sub(8)..=i].windows(9).any(|w| w == b"</script>"))
+                || (in_style && lower_bytes[i.saturating_sub(6)..=i].windows(7).any(|w| w == b"</style>"))
+            {
+                in_script = false;
+                in_style = false;
+            }
+            in_tag = false;
+            i += 1;
+            if !in_script && !in_style {
+                result.push(' ');
+            }
+            continue;
+        }
+        if in_tag || in_script || in_style {
+            i += 1;
+            continue;
+        }
+        // 合并多个空白
+        if bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r' {
+            if !result.ends_with(' ') {
+                result.push(' ');
+            }
+        } else {
+            result.push(bytes[i] as char);
+        }
+        i += 1;
+    }
+
+    result.trim().to_string()
+}
+
+// ---------------------------------------------------------------------------
 // delegate_task — 非并行安全（网络请求）
 // ---------------------------------------------------------------------------
 
@@ -430,6 +680,8 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(Glob)
         .register(WriteFile)
         .register(RunCommand)
+        .register(WebSearch)
+        .register(WebFetch)
         .register(DelegateTask)
 }
 
@@ -471,12 +723,14 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 6);
+        assert_eq!(reg.len(), 8);
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());
         assert!(reg.get("search_content").is_some());
         assert!(reg.get("glob").is_some());
+        assert!(reg.get("web_search").is_some());
+        assert!(reg.get("web_fetch").is_some());
         assert!(reg.get("delegate_task").is_some());
     }
 

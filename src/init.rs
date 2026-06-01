@@ -31,7 +31,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     if existing_config.is_configured() {
         println!("⚠ 检测到已有配置:");
         println!("   API Key: sk-...{}", &existing_config.api_key[existing_config.api_key.len().saturating_sub(4)..]);
-        println!("   模型:    {}", existing_config.model);
+        println!("   模型:    {}", existing_config.api.model);
         println!();
 
         if !Confirm::with_theme(&ColorfulTheme::default())
@@ -169,8 +169,10 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     // ── 保存配置 ──
     let config = Config {
         api_key: api_key.clone(),
-        model,
-        base_url,
+        api: crate::core::ApiConfig {
+            model,
+            base_url,
+        },
         ..Default::default()
     };
 
@@ -197,7 +199,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("│  数据目录: {}", path_mgr.data_root().display());
     println!("│  配置文件: {}", config_path.display());
     println!("│  密钥文件: {}", env_path.display());
-    println!("│  模型:     {}", config.model);
+    println!("│  模型:     {}", config.api.model);
     println!("│  API Key:  sk-...{}", &api_key[api_key.len().saturating_sub(4)..]);
     println!("├────────────────────────────────────────────┤");
     println!("│  ✅ API Key 已保存到 .env 文件              │");

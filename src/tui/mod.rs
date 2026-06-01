@@ -294,7 +294,7 @@ impl App {
 
     /// 初始化 API 客户端 + Agent Loop
     pub fn init_api(&mut self, config: Config, path_mgr: &crate::core::PathManager) {
-        self.stats.model = config.model.clone();
+        self.stats.model = config.api.model.clone();
 
         // 构建系统提示词
         let system_prompt = format!(
@@ -324,6 +324,7 @@ impl App {
         self.cmd_tx = Some(cmd_tx);
 
         // 构建 Agent Loop 所需的所有组件
+        let max_rounds = config.agent.max_rounds;
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
         let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
@@ -354,13 +355,13 @@ impl App {
                         // 1. 用户消息 → Context
                         ctx.push_to_log(crate::core::Message::new(crate::tui::Role::User, &msg));
 
-                        // Agent Loop: 反复调用 API 直到获得最终文本回复（最多 5 轮）
+                        // Agent Loop: 反复调用 API 直到获得最终文本回复
                         let mut round = 0u32;
                         loop {
                             round += 1;
-                            if round > 5 {
-                                tracing::warn!("Agent Loop 超过 5 轮，强制终止");
-                                let _ = event_tx.send(ApiEvent::Error("工具调用次数过多，已终止".into()));
+                            if round > max_rounds {
+                                tracing::warn!("Agent Loop 超过 {} 轮，强制终止", max_rounds);
+                                let _ = event_tx.send(ApiEvent::Error(format!("工具调用次数过多（超过 {} 轮），已终止", max_rounds)));
                                 break;
                             }
                             // 2. 从 Context 获取消息列表

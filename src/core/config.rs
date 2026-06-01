@@ -6,7 +6,7 @@
 //!
 //! `.env` 文件格式:
 //! ```env
-//! RHermES_API_KEY=sk-xxxxxxxxxxxxxxxx
+//! DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 //! ```
 
 use std::path::Path;
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 // ---- 常量 ----
 
 /// `.env` 文件中 API Key 的键名
-const ENV_KEY_NAME: &str = "RHermES_API_KEY";
+const ENV_KEY_NAME: &str = "DEEPSEEK_API_KEY";
 
 /// `.env` 文件名
 const ENV_FILE_NAME: &str = ".env";
@@ -27,19 +27,47 @@ const ENV_FILE_NAME: &str = ".env";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// DeepSeek API Key（从 .env 或 config.toml 读取，不写出到 toml）
-    #[serde(default, skip_serializing)]
+    /// DeepSeek API Key（仅从 .env 读取，不写入 config.toml）
+    #[serde(skip)]
     pub api_key: String,
 
+    /// API 配置
+    #[serde(default)]
+    pub api: ApiConfig,
+
+    /// 请求配置
+    #[serde(default)]
+    pub request: RequestConfig,
+
+    /// Agent 行为配置
+    #[serde(default)]
+    pub agent: AgentConfig,
+}
+
+/// API 相关配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiConfig {
     /// 模型名称
-    /// 可选: "deepseek-v4-flash" | "deepseek-v4-pro"
     #[serde(default = "default_model")]
     pub model: String,
 
     /// API 基础 URL
     #[serde(default = "default_base_url")]
     pub base_url: String,
+}
 
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            model: default_model(),
+            base_url: default_base_url(),
+        }
+    }
+}
+
+/// 请求相关配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestConfig {
     /// 请求超时（秒）
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
@@ -47,6 +75,31 @@ pub struct Config {
     /// 最大重试次数
     #[serde(default = "default_retries")]
     pub max_retries: u32,
+}
+
+impl Default for RequestConfig {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_timeout(),
+            max_retries: default_retries(),
+        }
+    }
+}
+
+/// Agent 行为配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Agent Loop 最大轮次（工具调用次数）
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: u32,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_rounds: default_max_rounds(),
+        }
+    }
 }
 
 // ---- 默认值 ----
@@ -67,14 +120,17 @@ fn default_retries() -> u32 {
     3
 }
 
+fn default_max_rounds() -> u32 {
+    50
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             api_key: String::new(),
-            model: default_model(),
-            base_url: default_base_url(),
-            timeout_secs: default_timeout(),
-            max_retries: default_retries(),
+            api: ApiConfig::default(),
+            request: RequestConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 }
@@ -173,10 +229,10 @@ mod tests {
     fn test_config_default() {
         let cfg = Config::default();
         assert!(cfg.api_key.is_empty());
-        assert_eq!(cfg.model, "deepseek-v4-flash");
-        assert_eq!(cfg.base_url, "https://api.deepseek.com");
-        assert_eq!(cfg.timeout_secs, 60);
-        assert_eq!(cfg.max_retries, 3);
+        assert_eq!(cfg.api.model, "deepseek-v4-flash");
+        assert_eq!(cfg.api.base_url, "https://api.deepseek.com");
+        assert_eq!(cfg.request.timeout_secs, 60);
+        assert_eq!(cfg.request.max_retries, 3);
         assert!(!cfg.is_configured());
     }
 
@@ -184,7 +240,7 @@ mod tests {
     fn test_config_load_not_found() {
         let cfg = Config::load("/nonexistent/path/config.toml").unwrap();
         assert!(cfg.api_key.is_empty()); // 返回默认
-        assert_eq!(cfg.model, "deepseek-v4-flash");
+        assert_eq!(cfg.api.model, "deepseek-v4-flash");
     }
 
     #[test]
@@ -195,7 +251,10 @@ mod tests {
 
         let cfg = Config {
             api_key: "sk-test-key-12345".into(),
-            model: "deepseek-v4-pro".into(),
+            api: ApiConfig {
+                model: "deepseek-v4-pro".into(),
+                ..Default::default()
+            },
             ..Default::default()
         };
 
@@ -213,7 +272,7 @@ mod tests {
         // 重新加载，验证 api_key 来自 .env
         let loaded = Config::load(&toml_path).unwrap();
         assert_eq!(loaded.api_key, "sk-test-key-12345");
-        assert_eq!(loaded.model, "deepseek-v4-pro");
+        assert_eq!(loaded.api.model, "deepseek-v4-pro");
         assert!(loaded.is_configured());
     }
 
@@ -231,8 +290,8 @@ mod tests {
 
         // toml 文件中不应该包含 api_key
         let content = fs::read_to_string(&toml_path).unwrap();
-        assert!(!content.contains("api_key"));
-        assert!(!content.contains("sk-secret-key"));
+        assert!(!content.contains("api_key ="), "toml 不应包含 api_key 字段");
+        assert!(!content.contains("sk-secret-key"), "toml 不应包含密钥原文");
     }
 
     #[test]
@@ -242,7 +301,7 @@ mod tests {
         let env_path = tmp.path().join(".env");
 
         // 创建一个 .env 文件
-        fs::write(&env_path, "# RHermes config\nRHermES_API_KEY=sk-from-env\n").unwrap();
+        fs::write(&env_path, "# RHermes config\nDEEPSEEK_API_KEY=sk-from-env\n").unwrap();
 
         // 创建空的 config.toml
         let cfg = Config::default();
@@ -260,7 +319,7 @@ mod tests {
 
         fs::write(
             &env_path,
-            "  RHermES_API_KEY = sk-trimmed-key  \n",
+            "  DEEPSEEK_API_KEY = sk-trimmed-key  \n",
         )
         .unwrap();
 
@@ -288,10 +347,17 @@ mod tests {
     fn test_config_roundtrip_no_api_key_in_toml() {
         let original = Config {
             api_key: "sk-test".into(),
-            model: "deepseek-v4-flash".into(),
-            base_url: "https://custom.api.com".into(),
-            timeout_secs: 120,
-            max_retries: 5,
+            api: ApiConfig {
+                model: "deepseek-v4-flash".into(),
+                base_url: "https://custom.api.com".into(),
+            },
+            request: RequestConfig {
+                timeout_secs: 120,
+                max_retries: 5,
+            },
+            agent: AgentConfig {
+                max_rounds: 50,
+            },
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();
@@ -301,7 +367,7 @@ mod tests {
         let restored: Config = toml::from_str(&toml_str).unwrap();
         // api_key 没有被序列化，所以会是默认值
         assert!(restored.api_key.is_empty());
-        assert_eq!(restored.model, "deepseek-v4-flash");
-        assert_eq!(restored.base_url, "https://custom.api.com");
+        assert_eq!(restored.api.model, "deepseek-v4-flash");
+        assert_eq!(restored.api.base_url, "https://custom.api.com");
     }
 }
