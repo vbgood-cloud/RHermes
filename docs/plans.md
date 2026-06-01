@@ -11,13 +11,13 @@
 |------|--------|------|----------|
 | **Phase 1** | 1.1 — 项目骨架 + 路径管理器 + 双模部署 | ✅ **已完成** | 2026-05-30 |
 | | 1.2 — DeepSeek API 集成 + 缓存利用 | ✅ **已完成** | 2026-05-30 |
-| | 1.3 — 并行工具调度 | ✅ **已完成** | 2026-05-30 |
-| | 1.3 — 并行工具调度 | ✅ **已完成** | 2026-05-30 |
-| | 1.4 — Tool-Call Repair Pipeline | ✅ **已完成** | 2026-05-30 |
-| | 1.4 — Tool-Call Repair Pipeline | ⏳ 待开始 | — |
-| | 1.5 — 成本控制体系 | ⏳ 待开始 | — |
-| **Phase 2** | 2.1 — 长期记忆系统 | ⏳ 待开始 | — |
-| | 2.2 — 自主 Skill 生成与进化 | ⏳ 待开始 | — |
+| | 1.3 — 并行工具调度 + 5 个内置工具 | ✅ **已完成** | 2026-05-30 |
+| | 1.4 — Tool-Call Repair Pipeline 四道工序 | ✅ **已完成** | 2026-06-01 |
+| | 1.5 — 成本控制体系 | ✅ **已完成** | 2026-06-01 |
+| | 1.6 — Agent Loop 串联（Context→API→Repair→Dispatch→循环） | ✅ **已完成** | 2026-06-01 |
+| | 1.7 — TUI 交互优化（计时器/余额/日志/搜索） | ✅ **已完成** | 2026-06-01 |
+| **Phase 2** | 2.1 — 长期记忆系统（SQLite+FTS5） | ✅ **已完成** | 2026-06-01 |
+| | 2.2 — 自主 Skill 生成与进化 | ✅ **已完成** | 2026-06-01 |
 | | 2.3 — 跨会话检索 | ⏳ 待开始 | — |
 | | 2.4 — 子 Agent 系统 | ⏳ 待开始 | — |
 | | 2.5 — 消息网关 | ⏳ 待开始 | — |
@@ -109,56 +109,96 @@ pub struct Context {
 
 ---
 
-### 里程碑 1.4 — Tool-Call Repair Pipeline（待开始）
+### 里程碑 1.4 — Tool-Call Repair Pipeline ✅ 已完成
 
-**功能需求：**
-- [ ] Flatten：参数嵌套过深时转 dot-notation
-- [ ] Scavenge：从 reasoning_content 捞取丢失的 tool-call
-- [ ] Truncation：检测不完整 JSON 并补全
-- [ ] Storm Suppression：滑动窗口去重
+**完成内容：** `src/repair.rs`
 
-**验收标准：**
-- 模型忘记发出的 tool-call 能从 reasoning 中捞回
-- 同一 tool 相同参数 3 秒内重复调用被抑制
-- 截断的 JSON 能被正确补全
+| 工序 | 说明 | 状态 |
+|------|------|------|
+| Flatten | 参数嵌套过深时转 dot-notation，dispatch 时还原 | ✅ |
+| Scavenge | 从 reasoning_content 捞取丢失的 tool-call JSON | ✅ |
+| Truncation | 检测不完整 JSON 并补全（闭括号/引号） | ✅ |
+| Storm Suppression | 滑动窗口去重，相同(tool,args) 3 秒内抑制 | ✅ |
+
+**测试覆盖：** 15 个单元测试全部通过
 
 ---
 
-### 里程碑 1.5 — 成本控制体系（待开始）
+### 里程碑 1.5 — 成本控制体系 ✅ 已完成
 
-**功能需求：**
-- [ ] Flash-First 三级预设（auto / flash / pro）
-- [ ] NEEDS_PRO 自动升级检测
-- [ ] 辅助调用强制 Flash
-- [ ] 轮次自动压缩（>3000 token 自动缩）
-- [ ] 成本实时仪表盘
+**完成内容：** `src/cost.rs`
 
-**验收标准：**
-- 普通任务跑在 flash 上
-- 遇到难题自动切 pro
-- 界面显示每轮 $ 和累计 $
+| 模块 | 说明 | 状态 |
+|------|------|------|
+| Flash-First 三级预设 | auto / flash / pro 预设 | ✅ |
+| NEEDS_PRO 自动升级 | 检测关键词自动切换 Pro 模型 | ✅ |
+| 辅助调用强制 Flash | 工具调用等辅助始终跑 Flash | ✅ |
+| 轮次自动压缩 | >3000 token 自动截断头尾 | ✅ |
+| 成本实时仪表盘 | TUI 状态栏显示本轮/累计成本 | ✅ |
+
+---
+
+### 里程碑 1.6 — Agent Loop 串联 ✅ 已完成
+
+**核心流程：**
+```
+用户输入 → Context → DeepSeek API(非流式)
+    ↓
+回复有 tool_calls? → Repair → Dispatch → 结果入 Context → 循环
+    ↓
+回复有文本? → TUI 显示 → Context 写入 → 结束
+```
+
+**关键实现：** `src/tui.rs` — `init_api()` 中的 `tokio::spawn` 后台 Agent Loop
+
+---
+
+### 里程碑 1.7 — TUI 交互优化 ✅ 已完成
+
+| 功能 | 说明 |
+|------|------|
+| 余额查询 | GET /user/balance，状态栏显示 💰 ¥xx.xx |
+| 全人民币结算 | 移除 USD，统一 ¥ 显示 |
+| 响应计时器 | ⏱ Xs 显示响应耗时 |
+| 状态图标 | 💬 空闲 / ⏳ 思考中 / 🔧 执行工具 |
+| 文件日志 | rhermes.log 记录 Agent Loop 各阶段 |
+| search_content 原生实现 | 用 regex crate 替代 rg 二进制 |
 
 ---
 
 ## 二、Phase 2 — Hermes 自进化层
 
-### 里程碑 2.1 — 长期记忆系统（待开始）
+### 里程碑 2.1 — 长期记忆系统 ✅ 已完成
 
-**功能需求：**
-- [ ] Session Memory / Working Memory / Long-term Memory 三层
-- [ ] SQLite 持久化（rusqlite）
-- [ ] Agent 驱动的记忆 Nudge 机制
-- [ ] FTS5 全文搜索
+**完成内容：** `src/memory.rs`
+
+| 功能 | 说明 | 状态 |
+|------|------|------|
+| Session Memory | 当前会话短期记忆 | ✅ |
+| Working Memory | 工作记忆（当前上下文） | ✅ |
+| Long-term Memory | SQLite 持久化长期记忆 | ✅ |
+| FTS5 全文搜索 | SQLite FTS5 全文索引 | ✅ |
+| Nudge 机制 | Agent 驱动的记忆提醒 | ✅ |
+| 访问计数 | 自动统计访问次数 | ✅ |
+
+**测试覆盖：** 11 个单元测试全部通过
 
 ---
 
-### 里程碑 2.2 — 自主 Skill 生成与进化（待开始）
+### 里程碑 2.2 — 自主 Skill 生成与进化 ✅ 已完成
 
-**功能需求：**
-- [ ] Markdown 格式 Skill（agentskills.io 兼容）
-- [ ] 任务完成后自动提取模式生成 Skill
-- [ ] Skill 使用反馈闭环 → 自动更新
-- [ ] `/skills` 浏览/搜索/启用/禁用
+**完成内容：** `src/skill.rs`
+
+| 功能 | 说明 | 状态 |
+|------|------|------|
+| Markdown 格式 | YAML frontmatter + Markdown body | ✅ |
+| inline/subagent 模式 | 内联执行或隔离子 Agent | ✅ |
+| 使用统计 | 次数/成功率/平均耗时 | ✅ |
+| 进化建议 | 基于使用数据自动优化 | ✅ |
+| CRUD | 创建/读取/更新/删除技能 | ✅ |
+| 磁盘持久化 | skills/ 目录存储 | ✅ |
+
+**测试覆盖：** 12 个单元测试全部通过
 
 ---
 
