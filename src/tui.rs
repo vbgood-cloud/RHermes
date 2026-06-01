@@ -4,7 +4,7 @@
 //! 通过 channel 与 API 客户端异步通信。
 
 use std::io::{self, stdout};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     cursor::Show,
@@ -198,6 +198,12 @@ pub struct App {
 
     /// 工具调度器
     dispatcher: Option<ToolDispatcher>,
+
+    // ---- 响应计时 ----
+    /// 上次响应耗时（秒），0 = 无响应
+    last_response_secs: u64,
+    /// 当前响应开始时间
+    response_start: Option<Instant>,
 }
 
 /// 可用命令列表（命令, 说明）
@@ -232,6 +238,8 @@ impl App {
             streaming_buffer: String::new(),
             context: None,
             dispatcher: Some(dispatcher),
+            last_response_secs: 0,
+            response_start: None,
         };
         app.stats.mode = mode.to_string();
 
@@ -450,11 +458,19 @@ impl App {
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
                 ApiEvent::StreamChunk(chunk) => {
+                    // 首次收到 chunk 时启动计时
+                    if self.response_start.is_none() {
+                        self.response_start = Some(Instant::now());
+                    }
                     self.streaming_buffer.push_str(&chunk);
                     self.running = true;
                 }
                 ApiEvent::Done => {
-                    // 流结束，将缓冲内容作为完整消息
+                    // 流结束，停止计时
+                    if let Some(start) = self.response_start.take() {
+                        self.last_response_secs = start.elapsed().as_secs();
+                    }
+                    // 将缓冲内容作为完整消息
                     let content = self.streaming_buffer.clone();
                     if !content.is_empty() {
                         self.messages.push(Message::assistant(&content));
@@ -477,6 +493,7 @@ impl App {
                     self.stats.update_from_usage(&usage);
                 }
                 ApiEvent::Error(err) => {
+                    self.response_start.take();
                     self.messages.push(Message::system(format!("⚠ {err}")));
                     self.streaming_buffer.clear();
                     self.running = false;
@@ -910,13 +927,34 @@ impl App {
             Color::Red
         };
 
+        // 响应状态
+        let timer_secs = self.last_response_secs;
+        let status_icon = if self.running && !self.streaming_buffer.is_empty() {
+            "⏳"
+        } else if self.running {
+            "🔧"
+        } else {
+            "💬"
+        };
+
         let parts = vec![
-            // 本轮成本 (USD + CNY)
+            // 响应时间 & 状态（最前面）
             Span::styled(
-                format!(" ⚡ ¥{:.4} ", s.round_cost_cny),
-                Style::default().fg(cost_color).add_modifier(Modifier::BOLD),
+                format!(" ⏱ {}s ", timer_secs),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                status_icon,
+                Style::default().fg(if self.running { Color::Yellow } else { Color::Green }),
             ),
             Span::raw(" │ "),
+
+            // 本轮成本
+            Span::styled(
+                format!("⚡ ¥{:.4} ", s.round_cost_cny),
+                Style::default().fg(cost_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("│ "),
 
             // 累计
             Span::styled(
@@ -927,19 +965,15 @@ impl App {
 
             // Token 用量
             Span::styled(
-                format!(" 📝 {}→{} ", s.input_tokens, s.output_tokens),
+                format!("📝 {}→{} ", s.input_tokens, s.output_tokens),
                 Style::default().fg(Color::Cyan),
             ),
             Span::raw(" │ "),
 
             // 缓存命中
             Span::styled(
-                format!(" 🔄 {:.1}% ", s.cache_hit_rate),
-                Style::default().fg(cache_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("hit={} miss={}", s.cache_hit_tokens, s.cache_miss_tokens),
-                Style::default().fg(Color::DarkGray),
+                format!("🔄 {:.1}% h={} m={} ", s.cache_hit_rate, s.cache_hit_tokens, s.cache_miss_tokens),
+                Style::default().fg(cache_color),
             ),
             Span::raw(" │ "),
 
