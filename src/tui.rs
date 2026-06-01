@@ -175,6 +175,12 @@ pub struct App {
     /// 当前选中的建议索引
     suggestion_idx: usize,
 
+    // ---- 输入历史 ----
+    /// 历史输入记录
+    input_history: Vec<String>,
+    /// 当前历史浏览位置（history.len() = 不在浏览状态）
+    history_idx: usize,
+
     // ---- API 通信 ----
     /// 发送命令给后台 API 任务
     cmd_tx: Option<mpsc::UnboundedSender<AppCommand>>,
@@ -215,6 +221,8 @@ impl App {
             should_quit: false,
             cmd_suggestions: Vec::new(),
             suggestion_idx: 0,
+            input_history: Vec::new(),
+            history_idx: 0,
             cmd_tx: None,
             event_rx,
             streaming_buffer: String::new(),
@@ -426,6 +434,15 @@ impl App {
                         }
                     }
                 }
+                // 保存到输入历史（最多 50 条）
+                let trimmed = self.input.trim().to_string();
+                if !trimmed.is_empty() {
+                    self.input_history.push(trimmed);
+                    if self.input_history.len() > 50 {
+                        self.input_history.remove(0);
+                    }
+                }
+                self.history_idx = self.input_history.len();
                 self.input.clear();
                 self.cursor_pos = 0;
                 self.cmd_suggestions.clear();
@@ -453,9 +470,48 @@ impl App {
                 }
             }
 
-            // ---- 滚动 ----
-            KeyCode::Up => self.scroll_offset += 1,
-            KeyCode::Down => self.scroll_offset = self.scroll_offset.saturating_sub(1),
+            // ---- 滚动 / 命令选择 / 历史浏览 ----
+            KeyCode::Up => {
+                if !self.cmd_suggestions.is_empty() {
+                    // 命令补全模式：向上选择
+                    let len = self.cmd_suggestions.len();
+                    self.suggestion_idx = (self.suggestion_idx + len - 1) % len;
+                } else {
+                    // 普通模式：浏览输入历史（上一条）
+                    if !self.input_history.is_empty() {
+                        if self.history_idx == self.input_history.len() {
+                            // 首次按上，保存当前输入
+                        }
+                        if self.history_idx > 0 {
+                            self.history_idx -= 1;
+                        }
+                        self.input = self.input_history[self.history_idx].clone();
+                        self.cursor_pos = self.input.chars().count();
+                    } else {
+                        self.scroll_offset += 1;
+                    }
+                }
+            }
+            KeyCode::Down => {
+                if !self.cmd_suggestions.is_empty() {
+                    // 命令补全模式：向下选择
+                    let len = self.cmd_suggestions.len();
+                    self.suggestion_idx = (self.suggestion_idx + 1) % len;
+                } else {
+                    // 普通模式：浏览输入历史（下一条）
+                    if !self.input_history.is_empty() && self.history_idx < self.input_history.len() {
+                        self.history_idx += 1;
+                        if self.history_idx < self.input_history.len() {
+                            self.input = self.input_history[self.history_idx].clone();
+                        } else {
+                            self.input.clear();
+                        }
+                        self.cursor_pos = self.input.chars().count();
+                    } else {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    }
+                }
+            }
             KeyCode::PageUp => self.scroll_offset += 10,
             KeyCode::PageDown => self.scroll_offset = self.scroll_offset.saturating_sub(10),
 
