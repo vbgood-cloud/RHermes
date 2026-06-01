@@ -205,6 +205,11 @@ impl DeepSeekClient {
                         // 解析 JSON
                         match serde_json::from_str::<StreamChunk>(data) {
                             Ok(chunk_data) => {
+                                // 转发 usage（最后一个 chunk 携带）
+                                if let Some(ref usage) = chunk_data.usage {
+                                    let _ = tx.send(ApiEvent::Usage(usage.clone()));
+                                }
+
                                 if let Some(choice) = chunk_data.choices.first() {
                                     let content = choice.delta.content.as_deref().unwrap_or("");
                                     if !content.is_empty() {
@@ -290,6 +295,8 @@ impl DeepSeekClient {
 #[derive(Debug, Deserialize)]
 struct StreamChunk {
     pub choices: Vec<StreamChoice>,
+    #[serde(default)]
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Deserialize)]
