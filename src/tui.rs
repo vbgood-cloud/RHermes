@@ -560,7 +560,7 @@ impl App {
 
     // ---- 命令补全 ----
 
-    /// 更新命令建议列表
+    /// 更新命令建议列表（唯一匹配时自动补全）
     fn update_suggestions(&mut self) {
         let input = self.input.trim();
         if input.starts_with('/') && input.len() > 1 {
@@ -570,11 +570,18 @@ impl App {
                 .filter(|(cmd, _)| cmd.starts_with(&lower))
                 .map(|(cmd, _)| *cmd)
                 .collect();
-            if matches.is_empty() {
-                self.cmd_suggestions = ALL_COMMANDS.iter().map(|(cmd, _)| *cmd).collect();
-            } else {
-                self.cmd_suggestions = matches;
+            if matches.len() == 1 && matches[0] != input {
+                // 唯一匹配 → 自动补全
+                self.input = matches[0].to_string();
+                self.cursor_pos = self.input.chars().count();
+                self.cmd_suggestions.clear();
+                return;
             }
+            self.cmd_suggestions = if matches.is_empty() {
+                ALL_COMMANDS.iter().map(|(cmd, _)| *cmd).collect()
+            } else {
+                matches
+            };
             self.suggestion_idx = 0;
         } else if input == "/" {
             self.cmd_suggestions = ALL_COMMANDS.iter().map(|(cmd, _)| *cmd).collect();
