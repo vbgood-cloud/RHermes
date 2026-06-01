@@ -156,7 +156,8 @@ async fn run_code(resume: bool) {
     }
 
     // 创建 TUI
-    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, resume);
+    let config_path_buf = config_path.clone();
+    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, resume, config_path_buf);
 
     // 如果已有 API Key，初始化 API 客户端
     if config.is_configured() {

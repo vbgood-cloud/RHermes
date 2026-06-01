@@ -133,6 +133,17 @@ pub fn default_tools() -> Vec<ToolDef> {
         ToolDef {
             tool_type: "function".into(),
             function: ToolFunction {
+                name: "get_current_time".into(),
+                description: "获取当前日期和时间".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }),
+            },
+        },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
                 name: "web_search".into(),
                 description: "搜索网络获取最新信息，无需 API Key".into(),
                 parameters: serde_json::json!({

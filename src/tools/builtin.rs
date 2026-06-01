@@ -361,6 +361,33 @@ impl Tool for RunCommand {
 }
 
 // ---------------------------------------------------------------------------
+// get_current_time — 并行安全（纯计算）
+// ---------------------------------------------------------------------------
+
+/// 获取当前时间
+pub struct GetCurrentTime;
+
+#[async_trait]
+impl Tool for GetCurrentTime {
+    fn name(&self) -> &'static str {
+        "get_current_time"
+    }
+    fn description(&self) -> &'static str {
+        "获取当前日期和时间"
+    }
+    fn parallel_safe(&self) -> bool {
+        true
+    }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![]
+    }
+    async fn execute(&self, _args: Value) -> Result<String, ToolError> {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S (UTC+8)");
+        Ok(now.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // web_search — 非并行安全（网络请求）
 // ---------------------------------------------------------------------------
 
@@ -680,6 +707,7 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(Glob)
         .register(WriteFile)
         .register(RunCommand)
+        .register(GetCurrentTime)
         .register(WebSearch)
         .register(WebFetch)
         .register(DelegateTask)
@@ -723,12 +751,13 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 8);
+        assert_eq!(reg.len(), 9);
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());
         assert!(reg.get("search_content").is_some());
         assert!(reg.get("glob").is_some());
+        assert!(reg.get("get_current_time").is_some());
         assert!(reg.get("web_search").is_some());
         assert!(reg.get("web_fetch").is_some());
         assert!(reg.get("delegate_task").is_some());

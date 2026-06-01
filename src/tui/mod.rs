@@ -6,6 +6,8 @@
 use std::io::{self, stdout};
 use std::time::{Duration, Instant};
 
+use chrono::Local;
+
 use crossterm::{
     cursor::Show,
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -209,6 +211,12 @@ pub struct App {
     /// 会话持久化路径
     session_path: PathBuf,
 
+    /// 配置文件路径
+    config_path: PathBuf,
+
+    /// 当前运行的配置（用于 /config 显示）
+    current_config: Option<crate::core::Config>,
+
     // ---- 响应计时 ----
     /// 上次响应耗时（秒），0 = 无响应
     last_response_secs: u64,
@@ -219,6 +227,8 @@ pub struct App {
 /// 可用命令列表（命令, 说明）
 const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/help",      "显示此帮助"),
+    ("/init",      "运行初始化向导"),
+    ("/config",    "查看和修改配置"),
     ("/clear",     "清空对话"),
     ("/quit",      "退出程序"),
     ("/exit",      "退出程序"),
@@ -233,7 +243,7 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
 impl App {
     /// 创建新的 App 实例
     /// 创建新的 App 实例
-    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, resume: bool) -> Self {
+    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, resume: bool, config_path: PathBuf) -> Self {
         let (_event_tx, event_rx) = mpsc::unbounded_channel();
 
         // 会话保存路径
@@ -256,6 +266,8 @@ impl App {
 
         let mut app = Self {
             session_path,
+            config_path,
+            current_config: None,
             messages: saved_messages,
             input: String::new(),
             cursor_pos: 0,
@@ -295,6 +307,7 @@ impl App {
     /// 初始化 API 客户端 + Agent Loop
     pub fn init_api(&mut self, config: Config, path_mgr: &crate::core::PathManager) {
         self.stats.model = config.api.model.clone();
+        self.current_config = Some(config.clone());
 
         // 构建系统提示词
         let system_prompt = format!(
@@ -368,7 +381,14 @@ impl App {
                             let mut final_text = String::new();
                             let mut tool_calls: Vec<ToolCallData> = Vec::new();
 
-                            // 2a. 记忆召回：搜索相关记忆注入 Context
+                            // 2a. 注入当前时间（让模型感知时间）
+                            let time_str = chrono::Local::now().format("当前时间: %Y-%m-%d %H:%M:%S (UTC+8)");
+                            ctx.push_to_log(crate::core::Message::new(
+                                crate::tui::Role::System,
+                                &time_str.to_string(),
+                            ));
+
+                            // 2b. 记忆召回：搜索相关记忆注入 Context
                             if let Some(ref mem) = agent_memory {
                                 if let Ok(mut mem_lock) = mem.lock() {
                                     if let Ok(results) = mem_lock.search(&msg, 5) {
@@ -657,6 +677,8 @@ impl App {
                         let help_text = "\
 可用命令:
   /help  /?    — 显示此帮助
+  /init        — 运行初始化向导
+  /config      — 查看和修改配置
   /clear       — 清空对话
   /quit  /exit — 退出程序
   /tool <name> — 查看工具信息
@@ -670,6 +692,46 @@ impl App {
   PageUp/Dn    — 滚动 10 行
   Home/End     — 光标到行首/行尾";
                         self.messages.push(Message::system(help_text));
+                    }
+                    "/init" => {
+                        match crate::init::run_init() {
+                            Ok(_) => {
+                                self.messages.push(Message::system("✅ 配置已更新，请重启程序生效"));
+                            }
+                            Err(e) => {
+                                self.messages.push(Message::system(format!("⚠ 初始化失败: {e}")));
+                            }
+                        }
+                    }
+                    "/config" => {
+                        let config_path = &self.config_path;
+                        let cfg = crate::core::Config::load(config_path)
+                            .unwrap_or_default();
+                        let has_key = !cfg.api_key.is_empty();
+                        let key_display = if has_key {
+                            format!("sk-...{}", &cfg.api_key[cfg.api_key.len().saturating_sub(4)..])
+                        } else {
+                            "未设置".into()
+                        };
+                        let info = format!(
+                            "当前配置:\n\
+                             📁 路径: {}\n\
+                             🔑 API Key: {}\n\
+                             🤖 模型: {}\n\
+                             🌐 API地址: {}\n\
+                             ⏱  超时: {}s\n\
+                             🔄 重试: {}次\n\
+                             🔁 最大轮次: {}轮\n\
+                             \n修改配置请编辑 config.toml 或运行 /init",
+                            config_path.display(),
+                            key_display,
+                            cfg.api.model,
+                            cfg.api.base_url,
+                            cfg.request.timeout_secs,
+                            cfg.request.max_retries,
+                            cfg.agent.max_rounds,
+                        );
+                        self.messages.push(Message::system(info));
                     }
                     cmd if cmd.starts_with("/回忆 ") || cmd.starts_with("/回忆　")
                         || cmd.starts_with("/recall ") || cmd.starts_with("/remember ") => {
@@ -1004,9 +1066,11 @@ impl App {
     }
 
     fn render_title_bar(&self, frame: &mut Frame, area: Rect) {
+        let now = Local::now().format("%H:%M:%S");
         let title = format!(
-            " RHermes v{} · 部署:{} · 模型:{} ",
+            " RHermes v{} · {} · 部署:{} · 模型:{} ",
             env!("CARGO_PKG_VERSION"),
+            now,
             self.stats.mode,
             self.stats.model,
         );
@@ -1389,7 +1453,7 @@ mod tests {
 
     #[test]
     fn test_app_new_creates_welcome_messages() {
-        let app = App::new("portable", test_dispatcher(), None, false);
+        let app = App::new("portable", test_dispatcher(), None, false, PathBuf::from(""));
         assert!(!app.messages.is_empty());
         assert!(app.messages[0].content.contains("RHermes v"));
         assert!(app.messages[0].content.contains("portable"));
@@ -1397,7 +1461,7 @@ mod tests {
 
     #[test]
     fn test_app_initial_state() {
-        let app = App::new("traditional", test_dispatcher(), None, false);
+        let app = App::new("traditional", test_dispatcher(), None, false, PathBuf::from(""));
         assert!(!app.should_quit);
         assert!(!app.running);
         assert!(app.input.is_empty());
@@ -1440,7 +1504,7 @@ mod tests {
 
     #[test]
     fn test_handle_key_enter_without_api() {
-        let mut app = App::new("test", test_dispatcher(), None, false);
+        let mut app = App::new("test", test_dispatcher(), None, false, PathBuf::from(""));
         app.input = "hello".into();
         app.cursor_pos = 5;
 
@@ -1456,14 +1520,14 @@ mod tests {
 
     #[test]
     fn test_handle_key_quit() {
-        let mut app = App::new("test", test_dispatcher(), None, false);
+        let mut app = App::new("test", test_dispatcher(), None, false, PathBuf::from(""));
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_handle_key_text_input() {
-        let mut app = App::new("test", test_dispatcher(), None, false);
+        let mut app = App::new("test", test_dispatcher(), None, false, PathBuf::from(""));
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.input, "a");
         assert_eq!(app.cursor_pos, 1);
