@@ -81,6 +81,20 @@ pub enum StreamEvent {
     Error(String),
 }
 
+/// 余额响应
+#[derive(Debug, Clone, Deserialize)]
+pub struct BalanceResponse {
+    /// 是否无限额度
+    #[serde(default)]
+    pub is_infinite: bool,
+    /// 当前可用余额（元）
+    #[serde(default)]
+    pub balance: f64,
+    /// 总余额
+    #[serde(default)]
+    pub total_balance: f64,
+}
+
 /// API → TUI 事件（GUI 友好格式）
 #[derive(Debug)]
 pub enum ApiEvent {
@@ -92,6 +106,8 @@ pub enum ApiEvent {
     Usage(Usage),
     /// 工具调用（名称和参数字符串）
     ToolCalls(Vec<ToolCallData>),
+    /// 余额查询结果（元）
+    Balance(f64),
     /// 错误
     Error(String),
 }
@@ -288,6 +304,27 @@ impl DeepSeekClient {
         }
 
         Err(last_error.unwrap_or(ApiError::RetryExhausted))
+    }
+
+    /// 查询账户余额（人民币元）
+    pub async fn get_balance(&self) -> Result<f64, ApiError> {
+        let url = format!("{}/user/balance", self.config.base_url.trim_end_matches('/'));
+        let resp = self
+            .http
+            .get(&url)
+            .headers(self.build_headers())
+            .send()
+            .await
+            .map_err(ApiError::Request)?;
+        if !resp.status().is_success() {
+            return Err(ApiError::HttpStatus(resp.status().as_u16()));
+        }
+        let balance_resp: BalanceResponse = resp.json().await.map_err(ApiError::Parse)?;
+        if balance_resp.is_infinite {
+            Ok(f64::MAX) // 无限额度
+        } else {
+            Ok(balance_resp.balance)
+        }
     }
 
     /// 获取当前使用的模型名

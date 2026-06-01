@@ -85,13 +85,15 @@ impl Message {
 // 实时统计
 // ---------------------------------------------------------------------------
 
-/// USD → CNY 汇率（约）
-const USD_TO_CNY: f64 = 7.2;
-
 #[derive(Debug, Clone)]
 pub struct Stats {
-    pub round_cost_usd: f64,
-    pub total_cost_usd: f64,
+    /// 本轮成本（人民币元）
+    pub round_cost_cny: f64,
+    /// 累计成本（人民币元）
+    pub total_cost_cny: f64,
+    /// 余额（人民币元）
+    pub balance_cny: f64,
+    /// 缓存命中率
     pub cache_hit_rate: f64,
     pub model: String,
     pub mode: String,
@@ -108,8 +110,9 @@ pub struct Stats {
 impl Default for Stats {
     fn default() -> Self {
         Self {
-            round_cost_usd: 0.0,
-            total_cost_usd: 0.0,
+            round_cost_cny: 0.0,
+            total_cost_cny: 0.0,
+            balance_cny: 0.0,
             cache_hit_rate: 0.0,
             model: "deepseek-v4-flash".into(),
             mode: "traditional".into(),
@@ -121,26 +124,22 @@ impl Default for Stats {
     }
 }
 
-impl Stats {
-    pub fn round_cost_cny(&self) -> f64 {
-        self.round_cost_usd * USD_TO_CNY
-    }
-    pub fn total_cost_cny(&self) -> f64 {
-        self.total_cost_usd * USD_TO_CNY
-    }
+/// DeepSeek 价格（人民币元/百万 token）
+const INPUT_PRICE_CNY: f64 = 1.08;   // flash: $0.15 ≈ ¥1.08
+const OUTPUT_PRICE_CNY: f64 = 4.32; // flash: $0.60 ≈ ¥4.32
 
-    /// 根据 Token 用量估算成本
-    /// DeepSeek v4-flash: $0.15/M input tokens, $0.60/M output tokens
+impl Stats {
+    /// 根据 Token 用量估算成本（人民币）
     fn update_from_usage(&mut self, usage: &Usage) {
         self.input_tokens = usage.prompt_tokens;
         self.output_tokens = usage.completion_tokens;
         self.cache_hit_tokens = usage.prompt_cache_hit_tokens;
         self.cache_miss_tokens = usage.prompt_cache_miss_tokens;
 
-        let input_cost = usage.prompt_tokens as f64 * 0.15 / 1_000_000.0;
-        let output_cost = usage.completion_tokens as f64 * 0.60 / 1_000_000.0;
-        self.round_cost_usd = input_cost + output_cost;
-        self.total_cost_usd += self.round_cost_usd;
+        let input_cost = usage.prompt_tokens as f64 * INPUT_PRICE_CNY / 1_000_000.0;
+        let output_cost = usage.completion_tokens as f64 * OUTPUT_PRICE_CNY / 1_000_000.0;
+        self.round_cost_cny = input_cost + output_cost;
+        self.total_cost_cny += self.round_cost_cny;
 
         // 缓存命中率
         let cache_total = usage.prompt_cache_hit_tokens + usage.prompt_cache_miss_tokens;
@@ -284,6 +283,20 @@ impl App {
 
         // 后台 Agent Loop
         tokio::spawn(async move {
+            // 启动时查询余额
+            let balance_tx = event_tx.clone();
+            let balance_client = client.clone();
+            tokio::spawn(async move {
+                match balance_client.get_balance().await {
+                    Ok(b) if b == f64::MAX => {
+                        let _ = balance_tx.send(ApiEvent::Balance(-1.0));
+                    }
+                    Ok(b) => {
+                        let _ = balance_tx.send(ApiEvent::Balance(b));
+                    }
+                    Err(_) => {}
+                }
+            });
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
                     AppCommand::SendMessage(msg) => {
@@ -326,6 +339,9 @@ impl App {
                                     }
                                     ApiEvent::ToolCalls(calls) => {
                                         tool_calls = calls;
+                                    }
+                                    ApiEvent::Balance(b) => {
+                                        let _ = event_tx.send(ApiEvent::Balance(b));
                                     }
                                     ApiEvent::Usage(u) => {
                                         let _ = event_tx.send(ApiEvent::Usage(u));
@@ -443,6 +459,9 @@ impl App {
                     self.streaming_buffer.clear();
                     self.running = false;
                     self.scroll_offset = 0;
+                }
+                ApiEvent::Balance(balance) => {
+                    self.stats.balance_cny = balance;
                 }
                 ApiEvent::ToolCalls(calls) => {
                     let count = calls.len();
@@ -871,9 +890,9 @@ impl App {
         let s = &self.stats;
 
         // 成本颜色
-        let cost_color = if s.round_cost_usd >= 0.20 {
+        let cost_color = if s.round_cost_cny >= 1.44 {
             Color::Red
-        } else if s.round_cost_usd >= 0.05 {
+        } else if s.round_cost_cny >= 0.36 {
             Color::Yellow
         } else {
             Color::Green
@@ -891,22 +910,14 @@ impl App {
         let parts = vec![
             // 本轮成本 (USD + CNY)
             Span::styled(
-                format!(" ⚡ ${:.3} ", s.round_cost_usd),
+                format!(" ⚡ ¥{:.4} ", s.round_cost_cny),
                 Style::default().fg(cost_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("¥{:.3}", s.round_cost_cny()),
-                Style::default().fg(cost_color),
             ),
             Span::raw(" │ "),
 
             // 累计
             Span::styled(
-                format!(" 📊 ${:.3} ", s.total_cost_usd),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::styled(
-                format!("¥{:.3}", s.total_cost_cny()),
+                format!(" 📊 ¥{:.4} ", s.total_cost_cny),
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" │ "),
@@ -927,6 +938,21 @@ impl App {
                 format!("hit={} miss={}", s.cache_hit_tokens, s.cache_miss_tokens),
                 Style::default().fg(Color::DarkGray),
             ),
+            Span::raw(" │ "),
+
+            // 余额
+            {
+                if s.balance_cny < 0.0 {
+                    Span::styled(" ♾️ 无限 ", Style::default().fg(Color::Green))
+                } else if s.balance_cny > 0.0 {
+                    Span::styled(
+                        format!(" 💰 ¥{:.2} ", s.balance_cny),
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    Span::styled(" 💰 --- ", Style::default().fg(Color::DarkGray))
+                }
+            },
         ];
 
         let bar = Paragraph::new(Line::from(parts))
@@ -1086,9 +1112,9 @@ mod tests {
         };
 
         stats.update_from_usage(&usage);
-        assert!(stats.round_cost_usd > 0.0);
-        assert!(stats.round_cost_usd < 1.0); // 合理的成本
-        assert_eq!(stats.total_cost_usd, stats.round_cost_usd);
+        assert!(stats.round_cost_cny > 0.0);
+        assert!(stats.round_cost_cny < 10.0); // 合理的成本
+        assert_eq!(stats.total_cost_cny, stats.round_cost_cny);
         assert!((stats.cache_hit_rate - 80.0).abs() < 0.01); // 800/1000 = 80%
     }
 
@@ -1148,7 +1174,7 @@ mod tests {
     #[test]
     fn test_stats_default() {
         let stats = Stats::default();
-        assert_eq!(stats.round_cost_usd, 0.0);
+        assert_eq!(stats.round_cost_cny, 0.0);
         assert_eq!(stats.model, "deepseek-v4-flash");
     }
 }
