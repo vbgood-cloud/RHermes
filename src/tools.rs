@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use regex::Regex;
 use serde_json::Value;
 
 use crate::tool::{
@@ -58,6 +59,61 @@ impl Tool for ReadFile {
     }
 }
 
+/// 递归收集文件（跳过二进制和隐藏目录）
+fn collect_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        // 跳过隐藏目录 .git, node_modules, target 等
+        if path.is_dir() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if s.starts_with('.') || s == "node_modules" || s == "target" || s == "build" {
+                continue;
+            }
+            collect_files(&path, files)?;
+        } else if path.is_file() {
+            // 只搜索文本文件（跳过 .exe .dll .png 等）
+            if let Some(ext) = path.extension() {
+                let ext = ext.to_string_lossy().to_lowercase();
+                match ext.as_str() {
+                    "exe" | "dll" | "png" | "jpg" | "gif" | "ico" | "svg"
+                    | "woff" | "woff2" | "ttf" | "eot" | "bin" | "o" | "obj"
+                    | "pyc" | "pyo" | "lock" | "sum" => continue,
+                    _ => {}
+                }
+            }
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+/// 将 glob 模式转换为正则（简单版本）
+fn glob_to_regex(glob: &str) -> Regex {
+    let mut re = String::with_capacity(glob.len() + 4);
+    re.push('^');
+    for ch in glob.chars() {
+        match ch {
+            '*' => re.push_str(".*"),
+            '?' => re.push('.'),
+            '.' => re.push_str("\\."),
+            '\\' => re.push_str("\\\\"),
+            '|' => re.push('|'),
+            c if c.is_ascii_punctuation() => {
+                re.push('\\');
+                re.push(c);
+            }
+            c => re.push(c),
+        }
+    }
+    re.push('$');
+    Regex::new(&re).unwrap_or_else(|_| Regex::new(".*").unwrap())
+}
+
 // ---------------------------------------------------------------------------
 // search_content — 并行安全
 // ---------------------------------------------------------------------------
@@ -84,30 +140,63 @@ impl Tool for SearchContent {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let pattern = get_string_arg(&args, "pattern")?;
-        let path = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
-        let glob = get_optional_string(&args, "glob");
+        let search_path = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
+        let glob_filter = get_optional_string(&args, "glob");
 
-        let mut cmd = tokio::process::Command::new("rg");
-        cmd.arg("-n").arg(&pattern).arg(&path);
-
-        if let Some(g) = glob {
-            cmd.arg("-g").arg(&g);
-        }
-
-        let output = cmd.output().await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("搜索失败: {e}"))
+        // 编译正则
+        let re = Regex::new(&pattern).map_err(|e| {
+            ToolError::ExecutionFailed(format!("正则无效: {e}"))
         })?;
 
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            Ok(if stdout.is_empty() {
-                format!("未找到匹配 \"{pattern}\" 的内容")
-            } else {
-                format!("找到 {} 处匹配:\n{stdout}", stdout.lines().count())
-            })
+        // 收集要搜索的文件
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let root = std::path::Path::new(&search_path);
+        if root.is_file() {
+            files.push(root.to_path_buf());
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Ok(format!("搜索完成（无匹配或出错）: {stderr}"))
+            collect_files(root, &mut files).map_err(ToolError::Io)?;
+        }
+
+        // 过滤 glob
+        if let Some(ref g) = glob_filter {
+            let glob_re = glob_to_regex(g);
+            files.retain(|f| {
+                let name = f.to_string_lossy();
+                glob_re.is_match(&name)
+            });
+        }
+
+        // 限制搜索文件数（防止爆炸）
+        if files.len() > 5000 {
+            files.truncate(5000);
+        }
+
+        // 逐文件搜索
+        let max_results = 200;
+        let mut results: Vec<String> = Vec::new();
+
+        for file_path in &files {
+            if results.len() >= max_results {
+                break;
+            }
+            let content = match tokio::fs::read_to_string(file_path).await {
+                Ok(c) => c,
+                Err(_) => continue, // 跳过二进制/不可读文件
+            };
+            for (line_no, line) in content.lines().enumerate() {
+                if re.is_match(line) {
+                    results.push(format!("{}:{}:{}", file_path.display(), line_no + 1, line));
+                    if results.len() >= max_results {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if results.is_empty() {
+            Ok(format!("未找到匹配 \"{pattern}\" 的内容"))
+        } else {
+            Ok(format!("找到 {} 处匹配:\n{}", results.len(), results.join("\n")))
         }
     }
 }
@@ -211,8 +300,9 @@ impl Tool for RunCommand {
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("command", ParamType::String, "要执行的命令"),
+            ParamDef::required("command", ParamType::String, "要执行的命令（Windows 用 cmd，其他用 sh）"),
             ParamDef::optional("timeout", ParamType::Integer, "超时秒数（默认 60）"),
+            ParamDef::optional("cwd", ParamType::String, "工作目录（默认当前目录）"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -222,12 +312,26 @@ impl Tool for RunCommand {
             .and_then(|v| v.as_u64())
             .unwrap_or(60);
 
-        let cmd = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(&command)
-            .output();
+        // Windows 用 cmd /c，其他用 sh -c
+        #[cfg(target_os = "windows")]
+        let shell = "cmd";
+        #[cfg(not(target_os = "windows"))]
+        let shell = "sh";
 
-        let output = tokio::time::timeout(Duration::from_secs(timeout), cmd)
+        #[cfg(target_os = "windows")]
+        let flag = "/c";
+        #[cfg(not(target_os = "windows"))]
+        let flag = "-c";
+
+        let mut cmd = tokio::process::Command::new(shell);
+        cmd.arg(flag).arg(&command);
+
+        // 可选的工作目录
+        if let Some(cwd) = get_optional_string(&args, "cwd") {
+            cmd.current_dir(&cwd);
+        }
+
+        let output = tokio::time::timeout(Duration::from_secs(timeout), cmd.output())
             .await
             .map_err(|_| ToolError::ExecutionFailed("命令超时".into()))?
             .map_err(|e| ToolError::ExecutionFailed(format!("命令执行失败: {e}")))?;

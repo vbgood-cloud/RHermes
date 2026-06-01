@@ -107,8 +107,9 @@ pub fn default_tools() -> Vec<ToolDef> {
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "command": {"type": "string", "description": "要执行的命令"},
-                        "timeout": {"type": "integer", "description": "超时秒数"}
+                        "command": {"type": "string", "description": "要执行的命令（Windows 用 cmd /c）"},
+                        "timeout": {"type": "integer", "description": "超时秒数"},
+                        "cwd": {"type": "string", "description": "工作目录（默认当前目录）"}
                     },
                     "required": ["command"]
                 }),
