@@ -83,35 +83,62 @@ impl Message {
 // 实时统计
 // ---------------------------------------------------------------------------
 
+/// USD → CNY 汇率（约）
+const USD_TO_CNY: f64 = 7.2;
+
 #[derive(Debug, Clone)]
 pub struct Stats {
-    pub round_cost: f64,
-    pub total_cost: f64,
+    pub round_cost_usd: f64,
+    pub total_cost_usd: f64,
     pub cache_hit_rate: f64,
     pub model: String,
     pub mode: String,
+    /// 本轮 input tokens
+    pub input_tokens: u32,
+    /// 本轮 output tokens
+    pub output_tokens: u32,
+    /// 缓存命中的 input tokens
+    pub cache_hit_tokens: u32,
+    /// 缓存未命中的 input tokens
+    pub cache_miss_tokens: u32,
 }
 
 impl Default for Stats {
     fn default() -> Self {
         Self {
-            round_cost: 0.0,
-            total_cost: 0.0,
+            round_cost_usd: 0.0,
+            total_cost_usd: 0.0,
             cache_hit_rate: 0.0,
             model: "deepseek-v4-flash".into(),
             mode: "traditional".into(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 0,
         }
     }
 }
 
 impl Stats {
+    pub fn round_cost_cny(&self) -> f64 {
+        self.round_cost_usd * USD_TO_CNY
+    }
+    pub fn total_cost_cny(&self) -> f64 {
+        self.total_cost_usd * USD_TO_CNY
+    }
+
     /// 根据 Token 用量估算成本
-    /// DeepSeek v4-flash: $0.15/M input tokens, $0.60/M output tokens (示例价格)
+    /// DeepSeek v4-flash: $0.15/M input tokens, $0.60/M output tokens
     fn update_from_usage(&mut self, usage: &Usage) {
+        self.input_tokens = usage.prompt_tokens;
+        self.output_tokens = usage.completion_tokens;
+        self.cache_hit_tokens = usage.prompt_cache_hit_tokens;
+        self.cache_miss_tokens = usage.prompt_cache_miss_tokens;
+
         let input_cost = usage.prompt_tokens as f64 * 0.15 / 1_000_000.0;
         let output_cost = usage.completion_tokens as f64 * 0.60 / 1_000_000.0;
-        self.round_cost = input_cost + output_cost;
-        self.total_cost += self.round_cost;
+        self.round_cost_usd = input_cost + output_cost;
+        self.total_cost_usd += self.round_cost_usd;
 
         // 缓存命中率
         let cache_total = usage.prompt_cache_hit_tokens + usage.prompt_cache_miss_tokens;
@@ -575,29 +602,68 @@ impl App {
     }
 
     fn render_stats_bar(&self, frame: &mut Frame, area: Rect) {
-        let cost_color = if self.stats.round_cost >= 0.20 {
+        let s = &self.stats;
+
+        // 成本颜色
+        let cost_color = if s.round_cost_usd >= 0.20 {
             Color::Red
-        } else if self.stats.round_cost >= 0.05 {
+        } else if s.round_cost_usd >= 0.05 {
             Color::Yellow
         } else {
             Color::Green
         };
 
-        let round = Span::styled(
-            format!(" ⚡ ${:.3}/轮 ", self.stats.round_cost),
-            Style::default().fg(cost_color).add_modifier(Modifier::BOLD),
-        );
-        let total = Span::styled(
-            format!(" 📊 ${:.3} 累计 ", self.stats.total_cost),
-            Style::default().fg(Color::Yellow),
-        );
-        let cache = Span::styled(
-            format!(" 🔄 {:.1}% 缓存 ", self.stats.cache_hit_rate),
-            Style::default().fg(Color::Magenta),
-        );
-        let sep = Span::raw(" │ ");
+        // 缓存命中率颜色
+        let cache_color = if s.cache_hit_rate >= 90.0 {
+            Color::Green
+        } else if s.cache_hit_rate >= 50.0 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
 
-        let bar = Paragraph::new(Line::from(vec![round, sep.clone(), total, sep, cache]))
+        let parts = vec![
+            // 本轮成本 (USD + CNY)
+            Span::styled(
+                format!(" ⚡ ${:.4} ", s.round_cost_usd),
+                Style::default().fg(cost_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("¥{:.2}", s.round_cost_cny()),
+                Style::default().fg(cost_color),
+            ),
+            Span::raw(" │ "),
+
+            // 累计
+            Span::styled(
+                format!(" 📊 ${:.4} ", s.total_cost_usd),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                format!("¥{:.2}", s.total_cost_cny()),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(" │ "),
+
+            // Token 用量
+            Span::styled(
+                format!(" 📝 {}→{} ", s.input_tokens, s.output_tokens),
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::raw(" │ "),
+
+            // 缓存命中
+            Span::styled(
+                format!(" 🔄 {:.1}% ", s.cache_hit_rate),
+                Style::default().fg(cache_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("hit={} miss={}", s.cache_hit_tokens, s.cache_miss_tokens),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ];
+
+        let bar = Paragraph::new(Line::from(parts))
             .style(Style::default().bg(Color::Black).fg(Color::White));
         frame.render_widget(bar, area);
     }
@@ -689,9 +755,9 @@ mod tests {
         };
 
         stats.update_from_usage(&usage);
-        assert!(stats.round_cost > 0.0);
-        assert!(stats.round_cost < 1.0); // 合理的成本
-        assert_eq!(stats.total_cost, stats.round_cost);
+        assert!(stats.round_cost_usd > 0.0);
+        assert!(stats.round_cost_usd < 1.0); // 合理的成本
+        assert_eq!(stats.total_cost_usd, stats.round_cost_usd);
         assert!((stats.cache_hit_rate - 80.0).abs() < 0.01); // 800/1000 = 80%
     }
 
@@ -751,7 +817,7 @@ mod tests {
     #[test]
     fn test_stats_default() {
         let stats = Stats::default();
-        assert_eq!(stats.round_cost, 0.0);
+        assert_eq!(stats.round_cost_usd, 0.0);
         assert_eq!(stats.model, "deepseek-v4-flash");
     }
 }
