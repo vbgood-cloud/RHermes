@@ -274,7 +274,7 @@ impl SkillEngine {
         success: bool,
         duration_ms: u64,
     ) -> Result<(), SkillError> {
-        let (use_count, success_count, fail_count, total_duration_ms, last_used) = {
+        let (_use_count, _success_count, _fail_count, _total_duration_ms, _last_used) = {
             let skill = self
                 .skills
                 .get_mut(name)
