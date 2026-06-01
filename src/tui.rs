@@ -356,6 +356,20 @@ impl App {
                         self.messages.clear();
                         self.messages.push(Message::system("对话已清空"));
                     }
+                    "/help" | "/?" => {
+                        let help_text = "\
+可用命令:
+  /help  /?    — 显示此帮助
+  /clear       — 清空对话
+  /quit  /exit — 退出程序
+  /tool <name> — 查看工具信息
+
+快捷键:
+  Ctrl+Q       — 退出
+  ↑↓ PageUp/Dn — 滚动对话
+  Home/End     — 光标到行首/行尾";
+                        self.messages.push(Message::system(help_text));
+                    }
                     _ => {
                         // 正常消息：发送给 API
                         self.messages.push(Message::user(&input));
@@ -625,22 +639,22 @@ impl App {
         let parts = vec![
             // 本轮成本 (USD + CNY)
             Span::styled(
-                format!(" ⚡ ${:.4} ", s.round_cost_usd),
+                format!(" ⚡ ${:.3} ", s.round_cost_usd),
                 Style::default().fg(cost_color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("¥{:.2}", s.round_cost_cny()),
+                format!("¥{:.3}", s.round_cost_cny()),
                 Style::default().fg(cost_color),
             ),
             Span::raw(" │ "),
 
             // 累计
             Span::styled(
-                format!(" 📊 ${:.4} ", s.total_cost_usd),
+                format!(" 📊 ${:.3} ", s.total_cost_usd),
                 Style::default().fg(Color::Yellow),
             ),
             Span::styled(
-                format!("¥{:.2}", s.total_cost_cny()),
+                format!("¥{:.3}", s.total_cost_cny()),
                 Style::default().fg(Color::Yellow),
             ),
             Span::raw(" │ "),
