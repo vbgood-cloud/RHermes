@@ -4,6 +4,7 @@
 
 pub use config::ApiConfig;
 pub use config::Config;
+pub use config::MemoryConfig;
 pub use config::RequestConfig;
 pub use config::AgentConfig;
 pub use context::Context;

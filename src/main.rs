@@ -138,7 +138,9 @@ async fn run_code(resume: bool) {
     };
 
     // 初始化记忆系统
-    let memory_path = path_mgr.data_root().join("memories.db");
+    let memories_dir = path_mgr.data_root().join("Memories");
+    let _ = std::fs::create_dir_all(&memories_dir);
+    let memory_path = memories_dir.join("memories.db");
     let memory = match crate::agent::MemorySystem::open(&memory_path) {
         Ok(m) => {
             tracing::info!("记忆系统已就绪: {}", memory_path.display());
@@ -175,7 +177,8 @@ async fn run_code(resume: bool) {
 
     // 创建 TUI
     let config_path_buf = config_path.clone();
-    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, skill_engine, resume, config_path_buf);
+    let max_memory_md_chars = config.memory.max_memory_md_chars;
+    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, skill_engine, resume, config_path_buf, max_memory_md_chars, memories_dir);
 
     // 如果已有 API Key，初始化 API 客户端
     if config.is_configured() {

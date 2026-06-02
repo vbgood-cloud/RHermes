@@ -121,6 +121,15 @@ impl MemorySystem {
         )
         .map_err(MemoryError::Execute)?;
 
+        // 创建用户画像表
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS user_profile (
+                key     TEXT PRIMARY KEY,
+                value   TEXT NOT NULL DEFAULT ''
+            );"
+        )
+        .map_err(MemoryError::Execute)?;
+
         // 同步 FTS 索引（首次创建后需要）
         db.execute_batch(
             "INSERT OR REPLACE INTO memories_fts(rowid, content, tags)
@@ -352,6 +361,193 @@ impl MemorySystem {
             last_accessed: row.get(6)?,
             access_count: row.get::<_, i64>(7)? as u64,
         })
+    }
+
+    /// 将记忆同步导出到 MEMORY.md（用户可读的 Markdown 格式）
+    pub fn export_memory_md(&self, path: &std::path::Path, project: &str, limit: usize) -> Result<(), MemoryError> {
+        let entries = self.list(None, project, limit)?;
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let mut content = String::from("# 系统记忆\n\n> ⚠ 此文件由 AI 自动维护，你也可以手动编辑。\n\n");
+        for entry in &entries {
+            let tag_str = if entry.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" `[{}]`", entry.tags.join(", "))
+            };
+            let preview: String = entry.content.chars().take(200).collect();
+            content.push_str(&format!("- {}{}\n", preview, tag_str));
+            if entry.content.chars().count() > 200 {
+                content.push_str("  *(截断)*\n");
+            }
+        }
+        if entries.is_empty() {
+            content.push_str("*(暂无记忆)*\n");
+        }
+        let _ = std::fs::write(path, content);
+        Ok(())
+    }
+
+    // ============================================================
+    // 用户画像（user_profile 表 + USER.md 文件）
+    // ============================================================
+
+    /// 加载用户画像
+    pub fn load_profile(&self) -> Result<UserProfile, MemoryError> {
+        let mut p = UserProfile::default();
+
+        // 从 SQLite 读取
+        p.preferred_languages = self.db
+            .query_row("SELECT value FROM user_profile WHERE key='preferred_languages'", [], |r| r.get(0))
+            .unwrap_or_default();
+        p.common_tasks = self.db
+            .query_row("SELECT value FROM user_profile WHERE key='common_tasks'", [], |r| r.get(0))
+            .unwrap_or_default();
+        p.expertise_level = self.db
+            .query_row("SELECT value FROM user_profile WHERE key='expertise_level'", [], |r| r.get::<_, String>(0))
+            .unwrap_or_else(|_| "中级".into());
+        p.interaction_style = self.db
+            .query_row("SELECT value FROM user_profile WHERE key='interaction_style'", [], |r| r.get::<_, String>(0))
+            .unwrap_or_else(|_| "混合".into());
+        p.skill_preferences = self.db
+            .query_row("SELECT value FROM user_profile WHERE key='skill_preferences'", [], |r| r.get(0))
+            .unwrap_or_default();
+        p.session_count = self.db
+            .query_row("SELECT value FROM user_profile WHERE key='session_count'", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0) as u32;
+        p.total_messages = self.db
+            .query_row("SELECT value FROM user_profile WHERE key='total_messages'", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0) as u32;
+
+        Ok(p)
+    }
+
+    /// 保存用户画像（SQLite + USER.md 文件）
+    /// 如果 `max_chars` > 0，USER.md 超出时自动截断
+    pub fn save_profile(&self, profile: &UserProfile, user_md_path: Option<&std::path::Path>) -> Result<(), MemoryError> {
+        self.save_profile_with_limit(profile, user_md_path, 0)
+    }
+
+    /// 保存用户画像，带字数限制
+    pub fn save_profile_with_limit(&self, profile: &UserProfile, user_md_path: Option<&std::path::Path>, max_chars: usize) -> Result<(), MemoryError> {
+        let upsert = "INSERT INTO user_profile (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=?2";
+        self.db.execute(upsert, params!["preferred_languages", &profile.preferred_languages])?;
+        self.db.execute(upsert, params!["common_tasks", &profile.common_tasks])?;
+        self.db.execute(upsert, params!["expertise_level", &profile.expertise_level])?;
+        self.db.execute(upsert, params!["interaction_style", &profile.interaction_style])?;
+        self.db.execute(upsert, params!["skill_preferences", &profile.skill_preferences])?;
+        self.db.execute(upsert, params!["session_count", &profile.session_count.to_string()])?;
+        self.db.execute(upsert, params!["total_messages", &profile.total_messages.to_string()])?;
+
+        // 同步到 USER.md 文件（用户可编辑）
+        if let Some(path) = user_md_path {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let content = format!(
+"# 用户画像
+
+> ⚠ 此文件可手动编辑，AI 也会自动更新。
+
+## 基础信息
+
+- 常用语言/框架: {}
+- 常见任务: {}
+- 用户水平: {}
+- 交互风格: {}
+- 偏好技能: {}
+- 会话次数: {}
+- 消息总数: {}
+- 最后更新: {}
+",
+                profile.preferred_languages, profile.common_tasks, profile.expertise_level,
+                profile.interaction_style, profile.skill_preferences,
+                profile.session_count, profile.total_messages,
+                chrono::Utc::now().to_rfc3339(),
+            );
+            // 字数限制：超出时保留前半部分（关键信息）+ 截断后半部分
+            if max_chars > 0 && content.len() > max_chars {
+                let trunc: String = content.chars().take(max_chars).collect();
+                let _ = std::fs::write(path, &trunc);
+            } else {
+                let _ = std::fs::write(path, content);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 从记忆条目聚合更新画像
+    pub fn aggregate_profile(&self, entries: &[MemoryEntry], user_md_path: Option<&std::path::Path>) -> Result<UserProfile, MemoryError> {
+        let mut profile = self.load_profile()?;
+        profile.total_messages += entries.len() as u32;
+        profile.session_count += 1;
+
+        let all_text: String = entries.iter().map(|e| e.content.as_str()).collect::<Vec<_>>().join(" ");
+
+        let lang_keywords = ["rust","python","javascript","typescript","go","java",
+            "c++","c#","sql","bash","powershell","react","vue","docker","kubernetes","html","css"];
+        let found: Vec<&str> = lang_keywords.iter().filter(|kw| all_text.to_lowercase().contains(*kw)).copied().collect();
+        if !found.is_empty() { profile.preferred_languages = found.join(", "); }
+
+        let tasks = [("代码审查","code_review"),("调试","debugging"),("重构","refactoring"),
+            ("测试","testing"),("部署","deployment"),("文档","documentation"),
+            ("性能优化","optimization"),("安全","security"),("数据库","database"),
+            ("前端","frontend"),("后端","backend"),("架构","architecture")];
+        let found_t: Vec<&str> = tasks.iter().filter(|(k,_)| all_text.contains(*k)).map(|(_,t)| *t).collect();
+        if !found_t.is_empty() { profile.common_tasks = found_t.join(", "); }
+
+        self.save_profile(&profile, user_md_path)?;
+        Ok(profile)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 用户画像结构体
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct UserProfile {
+    pub preferred_languages: String,
+    pub common_tasks: String,
+    pub expertise_level: String,
+    pub interaction_style: String,
+    pub skill_preferences: String,
+    pub session_count: u32,
+    pub total_messages: u32,
+}
+
+impl Default for UserProfile {
+    fn default() -> Self {
+        Self {
+            preferred_languages: String::new(),
+            common_tasks: String::new(),
+            expertise_level: "中级".into(),
+            interaction_style: "混合".into(),
+            skill_preferences: String::new(),
+            session_count: 0,
+            total_messages: 0,
+        }
+    }
+}
+
+impl UserProfile {
+    /// 生成画像摘要（注入 Context 用）
+    pub fn summarize(&self) -> String {
+        let mut parts = vec!["📊 用户画像".to_string()];
+        if !self.preferred_languages.is_empty() {
+            parts.push(format!("  常用语言/框架: {}", self.preferred_languages));
+        }
+        if !self.common_tasks.is_empty() {
+            parts.push(format!("  常见任务: {}", self.common_tasks));
+        }
+        parts.push(format!("  用户水平: {} · 交互风格: {}", self.expertise_level, self.interaction_style));
+        if !self.skill_preferences.is_empty() {
+            parts.push(format!("  偏好技能: {}", self.skill_preferences));
+        }
+        parts.push(format!("  会话 {} 次 · 共 {} 条消息", self.session_count, self.total_messages));
+        parts.join("\n")
     }
 }
 

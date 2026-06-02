@@ -29,6 +29,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::tui::Role;
 
+/// Context window 压缩阈值比例（达到 80% 时触发）
+const COMPACT_RATIO: f64 = 0.8;
+/// 压缩时保留的尾部原始 token 数
+const TAIL_BUDGET_TOKENS: usize = 16384;
+/// 至少保留的最近消息条数
+const MIN_RECENT_KEEP: usize = 2;
+
 // ---------------------------------------------------------------------------
 // 消息类型（复用 tui::Message 的序列化版本）
 // ---------------------------------------------------------------------------
@@ -77,7 +84,7 @@ impl From<Message> for ApiMessage {
 /// 没有 V8 GC 移动内存的干扰，指针固定不变。
 #[derive(Debug, Clone)]
 pub struct Context {
-    /// Session 内不可变的 byte 前缀
+    /// Session 内不可变的 byte 前缀（stable + context + volatile 三层合并）
     immutable_prefix: Arc<[u8]>,
 
     /// 只追加的对话日志（序列化后的 bytes）
@@ -88,24 +95,26 @@ pub struct Context {
 
     /// 系统提示词（原始文本，用于重建 prefix）
     system_prompt: String,
+
+    /// 最近一次 build_request_body 的估算 token 数（用于触发压缩）
+    approx_tokens: usize,
 }
 
 impl Context {
-    /// 创建一个新的 Context
+    /// 创建新的 Context
     ///
-    /// `system_prompt` 会被序列化为 immutable prefix 的第一部分。
-    /// 后续可以通过 `extend_prefix` 添加 tool specs。
+    /// `system_prompt` 作为 stable 层，
+    /// 之后可以通过 `extend_prefix` 添加 context 层和 volatile 层，
+    /// 所有层在 session 启动时一次性注入，后续不再修改 prefix。
     pub fn new(system_prompt: impl Into<String>) -> Self {
         let system_prompt: String = system_prompt.into();
-
-        // 序列化系统提示为 immutable prefix
         let prefix = Self::serialize_system(&system_prompt);
-
         Self {
             immutable_prefix: prefix.into(),
             append_only_log: Vec::new(),
             scratch: Vec::new(),
             system_prompt,
+            approx_tokens: 0,
         }
     }
 
@@ -148,12 +157,114 @@ impl Context {
     }
 
     /// 构建发送到 API 的完整请求 body（不含 scratch）
-    /// 返回序列化后的 JSON bytes
-    pub fn build_request_body(&self) -> Vec<u8> {
+    /// 返回序列化后的 JSON bytes，并更新 approx_tokens
+    pub fn build_request_body(&mut self) -> Vec<u8> {
         let mut body = Vec::new();
         body.extend_from_slice(&self.immutable_prefix);
         body.extend_from_slice(&self.append_only_log);
+        // 粗略估算：中英文混合平均 ~2 bytes/token
+        self.approx_tokens = body.len() / 2;
         body
+    }
+
+    /// 检查是否需要压缩
+    /// `ratio` 为 0.0~1.0 的阈值比例（如 0.8 表示 80%）
+    pub fn needs_compress(&self, context_window: usize, ratio: f64) -> bool {
+        self.approx_tokens > (context_window as f64 * ratio) as usize
+            && self.scratch.len() > MIN_RECENT_KEEP
+    }
+
+    /// 压缩历史消息：将中间消息替换为摘要，保留最近的 tail
+    /// `ratio` 为 0.0~1.0 的阈值比例（如 0.8 表示 80%）
+    /// `summarizer` 接收历史文本，返回摘要字符串
+    pub fn compress<F>(&mut self, context_window: usize, ratio: f64, summarizer: F)
+    where
+        F: FnOnce(&str) -> String,
+    {
+        if !self.needs_compress(context_window, ratio) {
+            return;
+        }
+        // 分离消息：prefix 之前的（已固定）和最近的消息
+        let all_msgs: Vec<Message> = self.scratch.drain(..).collect();
+        // prefix 对应第一条 system 消息
+        let mut keep: Vec<Message> = Vec::new();
+        let mut history_msgs: Vec<Message> = Vec::new();
+        let mut recent_msgs: Vec<Message> = Vec::new();
+
+        // 第一条是系统消息（stable 层），保留
+        if let Some(first) = all_msgs.first() {
+            keep.push(first.clone());
+        }
+        // 从后往前分配：保留足够的尾部消息
+        let mut tail_bytes = 0;
+        let tail_limit = TAIL_BUDGET_TOKENS * 2; // bytes
+        for msg in all_msgs.iter().rev() {
+            let msg_bytes = msg.content.len() + 50; // 粗略
+            if tail_bytes + msg_bytes <= tail_limit && recent_msgs.len() < 20 {
+                recent_msgs.push(msg.clone());
+                tail_bytes += msg_bytes;
+            } else {
+                history_msgs.push(msg.clone());
+            }
+        }
+        recent_msgs.reverse();
+        history_msgs.reverse();
+
+        if history_msgs.is_empty() {
+            // 不需要压缩
+            self.scratch = all_msgs;
+            return;
+        }
+
+        // 对中间历史消息生成结构化 6 段式摘要
+        let history_text: String = history_msgs.iter()
+            .map(|m| format!("{}: {}", match m.role {
+                crate::tui::Role::User => "用户",
+                crate::tui::Role::Assistant => "AI",
+                crate::tui::Role::System => "系统",
+            }, m.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary = summarizer(&history_text);
+
+        // 重建 scratch：keep + 结构化摘要 + recent
+        keep.push(Message::new(
+            crate::tui::Role::System,
+            format!(
+"【历史摘要】以下为中间 {} 条对话的结构化摘要：
+
+## Goal
+{}
+## Decisions & rationale
+{}
+## Files & code
+{}
+## Commands & outcomes
+{}
+## Errors & fixes
+{}
+## Pending & next step
+{}",
+                history_msgs.len(),
+                extract_section(&summary, "Goal"),
+                extract_section(&summary, "Decisions"),
+                extract_section(&summary, "Files"),
+                extract_section(&summary, "Commands"),
+                extract_section(&summary, "Errors"),
+                extract_section(&summary, "Pending"),
+            ),
+        ));
+        keep.extend(recent_msgs);
+        self.scratch = keep;
+
+        // 重建 append_only_log
+        self.append_only_log.clear();
+        for msg in &self.scratch {
+            let serialized = Self::serialize_message(msg);
+            self.append_only_log.extend_from_slice(&serialized);
+        }
+        // 更新 token 估算
+        self.approx_tokens = (self.immutable_prefix.len() + self.append_only_log.len()) / 2;
     }
 
     /// 获取所有消息（用于构建 ChatRequest）
@@ -260,6 +371,27 @@ impl Message {
 }
 
 // ---------------------------------------------------------------------------
+// 辅助函数
+// ---------------------------------------------------------------------------
+
+/// 从结构化摘要中提取指定章节的内容
+fn extract_section(summary: &str, section: &str) -> String {
+    let prefix = format!("## {section}");
+    if let Some(start) = summary.find(&prefix) {
+        let from = start + prefix.len();
+        let rest = &summary[from..];
+        // 找到下一个 ## 或结尾
+        if let Some(end) = rest.find("\n## ") {
+            rest[..end].trim().to_string()
+        } else {
+            rest.trim().to_string()
+        }
+    } else {
+        String::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -344,6 +476,7 @@ mod tests {
         assert!(body.len() >= ctx.log_len());
         // body = prefix + log
         assert_eq!(body.len(), ctx.prefix_len() + ctx.log_len());
+        drop(body); // 释放临时借用
     }
 
     #[test]

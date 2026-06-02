@@ -217,6 +217,11 @@ pub struct App {
     /// 配置文件路径
     config_path: PathBuf,
 
+    /// MEMORY.md 最大字符数
+    max_memory_md_chars: usize,
+    /// Memories 目录路径
+    memories_dir: PathBuf,
+
     /// 当前运行的配置（用于 /config 显示）
     current_config: Option<crate::core::Config>,
 
@@ -232,6 +237,9 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/help",      "显示此帮助"),
     ("/init",      "运行初始化向导"),
     ("/config",    "查看和修改配置"),
+    ("/compress",  "手动触发上下文压缩"),
+    ("/note",      "记录关键笔记到 MEMORY.md"),
+    ("/笔记",      "记录关键笔记到 MEMORY.md"),
     ("/clear",     "清空对话"),
     ("/quit",      "退出程序"),
     ("/exit",      "退出程序"),
@@ -248,7 +256,7 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
 impl App {
     /// 创建新的 App 实例
     /// 创建新的 App 实例
-    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, skill_engine: Option<Arc<Mutex<crate::agent::SkillEngine>>>, resume: bool, config_path: PathBuf) -> Self {
+    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, skill_engine: Option<Arc<Mutex<crate::agent::SkillEngine>>>, resume: bool, config_path: PathBuf, max_memory_md_chars: usize, memories_dir: PathBuf) -> Self {
         let (_event_tx, event_rx) = mpsc::unbounded_channel();
 
         // 会话保存路径
@@ -273,6 +281,8 @@ impl App {
             session_path,
             config_path,
             current_config: None,
+            max_memory_md_chars,
+            memories_dir,
             skill_engine,
             messages: saved_messages,
             input: String::new(),
@@ -358,8 +368,8 @@ impl App {
              \n## 当前环境\n\
              工作目录: {}\n部署模式: {}\
              \n## 自我进化（重要！）\
-             \n当你完成了一个可复用的任务模式，或者发现了一个可以固化的最佳实践，请调用 skill_create 创建新的技能，\
-             让未来的自己能直接复用。技能越多，系统越智能。\
+             \n当你完成了一个可复用的任务模式，或者发现了一个可以固化的最佳实践，请调用 skill_create 创建新的技能。\
+             如果已有技能需改进，用 skill_patch 打补丁升级（保留使用记录）。\
              \n输入 /skill optimize 可以查看所有技能的进化建议。",
             path_mgr.data_root().display(),
             path_mgr.mode().name(),
@@ -373,12 +383,37 @@ impl App {
 
         // 构建 Agent Loop 所需的所有组件
         let max_rounds = config.agent.max_rounds;
+        let compress_ratio = config.agent.compression_ratio;
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
+
+        // volatile 层：session 开始时一次性冻结（时间 + 画像 + 项目上下文）
+        let volatile_text = {
+            let time_str = chrono::Local::now().format("当前时间: %Y-%m-%d %H:%M:%S (UTC+8)");
+            let mut v = format!("\n## 当前状态\n⏰ {time_str}");
+            // 用户画像摘要
+            if let Some(ref mem) = self.memory {
+                if let Ok(engine) = mem.lock() {
+                    let summary = engine.load_profile().unwrap_or_default().summarize();
+                    if !summary.is_empty() { v.push_str(&format!("\n{summary}")); }
+                }
+            }
+            // 项目上下文（扫描当前目录下的 AGENTS.md，最多 2000 字符）
+            if let Ok(agents) = std::fs::read_to_string("AGENTS.md") {
+                if !agents.is_empty() {
+                    let truncated: String = agents.chars().take(2000).collect();
+                    v.push_str(&format!("\n📋 项目上下文 (AGENTS.md):\n{}", truncated));
+                }
+            }
+            v
+        };
+        ctx.extend_prefix(volatile_text.as_bytes());
+
         let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
         // 克隆 Arc 保持 TUI 端也能访问记忆系统和技能引擎
         let agent_memory = self.memory.clone();
         let skill_engine = self.skill_engine.clone();
+        let _session_path = self.session_path.clone();
 
         // 后台 Agent Loop
         tokio::spawn(async move {
@@ -417,14 +452,9 @@ impl App {
                             let mut final_text = String::new();
                             let mut tool_calls: Vec<ToolCallData> = Vec::new();
 
-                            // 2a. 注入当前时间（让模型感知时间）
-                            let time_str = chrono::Local::now().format("当前时间: %Y-%m-%d %H:%M:%S (UTC+8)");
-                            ctx.push_to_log(crate::core::Message::new(
-                                crate::tui::Role::System,
-                                &time_str.to_string(),
-                            ));
 
-                            // 2c. 每 5 轮展示进化建议（让模型自我优化）
+
+                            // 2a. 每 5 轮展示进化建议（让模型自我优化）
                             if round % 5 == 0 && round > 0 {
                                 if let Some(ref se) = skill_engine {
                                     if let Ok(engine) = se.lock() {
@@ -439,7 +469,50 @@ impl App {
                                 }
                             }
 
-                            // 2d. 记忆召回：搜索相关记忆注入 Context
+                            // 2b. 上下文压缩检查
+                            const CONTEXT_WINDOW: usize = 128000; // DeepSeek v4 上下文窗口
+                            if ctx.needs_compress(CONTEXT_WINDOW, compress_ratio) {
+                                tracing::info!("Context 达到 80% 阈值，触发压缩");
+                                let _ = event_tx.send(ApiEvent::StreamChunk("⏳ 压缩历史记录...".into()));
+                                let history_text: String = ctx.get_messages()
+                                    .iter()
+                                    .skip(1) // 跳过 system prompt
+                                    .map(|m| {
+                                        let role_label = match m.role.as_str() {
+                                            "user" => "用户",
+                                            "assistant" => "AI",
+                                            _ => "系统",
+                                        };
+                                        let preview: String = m.content.chars().take(500).collect();
+                                        format!("{}: {}", role_label, preview)
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n---\n");
+                                // 用子 Agent 生成结构化摘要
+                                let sys_prompt = "你是一个对话摘要助手。请将以下历史对话按 6 段结构总结，每段 1-2 行，用中文。如果某段无内容就写\"无\"。6 段为: Goal, Decisions & rationale, Files & code, Commands & outcomes, Errors & fixes, Pending & next step。只输出摘要，不要额外说明。";
+                                let sub_request = crate::api::ChatRequest {
+                                    model: client.model().to_string(),
+                                    messages: vec![
+                                        crate::api::ApiMessage { role: "system".into(), content: sys_prompt.into() },
+                                        crate::api::ApiMessage { role: "user".into(), content: history_text },
+                                    ],
+                                    stream: false,
+                                    max_tokens: Some(1024),
+                                    temperature: None,
+                                    tools: None,
+                                };
+                                let summary = match client.chat(sub_request).await {
+                                    Ok(resp) => resp.choices.first()
+                                        .and_then(|c| c.message.content.as_ref())
+                                        .cloned()
+                                        .unwrap_or_else(|| "压缩失败".into()),
+                                    Err(e) => format!("压缩失败: {e}"),
+                                };
+                                ctx.compress(CONTEXT_WINDOW, compress_ratio, |_| summary);
+                                let _ = event_tx.send(ApiEvent::StreamChunk("✅ 压缩完成\n".into()));
+                            }
+
+                            // 2c. 记忆召回：搜索相关记忆注入 Context
                             if let Some(ref mem) = agent_memory {
                                 if let Ok(mut mem_lock) = mem.lock() {
                                     if let Ok(results) = mem_lock.search(&msg, 5) {
@@ -730,6 +803,7 @@ impl App {
   /help  /?    — 显示此帮助
   /init        — 运行初始化向导
   /config      — 查看和修改配置
+  /note <内容> — 记录关键笔记到 MEMORY.md
   /clear       — 清空对话
   /quit  /exit — 退出程序
   /tool <name> — 查看工具信息
@@ -755,6 +829,39 @@ impl App {
                             }
                         }
                     }
+                    cmd if cmd.starts_with("/note ") || cmd.starts_with("/笔记 ") => {
+                        let note = cmd.trim_start_matches("/note ").trim_start_matches("/笔记 ").trim();
+                        if note.is_empty() {
+                            self.messages.push(Message::system("用法: /note <内容>  — 记录一条笔记到 MEMORY.md"));
+                        } else {
+                            let md_path = self.memories_dir.join("MEMORY.md");
+                            let _ = std::fs::create_dir_all(&self.memories_dir);
+                            let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
+                            let entry = format!("\n- [{}] {}", now, note);
+                            let mut content = std::fs::read_to_string(&md_path).unwrap_or_else(|_| "# 笔记\n".into());
+                            content.push_str(&entry);
+                            // 超出字数限制时删除旧条目（保留前 1/3 标题 + 后 2/3 的条目）
+                            if content.len() > self.max_memory_md_chars {
+                                let lines: Vec<&str> = content.lines().collect();
+                                let header_end = lines.iter().position(|l| l.starts_with("- [")).unwrap_or(lines.len());
+                                let entries: Vec<&&str> = lines[header_end..].iter().collect();
+                                let keep = (entries.len() / 3).max(5);
+                                let mut new_content: String = lines[..header_end].join("\n");
+                                if !new_content.ends_with('\n') { new_content.push('\n'); }
+                                for e in &entries[entries.len().saturating_sub(keep)..] {
+                                    new_content.push_str(e);
+                                    new_content.push('\n');
+                                }
+                                content = new_content;
+                            }
+                            let _ = std::fs::write(&md_path, content);
+                            self.messages.push(Message::system("📝 笔记已保存到 MEMORY.md（关键信息）"));
+                        }
+                    }
+                    "/compress" => {
+                        self.messages.push(Message::system(
+                            "⏳ 压缩指令已发送（下轮请求会自动触发）"));
+                    }
                     "/config" => {
                         let config_path = &self.config_path;
                         let cfg = crate::core::Config::load(config_path)
@@ -765,23 +872,17 @@ impl App {
                         } else {
                             "未设置".into()
                         };
+                        // 读取 config.toml 原始内容
+                        let raw = std::fs::read_to_string(config_path)
+                            .unwrap_or_else(|_| "无法读取配置文件".into());
                         let info = format!(
-                            "当前配置:\n\
-                             📁 路径: {}\n\
-                             🔑 API Key: {}\n\
-                             🤖 模型: {}\n\
-                             🌐 API地址: {}\n\
-                             ⏱  超时: {}s\n\
-                             🔄 重试: {}次\n\
-                             🔁 最大轮次: {}轮\n\
-                             \n修改配置请编辑 config.toml 或运行 /init",
+                            "📁 路径: {}\n\
+                             🔑 API Key: {}\n\n\
+                             ── config.toml ──\n\
+                             {raw}\
+                             按 /init 重新配置，或直接编辑 config.toml",
                             config_path.display(),
                             key_display,
-                            cfg.api.model,
-                            cfg.api.base_url,
-                            cfg.request.timeout_secs,
-                            cfg.request.max_retries,
-                            cfg.agent.max_rounds,
                         );
                         self.messages.push(Message::system(info));
                     }
@@ -1560,6 +1661,17 @@ impl App {
 
     /// 将会话归档到长期记忆
     fn archive_session(&self) {
+        // 保存画像到 USER.md（带字数限制）
+        if let Some(ref mem) = self.memory {
+            if let Ok(engine) = mem.lock() {
+                let md_path = self.memories_dir.join("USER.md");
+                let _ = engine.save_profile_with_limit(
+                    &engine.load_profile().unwrap_or_default(),
+                    Some(&md_path),
+                    self.max_memory_md_chars,
+                );
+            }
+        }
         let text: String = self.messages.iter()
             .filter(|m| m.role != Role::System)
             .map(|m| format!("{}: {}", match m.role {
@@ -1640,7 +1752,7 @@ mod tests {
 
     #[test]
     fn test_app_new_creates_welcome_messages() {
-        let app = App::new("portable", test_dispatcher(), None, None, false, PathBuf::from(""));
+        let app = App::new("portable", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
         assert!(!app.messages.is_empty());
         assert!(app.messages[0].content.contains("RHermes v"));
         assert!(app.messages[0].content.contains("portable"));
@@ -1648,7 +1760,7 @@ mod tests {
 
     #[test]
     fn test_app_initial_state() {
-        let app = App::new("traditional", test_dispatcher(), None, None, false, PathBuf::from(""));
+        let app = App::new("traditional", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
         assert!(!app.should_quit);
         assert!(!app.running);
         assert!(app.input.is_empty());
@@ -1691,7 +1803,7 @@ mod tests {
 
     #[test]
     fn test_handle_key_enter_without_api() {
-        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
         app.input = "hello".into();
         app.cursor_pos = 5;
 
@@ -1707,14 +1819,14 @@ mod tests {
 
     #[test]
     fn test_handle_key_quit() {
-        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_handle_key_text_input() {
-        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.input, "a");
         assert_eq!(app.cursor_pos, 1);

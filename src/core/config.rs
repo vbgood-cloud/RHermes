@@ -28,7 +28,7 @@ const ENV_FILE_NAME: &str = ".env";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// DeepSeek API Key（仅从 .env 读取，不写入 config.toml）
-    #[serde(skip)]
+    #[serde(default, skip_serializing)]
     pub api_key: String,
 
     /// API 配置
@@ -38,6 +38,10 @@ pub struct Config {
     /// 请求配置
     #[serde(default)]
     pub request: RequestConfig,
+
+    /// 记忆与笔记配置
+    #[serde(default)]
+    pub memory: MemoryConfig,
 
     /// Agent 行为配置
     #[serde(default)]
@@ -86,21 +90,44 @@ impl Default for RequestConfig {
     }
 }
 
+/// 记忆与笔记配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryConfig {
+    /// MEMORY.md 最大字符数（超出后删除旧条目）
+    #[serde(default = "default_memory_md_chars")]
+    pub max_memory_md_chars: usize,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self { max_memory_md_chars: default_memory_md_chars() }
+    }
+}
+
+fn default_memory_md_chars() -> usize { 5000 }
+
 /// Agent 行为配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Agent Loop 最大轮次（工具调用次数）
     #[serde(default = "default_max_rounds")]
     pub max_rounds: u32,
+
+    /// 上下文压缩阈值比例（0.0~1.0，默认 0.8 即 80%）
+    #[serde(default = "default_compression_ratio")]
+    pub compression_ratio: f64,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             max_rounds: default_max_rounds(),
+            compression_ratio: default_compression_ratio(),
         }
     }
 }
+
+fn default_compression_ratio() -> f64 { 0.8 }
 
 // ---- 默认值 ----
 
@@ -130,6 +157,7 @@ impl Default for Config {
             api_key: String::new(),
             api: ApiConfig::default(),
             request: RequestConfig::default(),
+            memory: MemoryConfig::default(),
             agent: AgentConfig::default(),
         }
     }
@@ -355,8 +383,12 @@ mod tests {
                 timeout_secs: 120,
                 max_retries: 5,
             },
+            memory: MemoryConfig {
+                max_memory_md_chars: 5000,
+            },
             agent: AgentConfig {
                 max_rounds: 50,
+                compression_ratio: 0.8,
             },
         };
 
