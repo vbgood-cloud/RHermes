@@ -1,7 +1,6 @@
-//! RHermes 内置工具实现
+﻿//! RHermes 鍐呯疆宸ュ叿瀹炵幇
 //!
-//! 每个工具都实现了 `Tool` trait，并声明 `parallel_safe` 标志。
-
+//! 姣忎釜宸ュ叿閮藉疄鐜颁簡 `Tool` trait锛屽苟澹版槑 `parallel_safe` 鏍囧織銆?
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -16,7 +15,7 @@ use crate::tools::{
 };
 
 // ---------------------------------------------------------------------------
-// read_file — 并行安全
+// read_file 鈥?骞惰瀹夊叏
 // ---------------------------------------------------------------------------
 
 pub struct ReadFile;
@@ -27,17 +26,17 @@ impl Tool for ReadFile {
         "read_file"
     }
     fn description(&self) -> &'static str {
-        "读取文件内容，可指定行范围（head/tail/range）"
+        "璇诲彇鏂囦欢鍐呭锛屽彲鎸囧畾琛岃寖鍥达紙head/tail/range锛?
     }
     fn parallel_safe(&self) -> bool {
         true
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("path", ParamType::String, "文件路径"),
-            ParamDef::optional("head", ParamType::Integer, "只返回前 N 行"),
-            ParamDef::optional("tail", ParamType::Integer, "只返回后 N 行"),
-            ParamDef::optional("range", ParamType::String, "行范围如 \"50-100\""),
+            ParamDef::required("path", ParamType::String, "鏂囦欢璺緞"),
+            ParamDef::optional("head", ParamType::Integer, "鍙繑鍥炲墠 N 琛?),
+            ParamDef::optional("tail", ParamType::Integer, "鍙繑鍥炲悗 N 琛?),
+            ParamDef::optional("range", ParamType::String, "琛岃寖鍥村 \"50-100\""),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -57,11 +56,11 @@ impl Tool for ReadFile {
             content
         };
 
-        Ok(format!("[{path}] ({} 字节)\n{result}", result.len()))
+        Ok(format!("[{path}] ({} 瀛楄妭)\n{result}", result.len()))
     }
-}
+#OFFICE_MARKER
 
-/// 递归收集文件（跳过二进制和隐藏目录）
+/// 閫掑綊鏀堕泦鏂囦欢锛堣烦杩囦簩杩涘埗鍜岄殣钘忕洰褰曪級
 fn collect_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
     if !dir.is_dir() {
         return Ok(());
@@ -69,8 +68,7 @@ fn collect_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) -> 
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
-        // 跳过隐藏目录 .git, node_modules, target 等
-        if path.is_dir() {
+        // 璺宠繃闅愯棌鐩綍 .git, node_modules, target 绛?        if path.is_dir() {
             let name = entry.file_name();
             let s = name.to_string_lossy();
             if s.starts_with('.') || s == "node_modules" || s == "target" || s == "build" {
@@ -78,7 +76,7 @@ fn collect_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) -> 
             }
             collect_files(&path, files)?;
         } else if path.is_file() {
-            // 只搜索文本文件（跳过 .exe .dll .png 等）
+            // 鍙悳绱㈡枃鏈枃浠讹紙璺宠繃 .exe .dll .png 绛夛級
             if let Some(ext) = path.extension() {
                 let ext = ext.to_string_lossy().to_lowercase();
                 match ext.as_str() {
@@ -92,9 +90,9 @@ fn collect_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) -> 
         }
     }
     Ok(())
-}
+#OFFICE_MARKER
 
-/// 将 glob 模式转换为正则（简单版本）
+/// 灏?glob 妯″紡杞崲涓烘鍒欙紙绠€鍗曠増鏈級
 fn glob_to_regex(glob: &str) -> Regex {
     let mut re = String::with_capacity(glob.len() + 4);
     re.push('^');
@@ -114,10 +112,10 @@ fn glob_to_regex(glob: &str) -> Regex {
     }
     re.push('$');
     Regex::new(&re).unwrap_or_else(|_| Regex::new(".*").unwrap())
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// search_content — 并行安全
+// search_content 鈥?骞惰瀹夊叏
 // ---------------------------------------------------------------------------
 
 pub struct SearchContent;
@@ -128,16 +126,16 @@ impl Tool for SearchContent {
         "search_content"
     }
     fn description(&self) -> &'static str {
-        "在文件中搜索文本模式，返回匹配的文件:行号"
+        "鍦ㄦ枃浠朵腑鎼滅储鏂囨湰妯″紡锛岃繑鍥炲尮閰嶇殑鏂囦欢:琛屽彿"
     }
     fn parallel_safe(&self) -> bool {
         true
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("pattern", ParamType::String, "搜索模式（支持正则）"),
-            ParamDef::optional("path", ParamType::String, "搜索目录（默认项目根）"),
-            ParamDef::optional("glob", ParamType::String, "文件名过滤"),
+            ParamDef::required("pattern", ParamType::String, "鎼滅储妯″紡锛堟敮鎸佹鍒欙級"),
+            ParamDef::optional("path", ParamType::String, "鎼滅储鐩綍锛堥粯璁ら」鐩牴锛?),
+            ParamDef::optional("glob", ParamType::String, "鏂囦欢鍚嶈繃婊?),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -145,12 +143,12 @@ impl Tool for SearchContent {
         let search_path = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
         let glob_filter = get_optional_string(&args, "glob");
 
-        // 编译正则
+        // 缂栬瘧姝ｅ垯
         let re = Regex::new(&pattern).map_err(|e| {
-            ToolError::ExecutionFailed(format!("正则无效: {e}"))
+            ToolError::ExecutionFailed(format!("姝ｅ垯鏃犳晥: {e}"))
         })?;
 
-        // 收集要搜索的文件
+        // 鏀堕泦瑕佹悳绱㈢殑鏂囦欢
         let mut files: Vec<std::path::PathBuf> = Vec::new();
         let root = std::path::Path::new(&search_path);
         if root.is_file() {
@@ -159,7 +157,7 @@ impl Tool for SearchContent {
             collect_files(root, &mut files).map_err(ToolError::Io)?;
         }
 
-        // 过滤 glob
+        // 杩囨护 glob
         if let Some(ref g) = glob_filter {
             let glob_re = glob_to_regex(g);
             files.retain(|f| {
@@ -168,13 +166,11 @@ impl Tool for SearchContent {
             });
         }
 
-        // 限制搜索文件数（防止爆炸）
-        if files.len() > 5000 {
+        // 闄愬埗鎼滅储鏂囦欢鏁帮紙闃叉鐖嗙偢锛?        if files.len() > 5000 {
             files.truncate(5000);
         }
 
-        // 逐文件搜索
-        let max_results = 200;
+        // 閫愭枃浠舵悳绱?        let max_results = 200;
         let mut results: Vec<String> = Vec::new();
 
         for file_path in &files {
@@ -183,8 +179,7 @@ impl Tool for SearchContent {
             }
             let content = match tokio::fs::read_to_string(file_path).await {
                 Ok(c) => c,
-                Err(_) => continue, // 跳过二进制/不可读文件
-            };
+                Err(_) => continue, // 璺宠繃浜岃繘鍒?涓嶅彲璇绘枃浠?            };
             for (line_no, line) in content.lines().enumerate() {
                 if re.is_match(line) {
                     results.push(format!("{}:{}:{}", file_path.display(), line_no + 1, line));
@@ -196,15 +191,15 @@ impl Tool for SearchContent {
         }
 
         if results.is_empty() {
-            Ok(format!("未找到匹配 \"{pattern}\" 的内容"))
+            Ok(format!("鏈壘鍒板尮閰?\"{pattern}\" 鐨勫唴瀹?))
         } else {
-            Ok(format!("找到 {} 处匹配:\n{}", results.len(), results.join("\n")))
+            Ok(format!("鎵惧埌 {} 澶勫尮閰?\n{}", results.len(), results.join("\n")))
         }
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// glob — 并行安全
+// glob 鈥?骞惰瀹夊叏
 // ---------------------------------------------------------------------------
 
 pub struct Glob;
@@ -215,15 +210,15 @@ impl Tool for Glob {
         "glob"
     }
     fn description(&self) -> &'static str {
-        "按 glob 模式列出文件"
+        "鎸?glob 妯″紡鍒楀嚭鏂囦欢"
     }
     fn parallel_safe(&self) -> bool {
         true
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("pattern", ParamType::String, "glob 模式如 '**/*.rs'"),
-            ParamDef::optional("path", ParamType::String, "搜索目录"),
+            ParamDef::required("pattern", ParamType::String, "glob 妯″紡濡?'**/*.rs'"),
+            ParamDef::optional("path", ParamType::String, "鎼滅储鐩綍"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -234,17 +229,17 @@ impl Tool for Glob {
         cmd.arg("--glob").arg(&pattern).arg(&path);
 
         let output = cmd.output().await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("glob 失败: {e}"))
+            ToolError::ExecutionFailed(format!("glob 澶辫触: {e}"))
         })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let files: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
-        Ok(format!("找到 {} 个文件:\n{}", files.len(), files.join("\n")))
+        Ok(format!("鎵惧埌 {} 涓枃浠?\n{}", files.len(), files.join("\n")))
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// write_file — 非并行安全（副作用）
+// write_file 鈥?闈炲苟琛屽畨鍏紙鍓綔鐢級
 // ---------------------------------------------------------------------------
 
 pub struct WriteFile;
@@ -255,23 +250,22 @@ impl Tool for WriteFile {
         "write_file"
     }
     fn description(&self) -> &'static str {
-        "写入文件（创建或覆盖）"
+        "鍐欏叆鏂囦欢锛堝垱寤烘垨瑕嗙洊锛?
     }
     fn parallel_safe(&self) -> bool {
         false
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("path", ParamType::String, "文件路径"),
-            ParamDef::required("content", ParamType::String, "文件内容"),
+            ParamDef::required("path", ParamType::String, "鏂囦欢璺緞"),
+            ParamDef::required("content", ParamType::String, "鏂囦欢鍐呭"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let path = get_string_arg(&args, "path")?;
         let content = get_string_arg(&args, "content")?;
 
-        // 确保父目录存在
-        if let Some(parent) = Path::new(&path).parent() {
+        // 纭繚鐖剁洰褰曞瓨鍦?        if let Some(parent) = Path::new(&path).parent() {
             tokio::fs::create_dir_all(parent).await.map_err(ToolError::Io)?;
         }
 
@@ -279,12 +273,12 @@ impl Tool for WriteFile {
             .await
             .map_err(ToolError::Io)?;
 
-        Ok(format!("已写入 {} ({} 字节)", path, content.len()))
+        Ok(format!("宸插啓鍏?{} ({} 瀛楄妭)", path, content.len()))
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// run_command — 非并行安全（副作用）
+// run_command 鈥?闈炲苟琛屽畨鍏紙鍓綔鐢級
 // ---------------------------------------------------------------------------
 
 pub struct RunCommand;
@@ -295,16 +289,16 @@ impl Tool for RunCommand {
         "run_command"
     }
     fn description(&self) -> &'static str {
-        "在 shell 中执行命令"
+        "鍦?shell 涓墽琛屽懡浠?
     }
     fn parallel_safe(&self) -> bool {
         false
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("command", ParamType::String, "要执行的命令（Windows 用 cmd，其他用 sh）"),
-            ParamDef::optional("timeout", ParamType::Integer, "超时秒数（默认 60）"),
-            ParamDef::optional("cwd", ParamType::String, "工作目录（默认当前目录）"),
+            ParamDef::required("command", ParamType::String, "瑕佹墽琛岀殑鍛戒护锛圵indows 鐢?cmd锛屽叾浠栫敤 sh锛?),
+            ParamDef::optional("timeout", ParamType::Integer, "瓒呮椂绉掓暟锛堥粯璁?60锛?),
+            ParamDef::optional("cwd", ParamType::String, "宸ヤ綔鐩綍锛堥粯璁ゅ綋鍓嶇洰褰曪級"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -314,7 +308,7 @@ impl Tool for RunCommand {
             .and_then(|v| v.as_u64())
             .unwrap_or(60);
 
-        // Windows 用 cmd /c，其他用 sh -c
+        // Windows 鐢?cmd /c锛屽叾浠栫敤 sh -c
         #[cfg(target_os = "windows")]
         let shell = "cmd";
         #[cfg(not(target_os = "windows"))]
@@ -328,15 +322,15 @@ impl Tool for RunCommand {
         let mut cmd = tokio::process::Command::new(shell);
         cmd.arg(flag).arg(&command);
 
-        // 可选的工作目录
+        // 鍙€夌殑宸ヤ綔鐩綍
         if let Some(cwd) = get_optional_string(&args, "cwd") {
             cmd.current_dir(&cwd);
         }
 
         let output = tokio::time::timeout(Duration::from_secs(timeout), cmd.output())
             .await
-            .map_err(|_| ToolError::ExecutionFailed("命令超时".into()))?
-            .map_err(|e| ToolError::ExecutionFailed(format!("命令执行失败: {e}")))?;
+            .map_err(|_| ToolError::ExecutionFailed("鍛戒护瓒呮椂".into()))?
+            .map_err(|e| ToolError::ExecutionFailed(format!("鍛戒护鎵ц澶辫触: {e}")))?;
 
         let mut result = String::new();
 
@@ -350,22 +344,21 @@ impl Tool for RunCommand {
             result.push_str(&format!("[stderr]\n{stderr}"));
         }
         if !output.status.success() {
-            result.push_str(&format!("\n[退出码: {}]", output.status.code().unwrap_or(-1)));
+            result.push_str(&format!("\n[閫€鍑虹爜: {}]", output.status.code().unwrap_or(-1)));
         }
 
         if result.is_empty() {
-            result = "命令执行完毕（无输出）".into();
+            result = "鍛戒护鎵ц瀹屾瘯锛堟棤杈撳嚭锛?.into();
         }
 
         Ok(result)
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// get_current_time — 并行安全（纯计算）
-// ---------------------------------------------------------------------------
+// get_current_time 鈥?骞惰瀹夊叏锛堢函璁＄畻锛?// ---------------------------------------------------------------------------
 
-/// 获取当前时间
+/// 鑾峰彇褰撳墠鏃堕棿
 pub struct GetCurrentTime;
 
 #[async_trait]
@@ -374,7 +367,7 @@ impl Tool for GetCurrentTime {
         "get_current_time"
     }
     fn description(&self) -> &'static str {
-        "获取当前日期和时间"
+        "鑾峰彇褰撳墠鏃ユ湡鍜屾椂闂?
     }
     fn parallel_safe(&self) -> bool {
         true
@@ -386,17 +379,14 @@ impl Tool for GetCurrentTime {
         let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S (UTC+8)");
         Ok(now.to_string())
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// web_search — 非并行安全（网络请求）
-// ---------------------------------------------------------------------------
+// web_search 鈥?闈炲苟琛屽畨鍏紙缃戠粶璇锋眰锛?// ---------------------------------------------------------------------------
 
-/// 搜索网络信息
+/// 鎼滅储缃戠粶淇℃伅
 ///
-/// 使用 DuckDuckGo Instant Answer API，无需 API Key。
-/// 返回搜索结果摘要和相关链接。
-pub struct WebSearch;
+/// 浣跨敤 DuckDuckGo Instant Answer API锛屾棤闇€ API Key銆?/// 杩斿洖鎼滅储缁撴灉鎽樿鍜岀浉鍏抽摼鎺ャ€?pub struct WebSearch;
 
 #[async_trait]
 impl Tool for WebSearch {
@@ -404,14 +394,14 @@ impl Tool for WebSearch {
         "web_search"
     }
     fn description(&self) -> &'static str {
-        "搜索网络获取最新信息"
+        "鎼滅储缃戠粶鑾峰彇鏈€鏂颁俊鎭?
     }
     fn parallel_safe(&self) -> bool {
         false
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("query", ParamType::String, "搜索关键词"),
+            ParamDef::required("query", ParamType::String, "鎼滅储鍏抽敭璇?),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -423,59 +413,59 @@ impl Tool for WebSearch {
 
         let resp = reqwest::get(&url)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("搜索请求失败: {e}")))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("鎼滅储璇锋眰澶辫触: {e}")))?;
 
         let body: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("解析搜索结果失败: {e}")))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("瑙ｆ瀽鎼滅储缁撴灉澶辫触: {e}")))?;
 
         let mut results = Vec::new();
 
-        // 摘要
+        // 鎽樿
         if let Some(abstract_text) = body["AbstractText"].as_str() {
             if !abstract_text.is_empty() {
-                results.push(format!("📝 摘要: {abstract_text}"));
+                results.push(format!("馃摑 鎽樿: {abstract_text}"));
                 if let Some(src) = body["AbstractSource"].as_str() {
-                    results.push(format!("   来源: {src}"));
+                    results.push(format!("   鏉ユ簮: {src}"));
                 }
                 if let Some(url) = body["AbstractURL"].as_str() {
-                    results.push(format!("   链接: {url}"));
+                    results.push(format!("   閾炬帴: {url}"));
                 }
                 results.push(String::new());
             }
         }
 
-        // 答案
+        // 绛旀
         if let Some(answer) = body["Answer"].as_str() {
             if !answer.is_empty() {
-                results.push(format!("💡 答案: {answer}"));
+                results.push(format!("馃挕 绛旀: {answer}"));
                 if let Some(url) = body["AnswerURL"].as_str() {
                     if !url.is_empty() {
-                        results.push(format!("   链接: {url}"));
+                        results.push(format!("   閾炬帴: {url}"));
                     }
                 }
                 results.push(String::new());
             }
         }
 
-        // 相关结果
+        // 鐩稿叧缁撴灉
         if let Some(topics) = body["RelatedTopics"].as_array() {
             for topic in topics.iter().take(8) {
                 if let Some(text) = topic["Text"].as_str() {
                     if let Some(url) = topic["FirstURL"].as_str() {
-                        results.push(format!("🔗 {text}"));
+                        results.push(format!("馃敆 {text}"));
                         results.push(format!("   {url}"));
                     } else {
-                        results.push(format!("🔗 {text}"));
+                        results.push(format!("馃敆 {text}"));
                     }
                 }
-                // 处理嵌套的 Topics
+                // 澶勭悊宓屽鐨?Topics
                 if let Some(sub_topics) = topic["Topics"].as_array() {
                     for sub in sub_topics.iter().take(3) {
                         if let Some(text) = sub["Text"].as_str() {
                             if let Some(url) = sub["FirstURL"].as_str() {
-                                results.push(format!("  • {text}"));
+                                results.push(format!("  鈥?{text}"));
                                 results.push(format!("    {url}"));
                             }
                         }
@@ -485,15 +475,14 @@ impl Tool for WebSearch {
         }
 
         if results.is_empty() {
-            Ok(format!("未找到与「{query}」相关的搜索结果"))
+            Ok(format!("鏈壘鍒颁笌銆寋query}銆嶇浉鍏崇殑鎼滅储缁撴灉"))
         } else {
-            Ok(format!("搜索结果「{query}」:\n{}", results.join("\n")))
+            Ok(format!("鎼滅储缁撴灉銆寋query}銆?\n{}", results.join("\n")))
         }
     }
-}
+#OFFICE_MARKER
 
-/// URL 编码（简单版本，仅编码中文和特殊字符）
-fn urlencoding(input: &str) -> String {
+/// URL 缂栫爜锛堢畝鍗曠増鏈紝浠呯紪鐮佷腑鏂囧拰鐗规畩瀛楃锛?fn urlencoding(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     for byte in input.bytes() {
         match byte {
@@ -507,16 +496,14 @@ fn urlencoding(input: &str) -> String {
         }
     }
     result
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// web_fetch — 非并行安全（网络请求）
-// ---------------------------------------------------------------------------
+// web_fetch 鈥?闈炲苟琛屽畨鍏紙缃戠粶璇锋眰锛?// ---------------------------------------------------------------------------
 
-/// 获取网页内容
+/// 鑾峰彇缃戦〉鍐呭
 ///
-/// 下载指定 URL 的内容并提取可读文本。
-pub struct WebFetch;
+/// 涓嬭浇鎸囧畾 URL 鐨勫唴瀹瑰苟鎻愬彇鍙鏂囨湰銆?pub struct WebFetch;
 
 #[async_trait]
 impl Tool for WebFetch {
@@ -524,15 +511,15 @@ impl Tool for WebFetch {
         "web_fetch"
     }
     fn description(&self) -> &'static str {
-        "获取网页内容并提取可读文本"
+        "鑾峰彇缃戦〉鍐呭骞舵彁鍙栧彲璇绘枃鏈?
     }
     fn parallel_safe(&self) -> bool {
         false
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("url", ParamType::String, "要获取的网页 URL"),
-            ParamDef::optional("max_chars", ParamType::Integer, "最大字符数（默认 5000）"),
+            ParamDef::required("url", ParamType::String, "瑕佽幏鍙栫殑缃戦〉 URL"),
+            ParamDef::optional("max_chars", ParamType::Integer, "鏈€澶у瓧绗︽暟锛堥粯璁?5000锛?),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -544,7 +531,7 @@ impl Tool for WebFetch {
 
         let resp = reqwest::get(&url)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("请求失败: {e}")))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("璇锋眰澶辫触: {e}")))?;
 
         let status = resp.status();
         let content_type = resp
@@ -557,33 +544,32 @@ impl Tool for WebFetch {
         let body = resp
             .text()
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("读取响应失败: {e}")))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("璇诲彇鍝嶅簲澶辫触: {e}")))?;
 
-        // 提取可读文本（简单 HTML 标签剥离）
-        let text = if content_type.contains("text/html") {
+        // 鎻愬彇鍙鏂囨湰锛堢畝鍗?HTML 鏍囩鍓ョ锛?        let text = if content_type.contains("text/html") {
             strip_html_tags(&body)
         } else {
             body.clone()
         };
 
-        // 截断
+        // 鎴柇
         let text: String = text.chars().take(max_chars).collect();
         let total_len = body.len();
         let text_len = text.len();
 
         let extra = if text_len < total_len {
-            format!("\n...(显示 {} 字符，共 {} 字符)", text_len, total_len)
+            format!("\n...(鏄剧ず {} 瀛楃锛屽叡 {} 瀛楃)", text_len, total_len)
         } else {
             String::new()
         };
         Ok(format!(
-            "[{}] HTTP {status} · {content_type}\n{}{}",
+            "[{}] HTTP {status} 路 {content_type}\n{}{}",
             url, text, extra,
         ))
     }
-}
+#OFFICE_MARKER
 
-/// 简单的 HTML 标签剥离
+/// 绠€鍗曠殑 HTML 鏍囩鍓ョ
 fn strip_html_tags(html: &str) -> String {
     let mut result = String::with_capacity(html.len());
     let mut in_tag = false;
@@ -597,7 +583,7 @@ fn strip_html_tags(html: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if !in_tag && bytes[i] == b'<' {
-            // 检测 <script 和 <style
+            // 妫€娴?<script 鍜?<style
             let rest_lower = &lower[i..];
             in_script = rest_lower.starts_with("<script");
             in_style = rest_lower.starts_with("<style");
@@ -606,7 +592,7 @@ fn strip_html_tags(html: &str) -> String {
             continue;
         }
         if in_tag && bytes[i] == b'>' {
-            // 检测 </script> 和 </style>
+            // 妫€娴?</script> 鍜?</style>
             if (in_script && lower_bytes[i.saturating_sub(8)..=i].windows(9).any(|w| w == b"</script>"))
                 || (in_style && lower_bytes[i.saturating_sub(6)..=i].windows(7).any(|w| w == b"</style>"))
             {
@@ -624,7 +610,7 @@ fn strip_html_tags(html: &str) -> String {
             i += 1;
             continue;
         }
-        // 合并多个空白
+        // 鍚堝苟澶氫釜绌虹櫧
         if bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r' {
             if !result.ends_with(' ') {
                 result.push(' ');
@@ -636,17 +622,14 @@ fn strip_html_tags(html: &str) -> String {
     }
 
     result.trim().to_string()
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// delegate_task — 非并行安全（网络请求）
-// ---------------------------------------------------------------------------
+// delegate_task 鈥?闈炲苟琛屽畨鍏紙缃戠粶璇锋眰锛?// ---------------------------------------------------------------------------
 
-/// 将子任务委托给独立的子 Agent 执行
+/// 灏嗗瓙浠诲姟濮旀墭缁欑嫭绔嬬殑瀛?Agent 鎵ц
 ///
-/// 子 Agent 会创建一个独立的 API 调用，专注于完成给定任务并返回结果。
-/// 适合需要深度分析或并行调研的场景。
-pub struct DelegateTask;
+/// 瀛?Agent 浼氬垱寤轰竴涓嫭绔嬬殑 API 璋冪敤锛屼笓娉ㄤ簬瀹屾垚缁欏畾浠诲姟骞惰繑鍥炵粨鏋溿€?/// 閫傚悎闇€瑕佹繁搴﹀垎鏋愭垨骞惰璋冪爺鐨勫満鏅€?pub struct DelegateTask;
 
 #[async_trait]
 impl Tool for DelegateTask {
@@ -654,15 +637,15 @@ impl Tool for DelegateTask {
         "delegate_task"
     }
     fn description(&self) -> &'static str {
-        "将子任务委托给独立的子 Agent 执行，返回分析结果"
+        "灏嗗瓙浠诲姟濮旀墭缁欑嫭绔嬬殑瀛?Agent 鎵ц锛岃繑鍥炲垎鏋愮粨鏋?
     }
     fn parallel_safe(&self) -> bool {
         false
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("task", ParamType::String, "要子 Agent 完成的任务描述"),
-            ParamDef::optional("context", ParamType::String, "额外的上下文信息"),
+            ParamDef::required("task", ParamType::String, "瑕佸瓙 Agent 瀹屾垚鐨勪换鍔℃弿杩?),
+            ParamDef::optional("context", ParamType::String, "棰濆鐨勪笂涓嬫枃淇℃伅"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -670,28 +653,26 @@ impl Tool for DelegateTask {
         let context = get_optional_string(&args, "context").unwrap_or_default();
 
         let config = GLOBAL_CONFIG.get().ok_or_else(|| {
-            ToolError::ExecutionFailed("子 Agent 配置未初始化".into())
+            ToolError::ExecutionFailed("瀛?Agent 閰嶇疆鏈垵濮嬪寲".into())
         })?;
 
         let result = crate::agent::run_sub_agent(&task, &context, config).await;
 
         if result.success {
             Ok(format!(
-                "【子 Agent 结果】\n{}\n【耗时: {}ms】",
+                "銆愬瓙 Agent 缁撴灉銆慭n{}\n銆愯€楁椂: {}ms銆?,
                 result.output, result.duration_ms
             ))
         } else {
-            Ok(format!("【子 Agent 失败】\n{}", result.output))
+            Ok(format!("銆愬瓙 Agent 澶辫触銆慭n{}", result.output))
         }
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// run_skill — 非并行安全（子 Agent 调用）
-// ---------------------------------------------------------------------------
+// run_skill 鈥?闈炲苟琛屽畨鍏紙瀛?Agent 璋冪敤锛?// ---------------------------------------------------------------------------
 
-/// 执行已安装的技能
-pub struct RunSkill;
+/// 鎵ц宸插畨瑁呯殑鎶€鑳?pub struct RunSkill;
 
 #[async_trait]
 impl Tool for RunSkill {
@@ -699,15 +680,15 @@ impl Tool for RunSkill {
         "run_skill"
     }
     fn description(&self) -> &'static str {
-        "执行一个已安装的技能并返回结果"
+        "鎵ц涓€涓凡瀹夎鐨勬妧鑳藉苟杩斿洖缁撴灉"
     }
     fn parallel_safe(&self) -> bool {
         false
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("name", ParamType::String, "技能名称"),
-            ParamDef::required("arguments", ParamType::String, "传给技能的任务描述"),
+            ParamDef::required("name", ParamType::String, "鎶€鑳藉悕绉?),
+            ParamDef::required("arguments", ParamType::String, "浼犵粰鎶€鑳界殑浠诲姟鎻忚堪"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -715,106 +696,104 @@ impl Tool for RunSkill {
         let arguments = get_string_arg(&args, "arguments")?;
 
         let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| {
-            ToolError::ExecutionFailed("技能引擎未初始化".into())
+            ToolError::ExecutionFailed("鎶€鑳藉紩鎿庢湭鍒濆鍖?.into())
         })?;
 
-        // 查找技能（锁作用域，在 await 前释放）
+        // 鏌ユ壘鎶€鑳斤紙閿佷綔鐢ㄥ煙锛屽湪 await 鍓嶉噴鏀撅級
         let skill = {
             let engine = engine_arc.lock().map_err(|e| {
-                ToolError::ExecutionFailed(format!("技能引擎锁定失败: {e}"))
+                ToolError::ExecutionFailed(format!("鎶€鑳藉紩鎿庨攣瀹氬け璐? {e}"))
             })?;
             engine.get(&name).cloned().ok_or_else(|| {
-                ToolError::ExecutionFailed(format!("技能「{name}」不存在"))
+                ToolError::ExecutionFailed(format!("鎶€鑳姐€寋name}銆嶄笉瀛樺湪"))
             })?
         };
 
         let result = skill.run(&arguments).await;
 
-        // 记录使用情况
+        // 璁板綍浣跨敤鎯呭喌
         if let Ok(mut engine) = engine_arc.lock() {
             let _ = engine.record_usage(&name, result.success, result.duration_ms as u64);
         }
 
         if result.success {
-            Ok(format!("【技能「{name}」结果】\n{}\n【耗时: {}ms】", result.output, result.duration_ms))
+            Ok(format!("銆愭妧鑳姐€寋name}銆嶇粨鏋溿€慭n{}\n銆愯€楁椂: {}ms銆?, result.output, result.duration_ms))
         } else {
-            Ok(format!("【技能「{name}」执行失败】\n{}", result.output))
+            Ok(format!("銆愭妧鑳姐€寋name}銆嶆墽琛屽け璐ャ€慭n{}", result.output))
         }
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// skill_list — 并行安全（纯查询）
-// ---------------------------------------------------------------------------
+// skill_list 鈥?骞惰瀹夊叏锛堢函鏌ヨ锛?// ---------------------------------------------------------------------------
 pub struct SkillList;
 
 #[async_trait]
 impl Tool for SkillList {
     fn name(&self) -> &'static str { "skill_list" }
-    fn description(&self) -> &'static str { "列出所有已安装的技能名称和描述" }
+    fn description(&self) -> &'static str { "鍒楀嚭鎵€鏈夊凡瀹夎鐨勬妧鑳藉悕绉板拰鎻忚堪" }
     fn parallel_safe(&self) -> bool { true }
     fn parameters(&self) -> Vec<ParamDef> { vec![] }
     async fn execute(&self, _args: Value) -> Result<String, ToolError> {
-        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("技能引擎未初始化".into()))?;
-        let engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("锁定失败: {e}")))?;
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("鎶€鑳藉紩鎿庢湭鍒濆鍖?.into()))?;
+        let engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("閿佸畾澶辫触: {e}")))?;
         let skills = engine.list();
         if skills.is_empty() {
-            Ok("暂无已安装的技能。可以通过 skill_create 创建新技能。".into())
+            Ok("鏆傛棤宸插畨瑁呯殑鎶€鑳姐€傚彲浠ラ€氳繃 skill_create 鍒涘缓鏂版妧鑳姐€?.into())
         } else {
-            let mut out = format!("可用技能 ({}):", skills.len());
+            let mut out = format!("鍙敤鎶€鑳?({}):", skills.len());
             for s in &skills {
-                out.push_str(&format!("\n- {}: {} (使用 {} 次, 成功率 {:.0}%)", s.name, s.description, s.use_count, s.success_rate() * 100.0));
+                out.push_str(&format!("\n- {}: {} (浣跨敤 {} 娆? 鎴愬姛鐜?{:.0}%)", s.name, s.description, s.use_count, s.success_rate() * 100.0));
             }
             Ok(out)
         }
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// skill_search — 并行安全（纯查询）
-// ---------------------------------------------------------------------------
+// skill_search 鈥?骞惰瀹夊叏锛堢函鏌ヨ锛?// ---------------------------------------------------------------------------
 pub struct SkillSearch;
 
 #[async_trait]
 impl Tool for SkillSearch {
     fn name(&self) -> &'static str { "skill_search" }
-    fn description(&self) -> &'static str { "按关键词搜索已安装的技能" }
+    fn description(&self) -> &'static str { "鎸夊叧閿瘝鎼滅储宸插畨瑁呯殑鎶€鑳? }
     fn parallel_safe(&self) -> bool { true }
     fn parameters(&self) -> Vec<ParamDef> {
-        vec![ParamDef::required("query", ParamType::String, "搜索关键词")]
+        vec![ParamDef::required("query", ParamType::String, "鎼滅储鍏抽敭璇?)]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let query = get_string_arg(&args, "query")?;
-        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("技能引擎未初始化".into()))?;
-        let engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("锁定失败: {e}")))?;
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("鎶€鑳藉紩鎿庢湭鍒濆鍖?.into()))?;
+        let engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("閿佸畾澶辫触: {e}")))?;
         let results = engine.search(&query);
         if results.is_empty() {
-            Ok(format!("未找到与「{query}」相关的技能"))
+            Ok(format!("鏈壘鍒颁笌銆寋query}銆嶇浉鍏崇殑鎶€鑳?))
         } else {
-            let mut out = format!("找到 {} 个相关技能:", results.len());
+            let mut out = format!("鎵惧埌 {} 涓浉鍏虫妧鑳?", results.len());
             for s in &results { out.push_str(&format!("\n- {}: {} ({:.0}%)", s.name, s.description, s.success_rate() * 100.0)); }
             Ok(out)
         }
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// skill_create — 非并行安全（写磁盘）
+// skill_create 鈥?闈炲苟琛屽畨鍏紙鍐欑鐩橈級
 // ---------------------------------------------------------------------------
 pub struct SkillCreate;
 
 #[async_trait]
 impl Tool for SkillCreate {
     fn name(&self) -> &'static str { "skill_create" }
-    fn description(&self) -> &'static str { "创建新的可复用技能，让 AI 不断积累最佳实践" }
+    fn description(&self) -> &'static str { "鍒涘缓鏂扮殑鍙鐢ㄦ妧鑳斤紝璁?AI 涓嶆柇绉疮鏈€浣冲疄璺? }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("name", ParamType::String, "技能名称（小写英文+短横线）"),
-            ParamDef::required("description", ParamType::String, "一句话描述该技能的用途"),
-            ParamDef::required("body", ParamType::String, "技能正文 Markdown，描述执行步骤和注意事项"),
-            ParamDef::optional("category", ParamType::String, "技能分类目录（如 analysis/utils/debug），不填则放根目录"),
-            ParamDef::optional("allowed_tools", ParamType::String, "允许的工具列表，逗号分隔"),
+            ParamDef::required("name", ParamType::String, "鎶€鑳藉悕绉帮紙灏忓啓鑻辨枃+鐭í绾匡級"),
+            ParamDef::required("description", ParamType::String, "涓€鍙ヨ瘽鎻忚堪璇ユ妧鑳界殑鐢ㄩ€?),
+            ParamDef::required("body", ParamType::String, "鎶€鑳芥鏂?Markdown锛屾弿杩版墽琛屾楠ゅ拰娉ㄦ剰浜嬮」"),
+            ParamDef::optional("category", ParamType::String, "鎶€鑳藉垎绫荤洰褰曪紙濡?analysis/utils/debug锛夛紝涓嶅～鍒欐斁鏍圭洰褰?),
+            ParamDef::optional("allowed_tools", ParamType::String, "鍏佽鐨勫伐鍏峰垪琛紝閫楀彿鍒嗛殧"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -824,35 +803,34 @@ impl Tool for SkillCreate {
         let category = get_optional_string(&args, "category");
         let category_str = category.as_deref();
         let allowed_tools = get_optional_string(&args, "allowed_tools").unwrap_or_default();
-        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("技能引擎未初始化".into()))?;
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("鎶€鑳藉紩鎿庢湭鍒濆鍖?.into()))?;
         let tools_str = if allowed_tools.is_empty() { String::new() } else {
             format!("\nallowed_tools:\n  - {}", allowed_tools.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>().join("\n  - "))
         };
         let skill_body = format!("---\nname: {name}\ndescription: {description}\nrun_as: subagent{tools_str}\n---\n\n# {name}\n\n{body}");
-        { let mut engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("锁定失败: {e}")))?;
-          engine.create_with_category(&name, category_str, &description, &skill_body, crate::agent::RunAs::Subagent).map_err(|e| ToolError::ExecutionFailed(format!("创建失败: {e}")))?; }
-        Ok(format!("✅ 技能「{name}」已创建！\n描述: {description}\n\n现在可以使用 run_skill(name=\"{name}\") 来调用此技能。"))
+        { let mut engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("閿佸畾澶辫触: {e}")))?;
+          engine.create_with_category(&name, category_str, &description, &skill_body, crate::agent::RunAs::Subagent).map_err(|e| ToolError::ExecutionFailed(format!("鍒涘缓澶辫触: {e}")))?; }
+        Ok(format!("鉁?鎶€鑳姐€寋name}銆嶅凡鍒涘缓锛乗n鎻忚堪: {description}\n\n鐜板湪鍙互浣跨敤 run_skill(name=\"{name}\") 鏉ヨ皟鐢ㄦ鎶€鑳姐€?))
     }
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// skill_patch — 非并行安全（写磁盘）
+// skill_patch 鈥?闈炲苟琛屽畨鍏紙鍐欑鐩橈級
 // ---------------------------------------------------------------------------
 
-/// 更新已有技能的内容（打补丁进化）
-pub struct SkillPatch;
+/// 鏇存柊宸叉湁鎶€鑳界殑鍐呭锛堟墦琛ヤ竵杩涘寲锛?pub struct SkillPatch;
 
 #[async_trait]
 impl Tool for SkillPatch {
     fn name(&self) -> &'static str { "skill_patch" }
-    fn description(&self) -> &'static str { "更新已有技能的内容（打补丁进化），保留使用统计" }
+    fn description(&self) -> &'static str { "鏇存柊宸叉湁鎶€鑳界殑鍐呭锛堟墦琛ヤ竵杩涘寲锛夛紝淇濈暀浣跨敤缁熻" }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("name", ParamType::String, "要更新的技能名称"),
-            ParamDef::optional("description", ParamType::String, "新的描述，留空不覆盖"),
-            ParamDef::optional("body", ParamType::String, "新的技能正文 Markdown，留空不覆盖"),
-            ParamDef::optional("allowed_tools", ParamType::String, "新的工具列表，逗号分隔，留空不覆盖"),
+            ParamDef::required("name", ParamType::String, "瑕佹洿鏂扮殑鎶€鑳藉悕绉?),
+            ParamDef::optional("description", ParamType::String, "鏂扮殑鎻忚堪锛岀暀绌轰笉瑕嗙洊"),
+            ParamDef::optional("body", ParamType::String, "鏂扮殑鎶€鑳芥鏂?Markdown锛岀暀绌轰笉瑕嗙洊"),
+            ParamDef::optional("allowed_tools", ParamType::String, "鏂扮殑宸ュ叿鍒楄〃锛岄€楀彿鍒嗛殧锛岀暀绌轰笉瑕嗙洊"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
@@ -866,12 +844,12 @@ impl Tool for SkillPatch {
         });
 
         let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| {
-            ToolError::ExecutionFailed("技能引擎未初始化".into())
+            ToolError::ExecutionFailed("鎶€鑳藉紩鎿庢湭鍒濆鍖?.into())
         })?;
 
         {
             let mut engine = engine_arc.lock().map_err(|e| {
-                ToolError::ExecutionFailed(format!("锁定失败: {e}"))
+                ToolError::ExecutionFailed(format!("閿佸畾澶辫触: {e}"))
             })?;
 
             engine.update_skill(
@@ -880,37 +858,32 @@ impl Tool for SkillPatch {
                 new_body.as_deref(),
                 new_allowed_tools.as_deref(),
                 None,
-            ).map_err(|e| ToolError::ExecutionFailed(format!("更新技能失败: {e}")))?;
+            ).map_err(|e| ToolError::ExecutionFailed(format!("鏇存柊鎶€鑳藉け璐? {e}")))?;
         }
 
-        Ok(format!("✅ 技能「{name}」已更新！使用记录（次数/成功率）已保留。"))
+        Ok(format!("鉁?鎶€鑳姐€寋name}銆嶅凡鏇存柊锛佷娇鐢ㄨ褰曪紙娆℃暟/鎴愬姛鐜囷級宸蹭繚鐣欍€?))
     }
-}
+#OFFICE_MARKER
 
-/// 全局技能引擎（供所有 skill_* 工具使用）
-static GLOBAL_SKILL_ENGINE: OnceLock<Arc<std::sync::Mutex<crate::agent::SkillEngine>>> = OnceLock::new();
+/// 鍏ㄥ眬鎶€鑳藉紩鎿庯紙渚涙墍鏈?skill_* 宸ュ叿浣跨敤锛?static GLOBAL_SKILL_ENGINE: OnceLock<Arc<std::sync::Mutex<crate::agent::SkillEngine>>> = OnceLock::new();
 
-/// 设置全局技能引擎
-pub fn set_global_skill_engine(engine: Arc<std::sync::Mutex<crate::agent::SkillEngine>>) -> bool {
+/// 璁剧疆鍏ㄥ眬鎶€鑳藉紩鎿?pub fn set_global_skill_engine(engine: Arc<std::sync::Mutex<crate::agent::SkillEngine>>) -> bool {
     GLOBAL_SKILL_ENGINE.set(engine).is_ok()
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// 注册所有内置工具
-// ---------------------------------------------------------------------------
+// 娉ㄥ唽鎵€鏈夊唴缃伐鍏?// ---------------------------------------------------------------------------
 
-/// 全局配置（子 Agent 工具使用）
-static GLOBAL_CONFIG: OnceLock<crate::core::Config> = OnceLock::new();
+/// 鍏ㄥ眬閰嶇疆锛堝瓙 Agent 宸ュ叿浣跨敤锛?static GLOBAL_CONFIG: OnceLock<crate::core::Config> = OnceLock::new();
 
-/// 设置全局配置（在 main.rs 中调用）
+/// 璁剧疆鍏ㄥ眬閰嶇疆锛堝湪 main.rs 涓皟鐢級
 pub fn set_global_config(config: crate::core::Config) {
     let _ = GLOBAL_CONFIG.set(config);
-}
+#OFFICE_MARKER
 
 use crate::tools::ToolRegistry;
 
-/// 创建包含所有内置工具的注册表
-pub fn builtin_registry() -> ToolRegistry {
+/// 鍒涘缓鍖呭惈鎵€鏈夊唴缃伐鍏风殑娉ㄥ唽琛?pub fn builtin_registry() -> ToolRegistry {
     ToolRegistry::new()
         .register(ReadFile)
         .register(SearchContent)
@@ -918,27 +891,18 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(WriteFile)
         .register(RunCommand)
         .register(GetCurrentTime)
+        .register(WebSearch)
+        .register(WebFetch)
         .register(RunSkill)
         .register(SkillList)
         .register(SkillSearch)
         .register(SkillCreate)
         .register(SkillPatch)
-        .register(WebSearch)
-        .register(WebFetch)
         .register(DelegateTask)
-        // Office 工具
-        .register(crate::tools::office::ReadDocx)
-        .register(crate::tools::office::ReadPptx)
-        .register(crate::tools::office::ReadXlsx)
-        .register(crate::tools::office::ReadPdf)
-        .register(crate::tools::office::WriteDocx)
-        .register(crate::tools::office::WritePptx)
-        .register(crate::tools::office::WriteXlsx)
-        .register(crate::tools::office::FillDocxTemplate)
-}
+#OFFICE_MARKER
 
 // ---------------------------------------------------------------------------
-// 测试
+// 娴嬭瘯
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -976,14 +940,6 @@ mod tests {
     fn test_builtin_registry() {
         let reg = builtin_registry();
         assert_eq!(reg.len(), 22);
-        assert!(reg.get("read_docx").is_some());
-        assert!(reg.get("read_pptx").is_some());
-        assert!(reg.get("read_xlsx").is_some());
-        assert!(reg.get("read_pdf").is_some());
-        assert!(reg.get("write_docx").is_some());
-        assert!(reg.get("write_pptx").is_some());
-        assert!(reg.get("write_xlsx").is_some());
-        assert!(reg.get("fill_docx_template").is_some());
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());
@@ -1010,4 +966,4 @@ mod tests {
         assert!(!safe.contains(&"write_file"));
         assert!(!safe.contains(&"run_command"));
     }
-}
+#OFFICE_MARKER
