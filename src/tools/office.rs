@@ -12,7 +12,22 @@ use async_trait::async_trait;
 use calamine::Reader;
 use serde_json::Value;
 
+use std::sync::OnceLock;
+
 use crate::tools::registry::{ParamDef, ParamType, Tool, ToolError, ToolRegistry};
+
+/// 全局显示配置（在 main.rs 中设置）
+static GLOBAL_DISPLAY_CONFIG: OnceLock<crate::core::DisplayConfig> = OnceLock::new();
+
+/// 设置全局显示配置
+pub fn set_display_config(cfg: crate::core::DisplayConfig) {
+    let _ = GLOBAL_DISPLAY_CONFIG.set(cfg);
+}
+
+/// 获取 read_pdf 最大字符数
+fn read_pdf_max_chars() -> usize {
+    GLOBAL_DISPLAY_CONFIG.get().map(|c| c.read_pdf_max_chars).unwrap_or(30000)
+}
 
 // ---------------------------------------------------------------------------
 // 辅助函数
@@ -67,6 +82,7 @@ async fn run_python_script(script: &str) -> Result<String, ToolError> {
 
     let output = Command::new("python")
         .arg(&tmp_path)
+        .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| ToolError::ExecutionFailed(format!("执行 Python 失败: {e}")))?;
 
@@ -260,14 +276,26 @@ impl Tool for ReadPdf {
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let path = args["path"].as_str()
-            .ok_or_else(|| ToolError::MissingParam("path".into()))?;
+            .ok_or_else(|| ToolError::MissingParam("path".into()))?
+            .to_string();
+        let start = std::time::Instant::now();
 
-        let text = pdf_extract::extract_text(path)
-            .map_err(|e| ToolError::ExecutionFailed(format!("读取 PDF 失败: {e}")))?;
+        // 用 spawn_blocking 避免阻塞异步运行时
+        let text = tokio::task::spawn_blocking(move || {
+            pdf_extract::extract_text(&path)
+                .map_err(|e| format!("读取 PDF 失败: {e}"))
+        })
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("PDF 线程崩溃: {e}")))?
+        .map_err(|e| ToolError::ExecutionFailed(e))?;
 
-        let preview: String = text.chars().take(5000).collect();
+        let elapsed = start.elapsed();
         let total_chars = text.chars().count();
-        Ok(format!("📄 PDF ({total_chars} 字符，显示前 5000):\n{preview}"))
+        let max_preview = read_pdf_max_chars();
+        let show_chars = total_chars.min(max_preview);
+        let preview: String = text.chars().take(show_chars).collect();
+        let truncated = if total_chars > show_chars { format!("（截断，共 {total_chars} 字符）") } else { String::new() };
+        Ok(format!("📄 PDF (显示 {show_chars}/{total_chars} 字符，耗时 {:.1}s){truncated}:\n{preview}", elapsed.as_secs_f64()))
     }
 }
 

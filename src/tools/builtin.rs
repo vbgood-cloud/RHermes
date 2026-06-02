@@ -231,6 +231,7 @@ impl Tool for Glob {
         let path = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
 
         let mut cmd = tokio::process::Command::new("fd");
+        cmd.stdin(std::process::Stdio::null());
         cmd.arg("--glob").arg(&pattern).arg(&path);
 
         let output = cmd.output().await.map_err(|e| {
@@ -327,6 +328,8 @@ impl Tool for RunCommand {
 
         let mut cmd = tokio::process::Command::new(shell);
         cmd.arg(flag).arg(&command);
+        // 重要：必须断开 stdin，否则子进程会抢走 TUI 的键盘输入
+        cmd.stdin(std::process::Stdio::null());
 
         // 可选的工作目录
         if let Some(cwd) = get_optional_string(&args, "cwd") {

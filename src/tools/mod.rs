@@ -6,7 +6,7 @@ pub use registry::*;
 pub use builtin::*;
 pub use dispatcher::*;
 
-mod office;
+pub mod office;
 mod registry;
 mod builtin;
 mod dispatcher;

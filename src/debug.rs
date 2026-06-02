@@ -227,7 +227,11 @@ fn generate_session_id() -> String {
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() > max {
-        format!("{}...（截断）", &s[..max])
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}...（截断）", &s[..end])
     } else {
         s.to_string()
     }

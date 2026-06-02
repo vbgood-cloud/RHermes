@@ -336,7 +336,8 @@ impl App {
              1. 禁止在任何情况下说出「我是DeepSeek」这句话。\
              2. 禁止提及「深度求索」或「深度求索公司」。\
              3. 自我介绍时只能说「我是RHermes」。\
-             4. 不能告诉用户你是由任何公司开发的。\
+             4. 不能告诉用户你是由任何公司开发的。
+5. 禁止不加改变地重复调用同一个工具。如果工具结果末尾有截断标记，说明内容只显示了部分，请使用其他参数获取指定部分，不要用完全相同的参数再次调用。\
              \n## 可用工具（共 22 个）\n\
              - read_file: 读取文件\n- write_file: 写入文件\n\
              - search_content: 搜索文本\n- run_command: 执行命令\n\
@@ -389,6 +390,7 @@ impl App {
         // 构建 Agent Loop 所需的所有组件
         let max_rounds = config.agent.max_rounds;
         let compress_ratio = config.agent.compression_ratio;
+        let display_config = config.display.clone();
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
 
@@ -640,8 +642,9 @@ impl App {
                                     }
                                     let mut output = r.output.clone();
                                     let lines_before = output.lines().count();
-                                    if output.len() > 2000 {
-                                        let truncated: String = output.chars().take(2000).collect();
+                                    let max_chars = display_config.tool_result_max_chars;
+                                    if output.len() > max_chars {
+                                        let truncated: String = output.chars().take(max_chars).collect();
                                         let lines_after = truncated.lines().count();
                                         output = format!("{}\n... (共{}行, 截断{}行)", truncated, lines_before, lines_before - lines_after);
                                     }

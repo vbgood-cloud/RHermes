@@ -47,6 +47,10 @@ pub struct Config {
     #[serde(default)]
     pub debug: DebugConfig,
 
+    /// 显示与截断配置
+    #[serde(default)]
+    pub display: DisplayConfig,
+
     /// Agent 行为配置
     #[serde(default)]
     pub agent: AgentConfig,
@@ -129,6 +133,29 @@ impl Default for DebugConfig {
 
 fn default_debug_buffer() -> usize { 500 }
 
+/// 显示与截断配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplayConfig {
+    /// 工具结果最大字符数（超出后截断）
+    #[serde(default = "default_tool_result_max_chars")]
+    pub tool_result_max_chars: usize,
+    /// read_pdf 预览最大字符数
+    #[serde(default = "default_read_pdf_max_chars")]
+    pub read_pdf_max_chars: usize,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            tool_result_max_chars: default_tool_result_max_chars(),
+            read_pdf_max_chars: default_read_pdf_max_chars(),
+        }
+    }
+}
+
+fn default_tool_result_max_chars() -> usize { 15000 }
+fn default_read_pdf_max_chars() -> usize { 30000 }
+
 /// Agent 行为配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -182,6 +209,7 @@ impl Default for Config {
             request: RequestConfig::default(),
             memory: MemoryConfig::default(),
             debug: DebugConfig::default(),
+            display: DisplayConfig::default(),
             agent: AgentConfig::default(),
         }
     }
@@ -413,6 +441,10 @@ mod tests {
             debug: DebugConfig {
                 enabled: false,
                 buffer_size: 500,
+            },
+            display: DisplayConfig {
+                tool_result_max_chars: 15000,
+                read_pdf_max_chars: 30000,
             },
             agent: AgentConfig {
                 max_rounds: 50,
