@@ -6,12 +6,14 @@ mod agent;
 mod api;
 mod core;
 mod cost;
+mod debug;
 mod init;
 mod tools;
 mod tui;
 
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -49,6 +51,23 @@ enum Commands {
     },
     /// ⚙️ 交互式初始化向导（API Key / 模型 / 部署方式）
     Init,
+    /// 🔍 调试工具
+    Debug {
+        #[command(subcommand)]
+        command: DebugCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum DebugCommand {
+    /// 导出调试报告
+    Export {
+        /// 会话 ID（留空自动使用最近的 session.json）
+        session_id: Option<String>,
+        /// 输出文件路径
+        #[arg(short, long, default_value = "debug-report.json")]
+        output: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -83,17 +102,65 @@ async fn main() {
 
     match cli.command {
         Some(Commands::Init) => {
-            // 运行 init 向导
             if let Err(e) = init::run_init() {
                 eprintln!("[RHermes] 初始化失败: {e}");
                 std::process::exit(1);
             }
         }
+        Some(Commands::Debug { command }) => {
+            match command {
+                DebugCommand::Export { session_id, output } => {
+                    export_debug(session_id, &output).unwrap_or_else(|e| {
+                        eprintln!("[RHermes] 调试导出失败: {e}");
+                        std::process::exit(1);
+                    });
+                }
+            }
+        }
         _ => {
-            // 默认：启动编程 Agent (code)
             run_code(cli.resume).await;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// debug export 命令
+// ---------------------------------------------------------------------------
+
+fn export_debug(session_id: Option<String>, output: &str) -> Result<(), debug::DebugError> {
+    let path = PathManager::detect().data_root().join("debug");
+    if !path.exists() {
+        eprintln!("[RHermes] 未找到调试数据目录: {}", path.display());
+        eprintln!("   请先运行 rhermes code 进行对话");
+        std::process::exit(1);
+    }
+
+    let session_id = session_id.unwrap_or_else(|| "latest".into());
+
+    // 查找调试文件
+    let debug_file = if session_id == "latest" {
+        // 找最新文件
+        let mut entries: Vec<_> = fs::read_dir(&path)
+            .map_err(|e| debug::DebugError::Io(e.to_string()))?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+            .collect();
+        entries.sort_by_key(|e| e.path().metadata().ok().map(|m| m.modified().ok()));
+        entries.last().map(|e| e.path()).ok_or_else(|| {
+            debug::DebugError::Io("没有找到调试文件".into())
+        })?
+    } else {
+        path.join(format!("session-{session_id}.json"))
+    };
+
+    // 复制到输出路径（如果不同）
+    let output_path = Path::new(output);
+    if debug_file != output_path {
+        fs::copy(&debug_file, output_path)
+            .map_err(|e| debug::DebugError::Io(e.to_string()))?;
+    }
+    println!("✅ 调试报告已导出: {}", output_path.display());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
