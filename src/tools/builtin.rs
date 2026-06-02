@@ -117,8 +117,14 @@ fn glob_to_regex(glob: &str) -> Regex {
 }
 
 // ---------------------------------------------------------------------------
-// search_content — 并行安全
+// search_content — 并行安全（基于 ripgrep 库）
 // ---------------------------------------------------------------------------
+
+use grep_regex::RegexMatcher;
+use grep_searcher::sinks::UTF8;
+use grep_searcher::Searcher;
+use grep_searcher::SearcherBuilder;
+use ignore::WalkBuilder;
 
 pub struct SearchContent;
 
@@ -128,7 +134,7 @@ impl Tool for SearchContent {
         "search_content"
     }
     fn description(&self) -> &'static str {
-        "在文件中搜索文本模式，返回匹配的文件:行号"
+        "在文件中搜索文本模式，返回匹配的文件:行号（基于 ripgrep）"
     }
     fn parallel_safe(&self) -> bool {
         true
@@ -145,62 +151,72 @@ impl Tool for SearchContent {
         let search_path = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
         let glob_filter = get_optional_string(&args, "glob");
 
-        // 编译正则
-        let re = Regex::new(&pattern).map_err(|e| {
-            ToolError::ExecutionFailed(format!("正则无效: {e}"))
-        })?;
+        // spawn_blocking：grep-searcher 是同步 API
+        let result = tokio::task::spawn_blocking(move || {
+            let matcher = RegexMatcher::new(&pattern).map_err(|e| {
+                format!("正则无效: {e}")
+            })?;
 
-        // 收集要搜索的文件
-        let mut files: Vec<std::path::PathBuf> = Vec::new();
-        let root = std::path::Path::new(&search_path);
-        if root.is_file() {
-            files.push(root.to_path_buf());
-        } else {
-            collect_files(root, &mut files).map_err(ToolError::Io)?;
-        }
+            let mut searcher = SearcherBuilder::new()
+                .line_number(true)
+                .build();
 
-        // 过滤 glob
-        if let Some(ref g) = glob_filter {
-            let glob_re = glob_to_regex(g);
-            files.retain(|f| {
-                let name = f.to_string_lossy();
-                glob_re.is_match(&name)
-            });
-        }
+            let mut results: Vec<String> = Vec::new();
+            let max_results = 200;
+            let path = std::path::Path::new(&search_path);
 
-        // 限制搜索文件数（防止爆炸）
-        if files.len() > 5000 {
-            files.truncate(5000);
-        }
-
-        // 逐文件搜索
-        let max_results = 200;
-        let mut results: Vec<String> = Vec::new();
-
-        for file_path in &files {
-            if results.len() >= max_results {
-                break;
-            }
-            let content = match tokio::fs::read_to_string(file_path).await {
-                Ok(c) => c,
-                Err(_) => continue, // 跳过二进制/不可读文件
-            };
-            for (line_no, line) in content.lines().enumerate() {
-                if re.is_match(line) {
-                    results.push(format!("{}:{}:{}", file_path.display(), line_no + 1, line));
-                    if results.len() >= max_results {
-                        break;
+            if path.is_file() {
+                searcher.search_path(&matcher, path, UTF8(|lnum, line| {
+                    if results.len() >= max_results { return Ok(false); }
+                    results.push(format!("{}:{}:{}", path.display(), lnum, line));
+                    Ok(true)
+                })).map_err(|e| format!("搜索失败: {e}"))?;
+            } else {
+                let walk = WalkBuilder::new(path)
+                    .hidden(false)
+                    .git_ignore(true)
+                    .build();
+                use ignore::DirEntry;
+                for entry in walk.filter_map(|e: Result<DirEntry, ignore::Error>| e.ok()) {
+                    if results.len() >= max_results { break; }
+                    let file_path = entry.path().to_path_buf();
+                    if let Some(g) = &glob_filter {
+                        let name = file_path.to_string_lossy();
+                        if !glob_match(g, &name) { continue; }
                     }
+                    let _ = searcher.search_path(&matcher, &file_path, UTF8(|lnum, line| {
+                        if results.len() >= max_results { return Ok(false); }
+                        results.push(format!("{}:{}:{}", file_path.display(), lnum, line));
+                        Ok(true)
+                    }));
                 }
             }
-        }
 
-        if results.is_empty() {
-            Ok(format!("未找到匹配 \"{pattern}\" 的内容"))
-        } else {
-            Ok(format!("找到 {} 处匹配:\n{}", results.len(), results.join("\n")))
-        }
+            if results.is_empty() {
+                Ok(format!("未找到匹配 \"{pattern}\" 的内容"))
+            } else {
+                Ok(format!("找到 {} 处匹配:\n{}", results.len(), results.join("\n")))
+            }
+        }).await
+        .map_err(|e| ToolError::ExecutionFailed(format!("搜索线程崩溃: {e}")))?
+        .map_err(|e| ToolError::ExecutionFailed(e))?;
+
+        Ok(result)
     }
+}
+
+/// 简单 glob 匹配（用于 grep-searcher Walk 结果过滤）
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let re_str: String = pattern.chars().map(|c| match c {
+        '*' => ".*".to_string(),
+        '?' => ".".to_string(),
+        '.' => "\\.".to_string(),
+        '\\' => "\\\\".to_string(),
+        c if c.is_ascii_punctuation() && c != '_' => format!("\\{}", c),
+        c => c.to_string(),
+    }).collect();
+    let re = regex::Regex::new(&format!("^{}$", re_str)).ok();
+    re.map_or(true, |r| r.is_match(name))
 }
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,9 @@ dialoguer = "0.11"
 rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+ignore = "0.4"
 zip = "2"
 quick-xml = "0.37"
 calamine = "0.26"
