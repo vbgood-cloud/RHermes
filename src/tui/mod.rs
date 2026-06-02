@@ -372,7 +372,7 @@ impl App {
              工作目录: {}\n部署模式: {}\
              \n## 自我进化（重要！）\
              \n当你完成了一个可复用的任务模式，或者发现了一个可以固化的最佳实践，请调用 skill_create 创建新的技能。\
-             如果已有技能需改进，用 skill_patch 打补丁升级（保留使用记录）。\
+             如果已有技能在执行中出错，经过你的尝试找到了正确的方法，**必须用 skill_patch 更新该技能的 body**，让下次能直接成功（保留使用记录）。规则：出错 → 尝试修复 → 修复成功后 → 立即 skill_patch 更新技能内容。\
              \n输入 /skill optimize 可以查看所有技能的进化建议。",
             path_mgr.data_root().display(),
             path_mgr.mode().name(),
@@ -620,10 +620,20 @@ impl App {
                                     if r.name == "delegate_task" {
                                         has_delegate = true;
                                         final_text = r.output.clone();
-                                        // 子 Agent 结果直接显示，不写 Context（避免模型再处理）
                                         if !final_text.is_empty() {
                                             let _ = event_tx.send(ApiEvent::StreamChunk(final_text.clone()));
                                         }
+                                        continue;
+                                    }
+                                    // 技能创建/更新结果直接显示给用户
+                                    if r.name == "skill_patch" || r.name == "skill_create" {
+                                        let _ = event_tx.send(ApiEvent::StreamChunk(format!("\n🧬 {}\n", r.output)));
+                                        let _ = event_tx.send(ApiEvent::Done);
+                                        // 也写入 Context 让模型知道
+                                        ctx.push_to_log(crate::core::Message::new(
+                                            crate::tui::Role::System,
+                                            &r.output,
+                                        ));
                                         continue;
                                     }
                                     let mut output = r.output.clone();
