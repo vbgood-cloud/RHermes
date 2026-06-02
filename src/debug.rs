@@ -75,6 +75,8 @@ pub enum DebugEntry {
 
 /// 会话级调试捕获器
 pub struct SessionDebug {
+    /// 最大值条目数
+    pub max_entries: usize,
     /// 会话唯一 ID
     pub session_id: String,
     /// 调试条目环缓冲区
@@ -108,6 +110,15 @@ impl SessionDebug {
             entries: Vec::with_capacity(128),
             stats: DebugStats::default(),
             created_at: Instant::now(),
+            max_entries: MAX_DEBUG_ENTRIES,
+        }
+    }
+
+    /// 设置最大条目数
+    pub fn set_max_entries(&mut self, n: usize) {
+        self.max_entries = n;
+        if n > 0 && self.entries.len() > n {
+            self.entries.drain(0..self.entries.len().saturating_sub(n));
         }
     }
 
@@ -197,7 +208,7 @@ impl SessionDebug {
     }
 
     fn push(&mut self, entry: DebugEntry) {
-        if self.entries.len() >= MAX_DEBUG_ENTRIES {
+        if self.max_entries > 0 && self.entries.len() >= self.max_entries {
             self.entries.remove(0);
         }
         self.entries.push((Instant::now(), entry));
@@ -296,16 +307,17 @@ mod tests {
     #[test]
     fn test_ring_buffer_capped() {
         let mut d = SessionDebug::new();
-        for i in 0..MAX_DEBUG_ENTRIES + 10 {
+        d.set_max_entries(10);
+        for i in 0..20 {
             d.record_tool_call(&format!("t{i}"), "{}", "ok", 1, true);
         }
-        assert_eq!(d.entries.len(), MAX_DEBUG_ENTRIES);
-        // 最旧的被移除
-        let first = match &d.entries.first().unwrap().1 {
+        assert_eq!(d.entries.len(), 10);
+        // 最旧的被移除，最近的是 t19
+        let last = match &d.entries.last().unwrap().1 {
             DebugEntry::ToolCall { name, .. } => name.clone(),
             _ => String::new(),
         };
-        assert_eq!(first, format!("t{}", 10));
+        assert_eq!(last, "t19");
     }
 
     #[test]

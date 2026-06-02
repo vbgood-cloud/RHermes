@@ -221,6 +221,8 @@ pub struct App {
     max_memory_md_chars: usize,
     /// Memories 目录路径
     memories_dir: PathBuf,
+    /// 会话调试器
+    debug: Option<Arc<Mutex<crate::debug::SessionDebug>>>,
 
     /// 当前运行的配置（用于 /config 显示）
     current_config: Option<crate::core::Config>,
@@ -256,7 +258,7 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
 impl App {
     /// 创建新的 App 实例
     /// 创建新的 App 实例
-    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, skill_engine: Option<Arc<Mutex<crate::agent::SkillEngine>>>, resume: bool, config_path: PathBuf, max_memory_md_chars: usize, memories_dir: PathBuf) -> Self {
+    pub fn new(mode: &str, dispatcher: ToolDispatcher, memory: Option<Arc<Mutex<MemorySystem>>>, skill_engine: Option<Arc<Mutex<crate::agent::SkillEngine>>>, resume: bool, config_path: PathBuf, max_memory_md_chars: usize, memories_dir: PathBuf, debug: Arc<Mutex<crate::debug::SessionDebug>>) -> Self {
         let (_event_tx, event_rx) = mpsc::unbounded_channel();
 
         // 会话保存路径
@@ -283,6 +285,7 @@ impl App {
             current_config: None,
             max_memory_md_chars,
             memories_dir,
+            debug: Some(debug),
             skill_engine,
             messages: saved_messages,
             input: String::new(),
@@ -414,6 +417,7 @@ impl App {
         let agent_memory = self.memory.clone();
         let skill_engine = self.skill_engine.clone();
         let _session_path = self.session_path.clone();
+        let session_debug = self.debug.clone();
 
         // 后台 Agent Loop
         tokio::spawn(async move {
@@ -600,6 +604,15 @@ impl App {
                                 let results = dispatcher.dispatch(calls_to_dispatch).await;
                                 tracing::info!("工具执行完成: {} 个结果", results.len());
 
+                                // 记录工具调用到调试
+                                if let Some(ref d) = session_debug {
+                                    if let Ok(mut dbg) = d.lock() {
+                                        for r in &results {
+                                            dbg.record_tool_call(&r.name, "", &r.output, r.duration_ms, r.success);
+                                        }
+                                    }
+                                }
+
                                 // 5c. 工具结果写回 Context（截断过长输出）
                                 let mut has_delegate = false;
                                 for r in &results {
@@ -641,6 +654,14 @@ impl App {
 
                             // 6. 最终文本回复 → 写入 Context + 结束
                             tracing::info!("Agent Loop 完成, final_text_len={}", final_text.len());
+
+                            // 记录轮次到调试
+                            if let Some(ref d) = session_debug {
+                                if let Ok(mut dbg) = d.lock() {
+                                    dbg.record_round(round, &msg, &final_text, 0);
+                                }
+                            }
+
                             if !final_text.is_empty() {
                                 ctx.push_to_log(crate::core::Message::new(
                                     crate::tui::Role::Assistant,
@@ -755,6 +776,11 @@ impl App {
                     self.stats.update_from_usage(&usage);
                 }
                 ApiEvent::Error(err) => {
+                    if let Some(ref d) = self.debug {
+                        if let Ok(mut dbg) = d.lock() {
+                            dbg.record_error("api", &err);
+                        }
+                    }
                     self.response_start.take();
                     self.messages.push(Message::system(format!("⚠ {err}")));
                     self.streaming_buffer.clear();
@@ -787,6 +813,7 @@ impl App {
                 match input.as_str() {
                     "/quit" | "/exit" => {
                         self.archive_session();
+                        self.export_debug();
                         self.save_session();
                         self.should_quit = true;
                     },
@@ -1660,6 +1687,19 @@ impl App {
     }
 
     /// 将会话归档到长期记忆
+    fn export_debug(&self) {
+        if let Some(ref d) = self.debug {
+            if let Ok(mut dbg) = d.lock() {
+                let debug_dir = self.memories_dir.parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join("debug");
+                let _ = std::fs::create_dir_all(&debug_dir);
+                let path = debug_dir.join(format!("session-{}.json", dbg.session_id));
+                let _ = dbg.export(&path);
+            }
+        }
+    }
+
     fn archive_session(&self) {
         // 保存画像到 USER.md（带字数限制）
         if let Some(ref mem) = self.memory {
@@ -1752,7 +1792,7 @@ mod tests {
 
     #[test]
     fn test_app_new_creates_welcome_messages() {
-        let app = App::new("portable", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
+        let app = App::new("portable", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""), Arc::new(Mutex::new(crate::debug::SessionDebug::new())));
         assert!(!app.messages.is_empty());
         assert!(app.messages[0].content.contains("RHermes v"));
         assert!(app.messages[0].content.contains("portable"));
@@ -1760,7 +1800,7 @@ mod tests {
 
     #[test]
     fn test_app_initial_state() {
-        let app = App::new("traditional", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
+        let app = App::new("traditional", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""), Arc::new(Mutex::new(crate::debug::SessionDebug::new())));
         assert!(!app.should_quit);
         assert!(!app.running);
         assert!(app.input.is_empty());
@@ -1803,7 +1843,7 @@ mod tests {
 
     #[test]
     fn test_handle_key_enter_without_api() {
-        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""), Arc::new(Mutex::new(crate::debug::SessionDebug::new())));
         app.input = "hello".into();
         app.cursor_pos = 5;
 
@@ -1819,14 +1859,14 @@ mod tests {
 
     #[test]
     fn test_handle_key_quit() {
-        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""), Arc::new(Mutex::new(crate::debug::SessionDebug::new())));
         app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         assert!(app.should_quit);
     }
 
     #[test]
     fn test_handle_key_text_input() {
-        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""));
+        let mut app = App::new("test", test_dispatcher(), None, None, false, PathBuf::from(""), 5000, PathBuf::from(""), Arc::new(Mutex::new(crate::debug::SessionDebug::new())));
         app.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         assert_eq!(app.input, "a");
         assert_eq!(app.cursor_pos, 1);

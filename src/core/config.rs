@@ -43,6 +43,10 @@ pub struct Config {
     #[serde(default)]
     pub memory: MemoryConfig,
 
+    /// 调试配置
+    #[serde(default)]
+    pub debug: DebugConfig,
+
     /// Agent 行为配置
     #[serde(default)]
     pub agent: AgentConfig,
@@ -106,6 +110,25 @@ impl Default for MemoryConfig {
 
 fn default_memory_md_chars() -> usize { 5000 }
 
+/// 调试配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DebugConfig {
+    /// 是否启用调试追踪（默认关闭）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 调试环缓冲区大小
+    #[serde(default = "default_debug_buffer")]
+    pub buffer_size: usize,
+}
+
+impl Default for DebugConfig {
+    fn default() -> Self {
+        Self { enabled: false, buffer_size: default_debug_buffer() }
+    }
+}
+
+fn default_debug_buffer() -> usize { 500 }
+
 /// Agent 行为配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
@@ -158,6 +181,7 @@ impl Default for Config {
             api: ApiConfig::default(),
             request: RequestConfig::default(),
             memory: MemoryConfig::default(),
+            debug: DebugConfig::default(),
             agent: AgentConfig::default(),
         }
     }
@@ -385,6 +409,10 @@ mod tests {
             },
             memory: MemoryConfig {
                 max_memory_md_chars: 5000,
+            },
+            debug: DebugConfig {
+                enabled: false,
+                buffer_size: 500,
             },
             agent: AgentConfig {
                 max_rounds: 50,

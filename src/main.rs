@@ -242,10 +242,21 @@ async fn run_code(resume: bool) {
         let _ = crate::tools::set_global_skill_engine(Arc::clone(se));
     }
 
+    // 初始化调试系统（按配置启用）
+    let session_debug = if config.debug.enabled {
+        let mut sd = debug::SessionDebug::new();
+        sd.set_max_entries(config.debug.buffer_size);
+        Some(Arc::new(Mutex::new(sd)))
+    } else {
+        None
+    };
+    let session_debug_default = Arc::new(Mutex::new(debug::SessionDebug::new()));
+    let session_debug: Arc<Mutex<debug::SessionDebug>> = session_debug.unwrap_or(session_debug_default);
+
     // 创建 TUI
     let config_path_buf = config_path.clone();
     let max_memory_md_chars = config.memory.max_memory_md_chars;
-    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, skill_engine, resume, config_path_buf, max_memory_md_chars, memories_dir);
+    let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, skill_engine, resume, config_path_buf, max_memory_md_chars, memories_dir, session_debug);
 
     // 如果已有 API Key，初始化 API 客户端
     if config.is_configured() {
