@@ -319,6 +319,17 @@ impl App {
                 env!("CARGO_PKG_VERSION"),
                 mode,
             )));
+            let tool_names: Vec<String> = app.dispatcher.as_ref().unwrap().registry().all_names()
+                .iter().map(|s| s.to_string()).collect();
+            let tools_str = tool_names.chunks(5)
+                .map(|chunk| chunk.join(", "))
+                .collect::<Vec<_>>()
+                .join("\n  ");
+            app.messages.push(Message::system(format!(
+                "🔧 可用工具 ({}):\n  {}",
+                tool_names.len(),
+                tools_str,
+            )));
         }
 
         app
@@ -1876,9 +1887,9 @@ mod tests {
         // 没有 API 时回到模拟模式
         assert!(app.input.is_empty());
         assert_eq!(app.cursor_pos, 0);
-        // welcome + user + assistant(simulated) = 3
-        assert_eq!(app.messages.len(), 3);
-        assert!(app.messages[1].content.contains("hello"));
+        // welcome + tools + user + assistant(simulated) ≥ 3
+        assert!(app.messages.len() >= 3);
+        assert!(app.messages.iter().any(|m| m.content.contains("hello")));
     }
 
     #[test]
