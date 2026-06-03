@@ -205,7 +205,7 @@ async fn run_code(resume: bool) {
     };
 
     // 初始化记忆系统
-    let memories_dir = path_mgr.data_root().join("Memories");
+    let memories_dir = path_mgr.data_root().join("memories");
     let _ = std::fs::create_dir_all(&memories_dir);
     let memory_path = memories_dir.join("memories.db");
     let memory = match crate::agent::MemorySystem::open(&memory_path) {

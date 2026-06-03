@@ -931,25 +931,23 @@ impl App {
                             let md_path = self.memories_dir.join("MEMORY.md");
                             let _ = std::fs::create_dir_all(&self.memories_dir);
                             let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
-                            let entry = format!("\n- [{}] {}", now, note);
-                            let mut content = std::fs::read_to_string(&md_path).unwrap_or_else(|_| "# 笔记\n".into());
+                            let entry = format!("§ [{}] {}", now, note);
+                            let mut content = std::fs::read_to_string(&md_path).unwrap_or_default();
                             content.push_str(&entry);
-                            // 超出字数限制时删除旧条目（保留前 1/3 标题 + 后 2/3 的条目）
+                            // § 分隔：超出时删除最旧条目
                             if content.len() > self.max_memory_md_chars {
-                                let lines: Vec<&str> = content.lines().collect();
-                                let header_end = lines.iter().position(|l| l.starts_with("- [")).unwrap_or(lines.len());
-                                let entries: Vec<&&str> = lines[header_end..].iter().collect();
-                                let keep = (entries.len() / 3).max(5);
-                                let mut new_content: String = lines[..header_end].join("\n");
-                                if !new_content.ends_with('\n') { new_content.push('\n'); }
-                                for e in &entries[entries.len().saturating_sub(keep)..] {
-                                    new_content.push_str(e);
-                                    new_content.push('\n');
+                                let parts: Vec<&str> = content.split('§').collect();
+                                let mut kept = String::new();
+                                for part in parts {
+                                    let test = if kept.is_empty() { part.to_string() } else { format!("§{}", part) };
+                                    if kept.len() + test.len() <= self.max_memory_md_chars {
+                                        kept.push_str(&test);
+                                    }
                                 }
-                                content = new_content;
+                                content = kept;
                             }
                             let _ = std::fs::write(&md_path, content);
-                            self.messages.push(Message::system("📝 笔记已保存到 MEMORY.md（关键信息）"));
+                            self.messages.push(Message::system("📝 笔记已保存到 MEMORY.md"));
                         }
                     }
                     "/version" => {

@@ -104,15 +104,22 @@ pub struct MemoryConfig {
     /// MEMORY.md 最大字符数（超出后删除旧条目）
     #[serde(default = "default_memory_md_chars")]
     pub max_memory_md_chars: usize,
+    /// USER.md 最大字符数
+    #[serde(default = "default_user_md_chars")]
+    pub max_user_md_chars: usize,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
-        Self { max_memory_md_chars: default_memory_md_chars() }
+        Self {
+            max_memory_md_chars: default_memory_md_chars(),
+            max_user_md_chars: default_user_md_chars(),
+        }
     }
 }
 
-fn default_memory_md_chars() -> usize { 5000 }
+fn default_memory_md_chars() -> usize { 2200 }
+fn default_user_md_chars() -> usize { 1375 }
 
 /// 调试配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -442,7 +449,8 @@ mod tests {
                 max_retries: 5,
             },
             memory: MemoryConfig {
-                max_memory_md_chars: 5000,
+                max_memory_md_chars: 2200,
+                max_user_md_chars: 1375,
             },
             debug: DebugConfig {
                 enabled: false,
