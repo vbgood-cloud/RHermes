@@ -237,6 +237,7 @@ pub struct App {
 /// 可用命令列表（命令, 说明）
 const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/help",      "显示此帮助"),
+    ("/version",   "显示版本信息"),
     ("/init",      "运行初始化向导"),
     ("/config",    "查看和修改配置"),
     ("/compress",  "手动触发上下文压缩"),
@@ -899,6 +900,14 @@ impl App {
                             let _ = std::fs::write(&md_path, content);
                             self.messages.push(Message::system("📝 笔记已保存到 MEMORY.md（关键信息）"));
                         }
+                    }
+                    "/version" => {
+                        self.messages.push(Message::system(format!(
+                            "🧬 RHermes v{} · {} 个内置工具 · {} 个测试",
+                            env!("CARGO_PKG_VERSION"),
+                            22,
+                            119,
+                        )));
                     }
                     "/compress" => {
                         self.messages.push(Message::system(
