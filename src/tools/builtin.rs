@@ -220,6 +220,56 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// read_pdf — 并行安全
+// ---------------------------------------------------------------------------
+
+/// 全局显示配置（由 main.rs 设置，供 read_pdf 读取预览上限）
+static GLOBAL_DISPLAY_CONFIG: OnceLock<crate::core::DisplayConfig> = OnceLock::new();
+
+/// 设置全局显示配置
+pub fn set_display_config(cfg: crate::core::DisplayConfig) {
+    let _ = GLOBAL_DISPLAY_CONFIG.set(cfg);
+}
+
+pub struct ReadPdf;
+
+#[async_trait]
+impl Tool for ReadPdf {
+    fn name(&self) -> &'static str { "read_pdf" }
+    fn description(&self) -> &'static str { "读取 PDF 文件，返回纯文本内容" }
+    fn parallel_safe(&self) -> bool { true }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![ParamDef::required("path", ParamType::String, "PDF 文件路径")]
+    }
+
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let path = args["path"].as_str()
+            .ok_or_else(|| ToolError::MissingParam("path".into()))?
+            .to_string();
+        let start = std::time::Instant::now();
+
+        let max_chars = GLOBAL_DISPLAY_CONFIG.get()
+            .map(|c| c.read_pdf_max_chars).unwrap_or(30000);
+
+        // spawn_blocking：pdf-extract 是同步 API
+        let text = tokio::task::spawn_blocking(move || {
+            pdf_extract::extract_text(&path)
+                .map_err(|e| format!("读取 PDF 失败: {e}"))
+        })
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("PDF 线程崩溃: {e}")))?
+        .map_err(|e| ToolError::ExecutionFailed(e))?;
+
+        let elapsed = start.elapsed();
+        let total_chars = text.chars().count();
+        let show_chars = total_chars.min(max_chars);
+        let preview: String = text.chars().take(show_chars).collect();
+        let truncated = if total_chars > show_chars { format!("（截断，共 {total_chars} 字符）") } else { String::new() };
+        Ok(format!("📄 PDF (显示 {show_chars}/{total_chars} 字符，耗时 {:.1}s){truncated}:\n{preview}", elapsed.as_secs_f64()))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // glob — 并行安全
 // ---------------------------------------------------------------------------
 
@@ -945,6 +995,7 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(WebSearch)
         .register(WebFetch)
         .register(DelegateTask)
+        .register(ReadPdf)
 }
 
 // ---------------------------------------------------------------------------
@@ -985,7 +1036,8 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 14);
+        assert_eq!(reg.len(), 15);
+        assert!(reg.get("read_pdf").is_some());
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());

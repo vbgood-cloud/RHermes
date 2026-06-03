@@ -255,6 +255,14 @@ pub fn default_tools() -> Vec<ToolDef> {
                 }),
             },
         },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "read_pdf".into(),
+                description: "读取 PDF 文件，返回纯文本内容".into(),
+                parameters: serde_json::json!({"type": "object","properties": {"path": {"type": "string", "description": "PDF 文件路径"}},"required": ["path"]}),
+            },
+        },
     ]
 }
 

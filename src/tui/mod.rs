@@ -905,7 +905,7 @@ impl App {
                         self.messages.push(Message::system(format!(
                             "🧬 RHermes v{} · {} 个内置工具 · {} 个测试",
                             env!("CARGO_PKG_VERSION"),
-                            22,
+                            15,
                             119,
                         )));
                     }

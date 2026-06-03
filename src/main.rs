@@ -237,6 +237,9 @@ async fn run_code(resume: bool) {
         let _ = crate::tools::set_global_config(config.clone());
     }
 
+    // 设置全局显示配置（供 read_pdf 等工具使用）
+    crate::tools::set_display_config(config.display.clone());
+
     // 设置全局技能引擎（供 run_skill 工具使用）
     if let Some(ref se) = skill_engine {
         let _ = crate::tools::set_global_skill_engine(Arc::clone(se));
