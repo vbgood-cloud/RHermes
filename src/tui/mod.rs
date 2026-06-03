@@ -1103,6 +1103,38 @@ impl App {
                                     }
                                 }
                             }
+                            "pin" if !arg.is_empty() => {
+                                let name = arg;
+                                if let Some(ref se) = self.skill_engine {
+                                    if let Ok(mut engine) = se.lock() {
+                                        let pinned = engine.is_pinned(&name);
+                                        if pinned {
+                                            self.messages.push(Message::system(
+                                                format!("📌 技能「{name}」已被钉住")));
+                                        } else {
+                                            match engine.set_pinned(&name, true) {
+                                                Ok(()) => self.messages.push(Message::system(
+                                                    format!("📌 技能「{name}」已钉住，curator 将跳过此技能"))),
+                                                Err(e) => self.messages.push(Message::system(
+                                                    format!("⚠ 钉住失败: {e}"))),
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            "unpin" if !arg.is_empty() => {
+                                let name = arg;
+                                if let Some(ref se) = self.skill_engine {
+                                    if let Ok(mut engine) = se.lock() {
+                                        match engine.set_pinned(&name, false) {
+                                            Ok(()) => self.messages.push(Message::system(
+                                                format!("📌 技能「{name}」已取消钉住"))),
+                                            Err(e) => self.messages.push(Message::system(
+                                                format!("⚠ 取消钉住失败: {e}"))),
+                                        }
+                                    }
+                                }
+                            }
                             _ => {
                                 self.messages.push(Message::system(
                                     "用法:\n  /skill list            — 列出所有技能\n  /skill create <名称>  — 创建新技能\n  /skill search <关键词> — 搜索技能\n  /skill delete <名称>  — 删除技能"));

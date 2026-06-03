@@ -185,6 +185,12 @@ impl Curator {
 
             // 从 .usage.json 读取 telemetry
             let telemetry = crate::agent::UsageTelemetry::load(path);
+
+            // 跳过钉住的技能
+            if telemetry.pinned {
+                continue;
+            }
+
             let status = match telemetry.days_since_last_used() {
                 Some(days) if days >= ARCHIVE_DAYS => SkillStatus::Archived,
                 Some(days) if days >= STALE_DAYS => SkillStatus::Stale,
@@ -381,6 +387,7 @@ mod tests {
             }),
             created_at: Some(Utc::now().to_rfc3339()),
             archived_at: None,
+            pinned: false,
         };
         let usage_path = dir.join(format!("{name}.usage.json"));
         fs::write(&usage_path, serde_json::to_string_pretty(&usage).unwrap()).unwrap();

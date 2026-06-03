@@ -64,6 +64,8 @@ pub struct UsageTelemetry {
     pub created_at: Option<String>,
     /// 归档时间（RFC3339）
     pub archived_at: Option<String>,
+    /// 是否被钉住（保护，防止 curator 误触）
+    pub pinned: bool,
 }
 
 impl UsageTelemetry {
@@ -76,6 +78,7 @@ impl UsageTelemetry {
             last_used_at: None,
             created_at: Some(Utc::now().to_rfc3339()),
             archived_at: None,
+            pinned: false,
         }
     }
 
@@ -426,6 +429,12 @@ impl SkillEngine {
 
     /// 删除技能
     pub fn delete(&mut self, name: &str) -> Result<bool, SkillError> {
+        // Pinned 技能保护
+        if self.is_pinned(name) {
+            return Err(SkillError::InvalidName(
+                format!("技能「{name}」已被钉住，无法删除。先用 /skill unpin {name} 解除保护"),
+            ));
+        }
         let skill = match self.skills.get(name) {
             Some(s) => s.clone(),
             None => return Ok(false),
@@ -434,6 +443,9 @@ impl SkillEngine {
         if file_path.exists() {
             fs::remove_file(&file_path).map_err(SkillError::Io)?;
         }
+        // 同时删除 .usage.json
+        let usage_path = usage_file_path(&file_path);
+        let _ = fs::remove_file(&usage_path);
         self.skills.remove(name);
         Ok(true)
     }
@@ -488,6 +500,29 @@ impl SkillEngine {
         let mut telemetry = UsageTelemetry::load(&sk_path);
         telemetry.view_count += 1;
         telemetry.save(&sk_path);
+    }
+
+    /// 检查技能是否被钉住
+    pub fn is_pinned(&self, name: &str) -> bool {
+        if let Some(skill) = self.skills.get(name) {
+            let path = skill_file_path(&self.dir, &skill.name, skill.category.as_deref());
+            UsageTelemetry::load(&path).pinned
+        } else {
+            false
+        }
+    }
+
+    /// 设置/取消钉住技能
+    pub fn set_pinned(&mut self, name: &str, pinned: bool) -> Result<(), SkillError> {
+        let path = if let Some(skill) = self.skills.get(name) {
+            skill_file_path(&self.dir, &skill.name, skill.category.as_deref())
+        } else {
+            return Err(SkillError::NotFound(name.into()));
+        };
+        let mut telemetry = UsageTelemetry::load(&path);
+        telemetry.pinned = pinned;
+        telemetry.save(&path);
+        Ok(())
     }
 
     /// 记录技能被更新（补丁）
