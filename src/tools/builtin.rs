@@ -956,12 +956,68 @@ impl Tool for SkillPatch {
     }
 }
 
+// ---------------------------------------------------------------------------
+// skill_manage — 非并行安全（写磁盘）
+// ---------------------------------------------------------------------------
+
+/// 合并 skill_create + skill_patch：名称存在则更新，不存在则创建
+pub struct SkillManage;
+
+#[async_trait]
+impl Tool for SkillManage {
+    fn name(&self) -> &'static str { "skill_manage" }
+    fn description(&self) -> &'static str { "创建或更新技能，名称存在则 patch，不存在则 create" }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::required("name", ParamType::String, "技能名称（小写英文+短横线）"),
+            ParamDef::required("description", ParamType::String, "一句话描述该技能的用途"),
+            ParamDef::required("body", ParamType::String, "技能正文 Markdown"),
+            ParamDef::optional("category", ParamType::String, "技能分类目录"),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let name = get_string_arg(&args, "name")?;
+        let description = get_string_arg(&args, "description")?;
+        let body = get_string_arg(&args, "body")?;
+        let category = get_optional_string(&args, "category");
+        let engine_arc = GLOBAL_SKILL_ENGINE.get().ok_or_else(|| ToolError::ExecutionFailed("技能引擎未初始化".into()))?;
+
+        let mut engine = engine_arc.lock().map_err(|e| ToolError::ExecutionFailed(format!("锁定失败: {e}")))?;
+
+        // 检查技能是否存在
+        if engine.get(&name).is_some() {
+            // 存在 → patch
+            engine.update_skill(&name, Some(&description), Some(&body), None, None)
+                .map_err(|e| ToolError::ExecutionFailed(format!("更新技能失败: {e}")))?;
+            Ok(format!("✅ 技能「{name}」已更新（自动提炼）"))
+        } else {
+            // 不存在 → create
+            let category_str = category.as_deref();
+            let skill_body = format!("---\nname: {name}\ndescription: {description}\nrun_as: subagent\n---\n\n# {name}\n\n{body}");
+            engine.create_with_category(&name, category_str, &description, &skill_body, crate::agent::RunAs::Subagent)
+                .map_err(|e| ToolError::ExecutionFailed(format!("创建技能失败: {e}")))?;
+            Ok(format!("✅ 技能「{name}」已创建（自动提炼）"))
+        }
+    }
+}
+
 /// 全局技能引擎（供所有 skill_* 工具使用）
 static GLOBAL_SKILL_ENGINE: OnceLock<Arc<std::sync::Mutex<crate::agent::SkillEngine>>> = OnceLock::new();
 
 /// 设置全局技能引擎
 pub fn set_global_skill_engine(engine: Arc<std::sync::Mutex<crate::agent::SkillEngine>>) -> bool {
     GLOBAL_SKILL_ENGINE.set(engine).is_ok()
+}
+
+/// 获取全局技能引擎引用
+pub fn get_global_skill_engine() -> Option<Arc<std::sync::Mutex<crate::agent::SkillEngine>>> {
+    GLOBAL_SKILL_ENGINE.get().cloned()
+}
+
+/// 获取全局配置
+pub fn get_global_config() -> Option<crate::core::Config> {
+    GLOBAL_CONFIG.get().cloned()
 }
 
 // ---------------------------------------------------------------------------
@@ -996,6 +1052,7 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(WebFetch)
         .register(DelegateTask)
         .register(ReadPdf)
+        .register(SkillManage)
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,8 +1093,9 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 15);
+        assert_eq!(reg.len(), 16);
         assert!(reg.get("read_pdf").is_some());
+        assert!(reg.get("skill_manage").is_some());
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());

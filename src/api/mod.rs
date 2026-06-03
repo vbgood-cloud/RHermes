@@ -263,6 +263,14 @@ pub fn default_tools() -> Vec<ToolDef> {
                 parameters: serde_json::json!({"type": "object","properties": {"path": {"type": "string", "description": "PDF 文件路径"}},"required": ["path"]}),
             },
         },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "skill_manage".into(),
+                description: "创建或更新技能，名称存在则 patch，不存在则 create".into(),
+                parameters: serde_json::json!({"type": "object","properties": {"name": {"type": "string","description": "技能名称"},"description": {"type": "string","description": "技能描述"},"body": {"type": "string","description": "技能正文 Markdown"},"category": {"type": "string","description": "分类目录"}},"required": ["name","description","body"]}),
+            },
+        },
     ]
 }
 

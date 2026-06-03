@@ -166,6 +166,10 @@ pub struct AgentConfig {
     /// 上下文压缩阈值比例（0.0~1.0，默认 0.8 即 80%）
     #[serde(default = "default_compression_ratio")]
     pub compression_ratio: f64,
+
+    /// 自动技能提炼间隔（工具调用次数，0=禁用，默认 15）
+    #[serde(default = "default_creation_nudge_interval")]
+    pub creation_nudge_interval: u32,
 }
 
 impl Default for AgentConfig {
@@ -173,11 +177,13 @@ impl Default for AgentConfig {
         Self {
             max_rounds: default_max_rounds(),
             compression_ratio: default_compression_ratio(),
+            creation_nudge_interval: default_creation_nudge_interval(),
         }
     }
 }
 
 fn default_compression_ratio() -> f64 { 0.8 }
+fn default_creation_nudge_interval() -> u32 { 15 }
 
 // ---- 默认值 ----
 
@@ -449,6 +455,7 @@ mod tests {
             agent: AgentConfig {
                 max_rounds: 50,
                 compression_ratio: 0.8,
+                creation_nudge_interval: 15,
             },
         };
 

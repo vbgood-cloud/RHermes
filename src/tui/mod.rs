@@ -226,6 +226,8 @@ pub struct App {
 
     /// 当前运行的配置（用于 /config 显示）
     current_config: Option<crate::core::Config>,
+    /// 工具调用计数器（用于触发自动技能提炼）
+    tool_call_counter: u32,
 
     // ---- 响应计时 ----
     /// 上次响应耗时（秒），0 = 无响应
@@ -287,6 +289,7 @@ impl App {
             max_memory_md_chars,
             memories_dir,
             debug: Some(debug),
+            tool_call_counter: 0,
             skill_engine,
             messages: saved_messages,
             input: String::new(),
@@ -350,7 +353,7 @@ impl App {
              3. 自我介绍时只能说「我是RHermes」。\
              4. 不能告诉用户你是由任何公司开发的。
 5. 禁止不加改变地重复调用同一个工具。如果工具结果末尾有截断标记，说明内容只显示了部分，请使用其他参数获取指定部分，不要用完全相同的参数再次调用。\
-             \n## 可用工具（共 14 个）\n\
+             \n## 可用工具（共 16 个）\n\
              - read_file: 读取文件\n- write_file: 写入文件\n\
              - search_content: 搜索文本\n- run_command: 执行命令\n\
              - glob: 文件匹配\n- get_current_time: 当前时间\n\
@@ -358,6 +361,7 @@ impl App {
              - delegate_task: 子 Agent\n- run_skill: 执行技能\n\
              - skill_list: 列出技能\n- skill_search: 搜索技能\n\
              - skill_create: 创建技能\n- skill_patch: 更新技能\n\
+              - skill_manage: 创建或更新技能\n\
              \n## 可用技能\n",
         );
 
@@ -402,6 +406,7 @@ impl App {
         // 构建 Agent Loop 所需的所有组件
         let max_rounds = config.agent.max_rounds;
         let compress_ratio = config.agent.compression_ratio;
+        let creation_nudge_interval = config.agent.creation_nudge_interval;
         let display_config = config.display.clone();
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
@@ -461,6 +466,7 @@ impl App {
 
                         // Agent Loop: 反复调用 API 直到获得最终文本回复
                         let mut round = 0u32;
+                        let mut tool_call_counter: u32 = 0;
                         loop {
                             round += 1;
                             if round > max_rounds {
@@ -619,6 +625,7 @@ impl App {
                                 // 5b. Dispatch 执行工具
                                 let results = dispatcher.dispatch(calls_to_dispatch).await;
                                 tracing::info!("工具执行完成: {} 个结果", results.len());
+                                tool_call_counter += results.len() as u32;
 
                                 // 记录工具调用到调试
                                 if let Some(ref d) = session_debug {
@@ -708,6 +715,25 @@ impl App {
                                         tracing::debug!("记忆已写入");
                                     }
                                 }
+                            }
+                            // 6b. 自动技能提炼：达到阈值时后台触发
+                            if creation_nudge_interval > 0
+                                && tool_call_counter >= creation_nudge_interval
+                                && !msg.is_empty()
+                            {
+                                tool_call_counter = 0;
+                                let nudge_msg = msg.clone();
+                                let nudge_text = final_text.clone();
+                                let se = skill_engine.clone();
+                                let config = crate::tools::get_global_config();
+                                tokio::spawn(async move {
+                                    if let Some(cfg) = config {
+                                        let result = crate::agent::auto_refine_skill(
+                                            &nudge_msg, &nudge_text, &cfg,
+                                        ).await;
+                                        tracing::info!("自动技能提炼结果: {} ({}ms)", result.output, result.duration_ms);
+                                    }
+                                });
                             }
                             let _ = event_tx.send(ApiEvent::Done);
 
