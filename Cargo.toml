@@ -27,11 +27,7 @@ regex = "1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
-zip = "2"
-quick-xml = "0.37"
-calamine = "0.26"
-pdf-extract = "0.7"
-lopdf = "0.34"
+
 ratatui = "0.29"
 crossterm = "0.28"
 

@@ -945,15 +945,6 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(WebSearch)
         .register(WebFetch)
         .register(DelegateTask)
-        // Office 工具
-        .register(crate::tools::office::ReadDocx)
-        .register(crate::tools::office::ReadPptx)
-        .register(crate::tools::office::ReadXlsx)
-        .register(crate::tools::office::ReadPdf)
-        .register(crate::tools::office::WriteDocx)
-        .register(crate::tools::office::WritePptx)
-        .register(crate::tools::office::WriteXlsx)
-        .register(crate::tools::office::FillDocxTemplate)
 }
 
 // ---------------------------------------------------------------------------
@@ -994,15 +985,7 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 22);
-        assert!(reg.get("read_docx").is_some());
-        assert!(reg.get("read_pptx").is_some());
-        assert!(reg.get("read_xlsx").is_some());
-        assert!(reg.get("read_pdf").is_some());
-        assert!(reg.get("write_docx").is_some());
-        assert!(reg.get("write_pptx").is_some());
-        assert!(reg.get("write_xlsx").is_some());
-        assert!(reg.get("fill_docx_template").is_some());
+        assert_eq!(reg.len(), 14);
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());
