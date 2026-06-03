@@ -55,6 +55,8 @@ impl DeploymentMode {
 pub struct PathManager {
     mode: DeploymentMode,
     data_root: PathBuf,
+    /// 可执行文件所在目录（config.toml 和 .env 放在这里）
+    exe_dir: PathBuf,
 }
 
 impl PathManager {
@@ -68,10 +70,9 @@ impl PathManager {
     pub fn detect() -> Self {
         let exe_path = std::env::current_exe()
             .expect("无法获取可执行文件路径");
-
         let exe_dir = exe_path.parent()
-            .expect("无法获取可执行文件所在目录");
-
+            .expect("无法获取可执行文件所在目录")
+            .to_path_buf();
         let home_candidate = exe_dir.join("home");
 
         if home_candidate.is_dir() {
@@ -82,6 +83,7 @@ impl PathManager {
             Self {
                 mode: DeploymentMode::Portable(home_candidate.clone()),
                 data_root: home_candidate,
+                exe_dir,
             }
         } else {
             let data_root = Self::default_data_root();
@@ -92,24 +94,27 @@ impl PathManager {
             Self {
                 mode: DeploymentMode::Traditional(data_root.clone()),
                 data_root,
+                exe_dir,
             }
         }
     }
 
     /// 使用指定的 exe_dir 创建 PathManager（用于测试或覆盖）
-    /// 按照与 detect() 完全相同的检测逻辑设置 data_root
+    /// `exe_dir` 是配置文件和 .env 的位置，`home/` 子目录是数据根目录
     #[allow(dead_code)]
-    pub fn with_root(root: PathBuf) -> Self {
-        let home_candidate = root.join("home");
+    pub fn with_root(exe_dir: PathBuf) -> Self {
+        let home_candidate = exe_dir.join("home");
         if home_candidate.is_dir() {
             Self {
                 mode: DeploymentMode::Portable(home_candidate.clone()),
                 data_root: home_candidate,
+                exe_dir,
             }
         } else {
             Self {
-                mode: DeploymentMode::Traditional(root.clone()),
-                data_root: root,
+                mode: DeploymentMode::Traditional(exe_dir.clone()),
+                data_root: exe_dir.clone(),
+                exe_dir,
             }
         }
     }
@@ -126,10 +131,10 @@ impl PathManager {
 
     // ---- 子路径访问器 ----
 
-    /// 主配置文件路径
+    /// 主配置文件路径（与可执行文件同目录）
     #[allow(dead_code)]
     pub fn config_path(&self) -> PathBuf {
-        self.data_root.join("config.toml")
+        self.exe_dir.join("config.toml")
     }
 
     /// 长期记忆数据库路径（SQLite + FTS5）
@@ -158,6 +163,11 @@ impl PathManager {
         self.data_root.join("cache")
     }
 
+    /// 用户工作目录
+    pub fn workspace_dir(&self) -> PathBuf {
+        self.data_root.join("workspace")
+    }
+
     // ---- 目录创建 ----
 
     /// 确保所有标准子目录存在
@@ -169,6 +179,7 @@ impl PathManager {
             self.sessions_dir(),
             self.logs_dir(),
             self.cache_dir(),
+            self.workspace_dir(),
         ];
         for dir in &dirs {
             fs::create_dir_all(dir)?;
