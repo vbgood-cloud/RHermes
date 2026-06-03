@@ -256,6 +256,12 @@ async fn run_code(resume: bool) {
     let session_debug_default = Arc::new(Mutex::new(debug::SessionDebug::new()));
     let session_debug: Arc<Mutex<debug::SessionDebug>> = session_debug.unwrap_or(session_debug_default);
 
+    // 运行 Curator 技能生命周期管理
+    tracing::info!("Curator 技能检查...");
+    let curator = crate::agent::Curator::new(skills_dir.clone(), config.clone());
+    let curator_report = curator.run();
+    tracing::info!("{}", curator_report.message);
+
     // 创建 TUI
     let config_path_buf = config_path.clone();
     let max_memory_md_chars = config.memory.max_memory_md_chars;
