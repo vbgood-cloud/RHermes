@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 
 use crate::core::Config;
 use crate::core::PathManager;
@@ -45,46 +45,20 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         println!();
     }
 
-    // ── 步骤 2: 部署方式 ──
-    println!("【步骤 1/4】选择部署方式");
+    // ── 步骤 2: 便携式模式（唯一支持的部署方式） ──
+    println!("【步骤 1/4】部署模式");
+    println!("   📦 便携式模式 — 所有数据保存在 ./home/ 目录");
     println!();
 
-    let deploy_options = &[
-        "📦 可移动模式 — 所有数据保存在 ./home/ 目录，随身带走",
-        "🏠 传统模式   — 使用系统标准配置目录 (~/.config/rhermes/)",
-    ];
-
-    let deploy_idx = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("请选择部署方式（方向键切换，回车确认）")
-        .items(deploy_options)
-        .default(0)
-        .interact()?;
-
-    let portable = deploy_idx == 0;
-
-    // 根据部署方式确定数据根目录
-    let path_mgr = if portable {
-        // 可移动模式：在当前目录创建 home/
-        let cwd = std::env::current_dir()?;
-        let home_dir = cwd.join("home");
-
-        if home_dir.exists() {
-            println!("   ℹ home/ 目录已存在: {}", home_dir.display());
-        } else {
-            println!("   📁 将创建 home/ 目录: {}", home_dir.display());
-        }
-
-        // 手动构建 PathManager
-        let pm = PathManager::with_root(cwd);
-        pm.ensure_dirs()?;
-        pm
+    let cwd = std::env::current_dir()?;
+    let home_dir = cwd.join("home");
+    if home_dir.exists() {
+        println!("   ℹ home/ 目录已存在: {}", home_dir.display());
     } else {
-        // 传统模式：用系统路径
-        let pm = PathManager::detect();
-        pm.ensure_dirs()?;
-        println!("   📁 数据目录: {}", pm.data_root().display());
-        pm
-    };
+        println!("   📁 将创建 home/ 目录: {}", home_dir.display());
+    }
+    let path_mgr = PathManager::with_root(cwd);
+    path_mgr.ensure_dirs()?;
 
     println!();
 
@@ -136,7 +110,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         "自定义模型名称",
     ];
 
-    let model_idx = Select::with_theme(&ColorfulTheme::default())
+    let model_idx = dialoguer::Select::with_theme(&ColorfulTheme::default())
         .with_prompt("请选择默认模型")
         .items(model_options)
         .default(0)
@@ -195,7 +169,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("┌────────────────────────────────────────────┐");
     println!("│          ✅ 初始化完成！                    │");
     println!("├────────────────────────────────────────────┤");
-    println!("│  部署方式: {}", if portable { "可移动模式 📦" } else { "传统模式 🏠" });
+    println!("│  部署方式: 便携式模式 📦");
     println!("│  数据目录: {}", path_mgr.data_root().display());
     println!("│  配置文件: {}", config_path.display());
     println!("│  密钥文件: {}", env_path.display());
