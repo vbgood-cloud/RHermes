@@ -5,12 +5,14 @@
 
 pub use curator::*;
 pub use memory::*;
+pub use memory_manager::*;
 pub use repair::*;
 pub use skill::*;
 pub use task::*;
 
 mod curator;
 mod memory;
+mod memory_manager;
 mod repair;
 mod skill;
 mod task;
