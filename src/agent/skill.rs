@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // 运行模式
@@ -41,6 +41,90 @@ impl RunAs {
             _ => Self::Inline,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Usage Telemetry — 使用量驱动进化
+// ---------------------------------------------------------------------------
+
+/// 技能的 .usage.json sidecar 数据
+///
+/// 与 .md 文件同目录存放，原子写入，best-effort 不破坏主流程。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageTelemetry {
+    /// 执行调用次数
+    pub use_count: u64,
+    /// 被查看/列举次数
+    pub view_count: u64,
+    /// 被打补丁次数
+    pub patch_count: u64,
+    /// 上次使用时间（RFC3339）
+    pub last_used_at: Option<String>,
+    /// 创建时间（RFC3339）
+    pub created_at: Option<String>,
+    /// 归档时间（RFC3339）
+    pub archived_at: Option<String>,
+}
+
+impl UsageTelemetry {
+    /// 创建新的 telemetry（首次创建技能时）
+    pub fn new() -> Self {
+        Self {
+            use_count: 0,
+            view_count: 0,
+            patch_count: 0,
+            last_used_at: None,
+            created_at: Some(Utc::now().to_rfc3339()),
+            archived_at: None,
+        }
+    }
+
+    /// 加载 .usage.json sidecar
+    pub fn load(skill_path: &Path) -> Self {
+        let path = usage_file_path(skill_path);
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| {
+                // 兼容旧数据：从 .md 文件注解中迁移
+                let content = fs::read_to_string(skill_path).unwrap_or_default();
+                let mut t = Self::new();
+                for line in content.lines() {
+                    let line = line.trim();
+                    if let Some(v) = line.strip_prefix("# use_count: ") {
+                        t.use_count = v.trim().parse().unwrap_or(0);
+                    }
+                    if let Some(v) = line.strip_prefix("# last_used: ") {
+                        t.last_used_at = Some(v.trim().to_string());
+                    }
+                }
+                t
+            })
+    }
+
+    /// 保存 .usage.json（best-effort）
+    pub fn save(&self, skill_path: &Path) {
+        let path = usage_file_path(skill_path);
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = fs::write(&path, &json);
+        }
+    }
+
+    /// 获取最后使用距今的天数
+    pub fn days_since_last_used(&self) -> Option<i64> {
+        self.last_used_at.as_ref().and_then(|s| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|dt| (Utc::now() - dt.with_timezone(&Utc)).num_days())
+        })
+    }
+}
+
+/// 获取 .usage.json 路径（与 .md 同目录同文件名）
+fn usage_file_path(skill_path: &Path) -> PathBuf {
+    let parent = skill_path.parent().unwrap_or(Path::new("."));
+    let stem = skill_path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
+    parent.join(format!("{stem}.usage.json"))
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +330,15 @@ impl SkillEngine {
         skills
     }
 
+    /// 列出并记录查看
+    pub fn list_and_record(&mut self, viewer: &str) -> Vec<&Skill> {
+        let names: Vec<String> = self.skills.keys().cloned().collect();
+        for name in &names {
+            self.record_view(name);
+        }
+        self.list()
+    }
+
     /// 搜索技能
     pub fn search(&self, query: &str) -> Vec<&Skill> {
         let q = query.to_lowercase();
@@ -354,7 +447,7 @@ impl SkillEngine {
         success: bool,
         duration_ms: u64,
     ) -> Result<(), SkillError> {
-        let (_use_count, _success_count, _fail_count, _total_duration_ms, _last_used) = {
+        let sk_path = {
             let skill = self
                 .skills
                 .get_mut(name)
@@ -369,21 +462,44 @@ impl SkillEngine {
             skill.total_duration_ms += duration_ms;
             skill.last_used = Some(Utc::now().to_rfc3339());
 
-            (
-                skill.use_count,
-                skill.success_count,
-                skill.fail_count,
-                skill.total_duration_ms,
-                skill.last_used.clone(),
-            )
+            skill_file_path(&self.dir, &skill.name, skill.category.as_deref())
         };
 
         // 更新磁盘文件（在可变借用释放后执行）
         if let Some(skill) = self.skills.get(name) {
-            self.save_skill_to_disk(skill)
-        } else {
-            Ok(())
+            // 更新 .md
+            self.save_skill_to_disk(skill)?;
+            // 更新 .usage.json sidecar
+            let mut telemetry = UsageTelemetry::load(&sk_path);
+            telemetry.use_count = skill.use_count;
+            telemetry.last_used_at = skill.last_used.clone();
+            telemetry.save(&sk_path);
         }
+        Ok(())
+    }
+
+    /// 记录技能被查看
+    pub fn record_view(&mut self, name: &str) {
+        let sk_path = if let Some(skill) = self.skills.get_mut(name) {
+            skill_file_path(&self.dir, &skill.name, skill.category.as_deref())
+        } else {
+            return;
+        };
+        let mut telemetry = UsageTelemetry::load(&sk_path);
+        telemetry.view_count += 1;
+        telemetry.save(&sk_path);
+    }
+
+    /// 记录技能被更新（补丁）
+    pub fn record_patch(&mut self, name: &str) {
+        let sk_path = if let Some(skill) = self.skills.get_mut(name) {
+            skill_file_path(&self.dir, &skill.name, skill.category.as_deref())
+        } else {
+            return;
+        };
+        let mut telemetry = UsageTelemetry::load(&sk_path);
+        telemetry.patch_count += 1;
+        telemetry.save(&sk_path);
     }
 
     // ---- 进化建议 ----
@@ -551,6 +667,14 @@ impl SkillEngine {
 
         let content = format!("---\n{fm}---\n\n{}\n", skill.body);
         fs::write(&file_path, content).map_err(SkillError::Io)?;
+
+        // 写入 .usage.json sidecar（首次创建时）
+        let usage_path = usage_file_path(&file_path);
+        if !usage_path.exists() {
+            let telemetry = UsageTelemetry::new();
+            telemetry.save(&file_path);
+        }
+
         Ok(())
     }
 }

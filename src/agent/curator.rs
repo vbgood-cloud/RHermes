@@ -18,14 +18,12 @@
 //!
 //! 扫描同前缀/同域的 skill 群，合并到 umbrella skill。
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
-use crate::agent::SkillEngine;
 use crate::core::Config;
 
 // ---------------------------------------------------------------------------
@@ -185,25 +183,12 @@ impl Curator {
                 continue;
             }
 
-            // 读取 last_used
-            let content = match fs::read_to_string(path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            let last_used = self.parse_last_used(&content);
-            let status = match last_used {
-                Some(ts) => {
-                    let days = (now - ts).num_days();
-                    if days >= ARCHIVE_DAYS {
-                        SkillStatus::Archived
-                    } else if days >= STALE_DAYS {
-                        SkillStatus::Stale
-                    } else {
-                        SkillStatus::Active
-                    }
-                }
-                None => SkillStatus::Active, // 从未使用过保持 active
+            // 从 .usage.json 读取 telemetry
+            let telemetry = crate::agent::UsageTelemetry::load(path);
+            let status = match telemetry.days_since_last_used() {
+                Some(days) if days >= ARCHIVE_DAYS => SkillStatus::Archived,
+                Some(days) if days >= STALE_DAYS => SkillStatus::Stale,
+                _ => SkillStatus::Active,
             };
 
             results.push((name.clone(), path.clone(), status));
@@ -300,18 +285,7 @@ impl Curator {
         Ok(files)
     }
 
-    /// 从技能文件中解析 last_used
-    fn parse_last_used(&self, content: &str) -> Option<DateTime<Utc>> {
-        for line in content.lines() {
-            let line = line.trim();
-            if let Some(value) = line.strip_prefix("# last_used: ") {
-                return DateTime::parse_from_rfc3339(value.trim())
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .ok();
-            }
-        }
-        None
-    }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -393,15 +367,23 @@ mod tests {
     }
 
     fn create_skill(dir: &Path, name: &str, last_used_days_ago: Option<i64>) {
-        let content = if let Some(days) = last_used_days_ago {
-            let ts = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
-            format!(
-                "---\ndescription: \"{name}\"\nrun_as: subagent\n---\n\n# {name}\n\nBody\n# last_used: {ts}\n"
-            )
-        } else {
-            format!("---\ndescription: \"{name}\"\nrun_as: subagent\n---\n\n# {name}\n\nBody\n")
+        let md_path = dir.join(format!("{name}.md"));
+        let content = format!("---\ndescription: \"{name}\"\nrun_as: subagent\n---\n\n# {name}\n\nBody\n");
+        fs::write(&md_path, &content).unwrap();
+
+        // 同时写入 .usage.json sidecar
+        let usage = crate::agent::UsageTelemetry {
+            use_count: if last_used_days_ago.is_some() { 5 } else { 0 },
+            view_count: 0,
+            patch_count: 0,
+            last_used_at: last_used_days_ago.map(|days| {
+                (Utc::now() - chrono::Duration::days(days)).to_rfc3339()
+            }),
+            created_at: Some(Utc::now().to_rfc3339()),
+            archived_at: None,
         };
-        fs::write(dir.join(format!("{name}.md")), &content).unwrap();
+        let usage_path = dir.join(format!("{name}.usage.json"));
+        fs::write(&usage_path, serde_json::to_string_pretty(&usage).unwrap()).unwrap();
     }
 
     #[test]
@@ -510,13 +492,5 @@ mod tests {
         assert!(report.is_success());
     }
 
-    #[test]
-    fn test_parse_last_used() {
-        let (_tmp, skills_dir) = setup_skills_dir();
-        let curator = Curator::new(skills_dir, Config::default());
-        let content = "# last_used: 2026-06-01T10:00:00+00:00\n";
-        let dt = curator.parse_last_used(content);
-        assert!(dt.is_some());
-        assert_eq!(dt.unwrap().format("%Y-%m-%d").to_string(), "2026-06-01");
-    }
+
 }
