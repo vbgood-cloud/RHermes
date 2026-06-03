@@ -1287,14 +1287,14 @@ impl App {
                 }
             }
 
-            // ---- 滚动（↑↓ 滚动对话，Alt+↑↓ 浏览输入历史） ----
+            // ---- ↑↓ 浏览输入历史，PageUp/Down 滚动对话 ----
             KeyCode::Up => {
                 if !self.cmd_suggestions.is_empty() {
                     // 命令补全模式：向上选择
                     let len = self.cmd_suggestions.len();
                     self.suggestion_idx = (self.suggestion_idx + len - 1) % len;
-                } else if key.modifiers == KeyModifiers::ALT {
-                    // Alt+↑：浏览输入历史（上一条）
+                } else {
+                    // ↑：浏览输入历史（上一条）
                     if !self.input_history.is_empty() {
                         if self.history_idx > 0 {
                             self.history_idx -= 1;
@@ -1302,9 +1302,6 @@ impl App {
                         self.input = self.input_history[self.history_idx].clone();
                         self.cursor_pos = self.input.chars().count();
                     }
-                } else {
-                    // ↑：滚动对话向上
-                    self.scroll_offset += 1;
                 }
             }
             KeyCode::Down => {
@@ -1312,8 +1309,8 @@ impl App {
                     // 命令补全模式：向下选择
                     let len = self.cmd_suggestions.len();
                     self.suggestion_idx = (self.suggestion_idx + 1) % len;
-                } else if key.modifiers == KeyModifiers::ALT {
-                    // Alt+↓：浏览输入历史（下一条）
+                } else {
+                    // ↓：浏览输入历史（下一条）
                     if !self.input_history.is_empty() && self.history_idx < self.input_history.len() {
                         self.history_idx += 1;
                         if self.history_idx < self.input_history.len() {
@@ -1323,11 +1320,9 @@ impl App {
                         }
                         self.cursor_pos = self.input.chars().count();
                     }
-                } else {
-                    // ↓：滚动对话向下
-                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
                 }
             }
+            // PageUp/Down：滚动对话
             KeyCode::PageUp => self.scroll_offset += 10,
             KeyCode::PageDown => self.scroll_offset = self.scroll_offset.saturating_sub(10),
 
