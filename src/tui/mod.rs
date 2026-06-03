@@ -10,7 +10,7 @@ use chrono::Local;
 
 use crossterm::{
     cursor::Show,
-    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -749,7 +749,7 @@ impl App {
     pub async fn run(&mut self) -> io::Result<()> {
         enable_raw_mode()?;
         let mut stdout = stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, event::EnableMouseCapture)?;
 
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
@@ -761,18 +761,32 @@ impl App {
             // 处理 API 事件（非阻塞）
             self.handle_api_events();
 
-            // 处理键盘事件（100ms 超时）
+            // 处理键盘 + 鼠标事件（100ms 超时）
             if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
-                        self.handle_key(key);
+                match event::read()? {
+                    Event::Key(key) => {
+                        if key.kind == KeyEventKind::Press {
+                            self.handle_key(key);
+                        }
                     }
+                    Event::Mouse(mouse) => {
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                self.scroll_offset += 3;
+                            }
+                            MouseEventKind::ScrollDown => {
+                                self.scroll_offset = self.scroll_offset.saturating_sub(3);
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
 
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, Show)?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen, event::DisableMouseCapture, Show)?;
         terminal.show_cursor()?;
         Ok(())
     }
