@@ -1,6 +1,6 @@
 [package]
 name = "rhermes"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]
@@ -28,6 +28,7 @@ grep-regex = "0.1"
 grep-searcher = "0.1"
 ignore = "0.4"
 pdf-extract = "0.7"
+walkdir = "2"
 
 ratatui = "0.29"
 crossterm = "0.28"

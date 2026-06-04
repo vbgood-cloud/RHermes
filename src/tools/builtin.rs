@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use walkdir::WalkDir;
+
 use async_trait::async_trait;
 use regex::Regex;
 use serde_json::Value;
@@ -94,8 +96,8 @@ fn collect_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) -> 
     Ok(())
 }
 
-/// 将 glob 模式转换为正则（简单版本）
-fn glob_to_regex(glob: &str) -> Regex {
+/// Convert glob pattern to regex string (for use with WalkDir + Regex)
+fn glob_to_regex_str(glob: &str) -> String {
     let mut re = String::with_capacity(glob.len() + 4);
     re.push('^');
     for ch in glob.chars() {
@@ -105,7 +107,8 @@ fn glob_to_regex(glob: &str) -> Regex {
             '.' => re.push_str("\\."),
             '\\' => re.push_str("\\\\"),
             '|' => re.push('|'),
-            c if c.is_ascii_punctuation() => {
+            '/' => re.push('/'),
+            c if c.is_ascii_punctuation() && c != '_' => {
                 re.push('\\');
                 re.push(c);
             }
@@ -113,7 +116,7 @@ fn glob_to_regex(glob: &str) -> Regex {
         }
     }
     re.push('$');
-    Regex::new(&re).unwrap_or_else(|_| Regex::new(".*").unwrap())
+    re
 }
 
 // ---------------------------------------------------------------------------
@@ -294,19 +297,52 @@ impl Tool for Glob {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let pattern = get_string_arg(&args, "pattern")?;
-        let path = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
+        let root = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
 
-        let mut cmd = tokio::process::Command::new("fd");
-        cmd.stdin(std::process::Stdio::null());
-        cmd.arg("--glob").arg(&pattern).arg(&path);
+        // Convert glob pattern to regex
+        let regex_str = glob_to_regex_str(&pattern);
+        let re = regex::Regex::new(&regex_str)
+            .map_err(|e| ToolError::ExecutionFailed(format!("glob pattern invalid: {e}")))?;
 
-        let output = cmd.output().await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("glob 失败: {e}"))
-        })?;
+        const MAX_RESULTS: usize = 500;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let files: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
-        Ok(format!("找到 {} 个文件:\n{}", files.len(), files.join("\n")))
+        let result = tokio::task::spawn_blocking(move || {
+            let root_path = std::path::Path::new(&root);
+            let mut files: Vec<String> = Vec::new();
+
+            if root_path.is_file() {
+                let name = root_path.to_string_lossy();
+                if re.is_match(&name) {
+                    files.push(name.to_string());
+                }
+            } else {
+                for entry in WalkDir::new(root_path)
+                    .follow_links(false)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    if files.len() >= MAX_RESULTS {
+                        break;
+                    }
+                    let path = entry.path();
+                    if path.is_file() {
+                        let name = path.to_string_lossy();
+                        if re.is_match(&name) {
+                            files.push(name.to_string());
+                        }
+                    }
+                }
+            }
+
+            if files.is_empty() {
+                format!("No files matching \"{}\" found", pattern)
+            } else {
+                format!("Found {} files:\n{}", files.len(), files.join("\n"))
+            }
+        }).await
+        .map_err(|e| ToolError::ExecutionFailed(format!("glob thread crashed: {e}")))?;
+
+        Ok(result)
     }
 }
 

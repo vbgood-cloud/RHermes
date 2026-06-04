@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 const ENV_KEY_NAME: &str = "DEEPSEEK_API_KEY";
 
 /// 环境变量中 base_url 的键名（优先级高于 config.toml）
-const ENV_BASE_URL: &str = "RH_BASE_URL";
+const ENV_BASE_URL: &str = "DEEPSEEK_BASE_URL";
 
 /// `.env` 文件名
 const ENV_FILE_NAME: &str = ".env";
@@ -110,17 +110,19 @@ pub struct MemoryConfig {
     /// USER.md 最大字符数
     #[serde(default = "default_user_md_chars")]
     pub max_user_md_chars: usize,
-    /// 是否启用用户画像记忆文件（USER.md），默认关闭
-    #[serde(default)]
+    /// 是否启用用户画像记忆文件（USER.md），默认开启
+    #[serde(default = "default_user_profile_enabled")]
     pub user_profile_enabled: bool,
 }
+
+fn default_user_profile_enabled() -> bool { true }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             max_memory_md_chars: default_memory_md_chars(),
             max_user_md_chars: default_user_md_chars(),
-            user_profile_enabled: false,
+            user_profile_enabled: true,
         }
     }
 }

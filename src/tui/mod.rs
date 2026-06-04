@@ -241,7 +241,7 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/help",      "显示此帮助"),
     ("/version",   "显示版本信息"),
     ("/init",      "运行初始化向导"),
-    ("/config",    "查看和修改配置"),
+    ("/config",    "查看和修改配置（/config set <key> <value>）"),
     ("/compress",  "手动触发上下文压缩"),
     ("/note",      "记录关键笔记到 MEMORY.md"),
     ("/笔记",      "记录关键笔记到 MEMORY.md"),
@@ -343,8 +343,8 @@ impl App {
         self.stats.model = config.api.model.clone();
         self.current_config = Some(config.clone());
 
-        // 构建系统提示词
-        let system_prompt = format!(
+        // ---- 构建系统提示词前缀（身份 + 规则 + 记忆指引） ----
+        let prompt_prefix = format!(
             "## 你的身份\n\
              \n你的名字是 **RHermes**。\
              \n## 严格规则\n\
@@ -360,7 +360,7 @@ impl App {
               \n**优先保存能减少用户未来纠正的信息**——最有价值的记忆，是让用户不用再重复提醒你的那些事。\
               用户的偏好和反复纠正，比过程性的任务细节更重要。\
               \
-              \n**不要保存**：任务进度、会话结果、已完成的工作日志、临时 TODO。使用 session_search 从过往记录中回忆。\
+              \n**不要保存**：任务进度、会话结果、已完成的工作日志、临时 TODO。这些内容可以用 /回忆 命令从过往记录中检索。\
               具体来说：不要记录 PR 号、issue 号、commit SHA、修了 bug X、提交了 PR Y、Phase N 完成、\
               文件计数、或任何 7 天内就会过时的内容。如果一个事实一周后就过期，它不属于记忆。\
               如果你发现了新的做事方式、解决了以后可能用得到的问题，用 skill 工具保存为技能。\
@@ -369,8 +369,39 @@ impl App {
               `用户偏好简洁回复` ✓ — `始终简洁回复` ✗\
               `项目用 pytest + xdist` ✓ — `用 pytest -n 4 跑测试` ✗\
               指令式措辞在后续会话中会被当作直接命令，可能导致重复工作或覆盖用户当前请求。\
-              流程和操作步骤属于 skill，不属于记忆。\
-             \n## 可用工具（共 17 个）\n\
+              流程和操作步骤属于 skill，不属于记忆。",
+        );
+
+        // ---- 读取 USER.md + MEMORY.md 注入到 prompt ---
+        let memory_section = {
+            let mut parts = Vec::new();
+            let user_md_path = self.memories_dir.join("USER.md");
+            if user_md_path.exists() {
+                match std::fs::read_to_string(&user_md_path) {
+                    Ok(content) if !content.trim().is_empty() => {
+                        parts.push(format!(
+                            "\n## 持久记忆（跨会话保留）\n{}\n",
+                            content.trim()
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            let memory_md_path = self.memories_dir.join("MEMORY.md");
+            if memory_md_path.exists() {
+                match std::fs::read_to_string(&memory_md_path) {
+                    Ok(content) if !content.trim().is_empty() => {
+                        parts.push(format!("\n## 笔记记忆\n{}\n", content.trim()));
+                    }
+                    _ => {}
+                }
+            }
+            parts.join("")
+        };
+
+        // ---- 构建系统提示词后缀（工具列表 + 技能占位） ----
+        let prompt_suffix = format!(
+            "\n## 可用工具（共 17 个）\n\
              - read_file: 读取文件\n- write_file: 写入文件\n\
              - search_content: 搜索文本\n- run_command: 执行命令\n\
              - glob: 文件匹配\n- get_current_time: 当前时间\n\
@@ -382,7 +413,7 @@ impl App {
              \n## 可用技能\n",
         );
 
-        // 注入已安装的技能列表
+        // ---- 注入已安装的技能列表 ----
         let skills_text = if let Some(ref se) = self.skill_engine {
             if let Ok(engine) = se.lock() {
                 let skills = engine.list();
@@ -402,8 +433,9 @@ impl App {
             String::new()
         };
 
+        // ---- 最终组装：prefix → 记忆 → suffix → 技能 → 环境 ----
         let system_prompt = format!(
-            "{system_prompt}{skills_text}\
+            "{prompt_prefix}{memory_section}{prompt_suffix}{skills_text}\
              \n## 当前环境\n\
              工作目录: {}\n部署模式: {}\
              \n## 自我进化（重要！）\
@@ -932,7 +964,7 @@ impl App {
 可用命令:
   /help  /?    — 显示此帮助
   /init        — 运行初始化向导
-  /config      — 查看和修改配置
+  /config      — 查看和修改配置 (/config set <key> <value>)
   /note <内容> — 记录关键笔记到 MEMORY.md
   /clear       — 清空对话
   /quit  /exit — 退出程序
@@ -979,7 +1011,7 @@ impl App {
                         self.messages.push(Message::system(format!(
                             "🧬 RHermes v{} · {} 个内置工具 · {} 个测试",
                             env!("CARGO_PKG_VERSION"),
-                            15,
+                            17,
                             119,
                         )));
                     }
@@ -987,30 +1019,53 @@ impl App {
                         self.messages.push(Message::system(
                             "⏳ 压缩指令已发送（下轮请求会自动触发）"));
                     }
-                    "/config" => {
-                        let config_path = &self.config_path;
-                        let cfg = crate::core::Config::load(config_path)
-                            .unwrap_or_default();
-                        let has_key = !cfg.api_key.is_empty();
-                        let key_display = if has_key {
-                            format!("sk-...{}", &cfg.api_key[cfg.api_key.len().saturating_sub(4)..])
+                    cmd if cmd == "/config" || cmd.starts_with("/config ") => {
+                        let rest = cmd.trim_start_matches("/config ").trim();
+                        if rest.is_empty() || rest == "/config" {
+                            let config_path = &self.config_path;
+                            let cfg = crate::core::Config::load(config_path)
+                                .unwrap_or_default();
+                            let has_key = !cfg.api_key.is_empty();
+                            let key_display = if has_key {
+                                format!("sk-...{}", &cfg.api_key[cfg.api_key.len().saturating_sub(4)..])
+                            } else {
+                                "未设置".into()
+                            };
+                            let raw = std::fs::read_to_string(config_path)
+                                .unwrap_or_else(|_| "无法读取配置文件".into());
+                            let info = format!(
+                                "📁 路径: {}\n\
+                                 🔑 API Key: {}\n\n\
+                                 ── config.toml ──\n\
+                                 {raw}\
+                                 按 /init 重新配置，或直接编辑 config.toml\n\
+                                 按 /config set <key> <value> 在线修改配置",
+                                config_path.display(),
+                                key_display,
+                            );
+                            self.messages.push(Message::system(info));
+                        } else if let Some(set_cmd) = rest.strip_prefix("set ") {
+                            let parts: Vec<&str> = set_cmd.splitn(2, ' ').collect();
+                            if parts.len() < 2 {
+                                self.messages.push(Message::system(
+                                    "用法: /config set <key> <value>\n\
+                                     示例: /config set api.model deepseek-v4-pro\n\
+                                     /config set request.timeout_secs 120"));
+                            } else {
+                                let key = parts[0];
+                                let value = parts[1];
+                                match self.set_config_value(key, value) {
+                                    Ok(msg) => self.messages.push(Message::system(msg)),
+                                    Err(e) => self.messages.push(Message::system(
+                                        format!("⚠ 配置修改失败: {e}"))),
+                                }
+                            }
                         } else {
-                            "未设置".into()
-                        };
-                        // 读取 config.toml 原始内容
-                        let raw = std::fs::read_to_string(config_path)
-                            .unwrap_or_else(|_| "无法读取配置文件".into());
-                        let info = format!(
-                            "📁 路径: {}\n\
-                             🔑 API Key: {}\n\n\
-                             ── config.toml ──\n\
-                             {raw}\
-                             按 /init 重新配置，或直接编辑 config.toml",
-                            config_path.display(),
-                            key_display,
-                        );
-                        self.messages.push(Message::system(info));
+                            self.messages.push(Message::system(
+                                "支持的子命令:\n  /config       — 查看当前配置\n  /config set <key> <value> — 修改配置项"));
+                        }
                     }
+
                     cmd if cmd == "/skill" || cmd == "/skills" => {
                         let skill_list = self.skill_engine.as_ref().map(|se| {
                             se.lock().map(|engine| {
@@ -1823,6 +1878,56 @@ impl App {
                 let _ = dbg.export(&path);
             }
         }
+    }
+
+    /// Set a config value by dotted key path (e.g. "api.model" -> deepseek-v4-pro)
+    fn set_config_value(&self, key: &str, value: &str) -> Result<String, String> {
+        let config_path = &self.config_path;
+        let mut cfg = crate::core::Config::load(config_path)
+            .map_err(|e| format!("加载配置失败: {e}"))?;
+
+        match key {
+            "api.model" => cfg.api.model = value.to_string(),
+            "api.base_url" => cfg.api.base_url = value.to_string(),
+            "request.timeout_secs" => {
+                cfg.request.timeout_secs = value.parse()
+                    .map_err(|_| format!("无效的数字: {value}"))?;
+            }
+            "request.max_retries" => {
+                cfg.request.max_retries = value.parse()
+                    .map_err(|_| format!("无效的数字: {value}"))?;
+            }
+            "memory.max_memory_md_chars" => {
+                cfg.memory.max_memory_md_chars = value.parse()
+                    .map_err(|_| format!("无效的数字: {value}"))?;
+            }
+            "memory.user_profile_enabled" => {
+                cfg.memory.user_profile_enabled = value.parse()
+                    .map_err(|_| format!("无效的布尔值: {value}，请输入 true 或 false"))?;
+            }
+            "display.tool_result_max_chars" => {
+                cfg.display.tool_result_max_chars = value.parse()
+                    .map_err(|_| format!("无效的数字: {value}"))?;
+            }
+            "agent.max_rounds" => {
+                cfg.agent.max_rounds = value.parse()
+                    .map_err(|_| format!("无效的数字: {value}"))?;
+            }
+            "agent.compression_ratio" => {
+                cfg.agent.compression_ratio = value.parse()
+                    .map_err(|_| format!("无效的数字: {value}"))?;
+            }
+            "debug.enabled" => {
+                cfg.debug.enabled = value.parse()
+                    .map_err(|_| format!("无效的布尔值: {value}，请输入 true 或 false"))?;
+            }
+            _ => return Err(format!("不支持的配置项: {key}\n支持的项: api.model, api.base_url, request.timeout_secs, request.max_retries, memory.max_memory_md_chars, memory.user_profile_enabled, display.tool_result_max_chars, agent.max_rounds, agent.compression_ratio, debug.enabled")),
+        }
+
+        cfg.save(config_path)
+            .map_err(|e| format!("保存配置失败: {e}"))?;
+
+        Ok(format!("✅ 已更新 {key} = {value}\n配置已保存到 {}\n重启程序后生效（部分配置支持热重载）", config_path.display()))
     }
 
     fn archive_session(&self) {
