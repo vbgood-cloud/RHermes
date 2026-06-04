@@ -1039,12 +1039,26 @@ impl Tool for Memory {
             .map_err(|e| ToolError::ExecutionFailed(format!("创建目录失败: {e}")))?;
 
         let (file_name, max_chars) = match target.as_str() {
-            "user" => ("USER.md", 1375),
+            "user" => {
+                // USER.md 需要配置显式启用
+                let cfg = crate::tools::get_global_config();
+                let enabled = cfg.as_ref().map(|c| c.memory.user_profile_enabled).unwrap_or(false);
+                if !enabled {
+                    return Err(ToolError::ExecutionFailed(
+                        "用户画像记忆(USER.md)未启用。请在 config.toml 中设置 [memory] user_profile_enabled = true 后重试。".into()));
+                }
+                ("USER.md", 1375)
+            }
             "memory" => ("MEMORY.md", 2200),
             _ => return Err(ToolError::ExecutionFailed(
                 format!("不支持的 target: {target}，仅支持 user 和 memory"))),
         };
         let file_path = memories_dir.join(file_name);
+        // 延迟创建：文件不存在时自动创建（首次调用时）
+        if !file_path.exists() {
+            std::fs::write(&file_path, "")
+                .map_err(|e| ToolError::ExecutionFailed(format!("创建记忆文件失败: {e}")))?;
+        }
 
         match action.as_str() {
             "add" => {

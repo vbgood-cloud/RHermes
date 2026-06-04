@@ -107,6 +107,9 @@ pub struct MemoryConfig {
     /// USER.md 最大字符数
     #[serde(default = "default_user_md_chars")]
     pub max_user_md_chars: usize,
+    /// 是否启用用户画像记忆文件（USER.md），默认关闭
+    #[serde(default)]
+    pub user_profile_enabled: bool,
 }
 
 impl Default for MemoryConfig {
@@ -114,6 +117,7 @@ impl Default for MemoryConfig {
         Self {
             max_memory_md_chars: default_memory_md_chars(),
             max_user_md_chars: default_user_md_chars(),
+            user_profile_enabled: false,
         }
     }
 }
