@@ -957,6 +957,61 @@ impl Tool for SkillPatch {
 }
 
 // ---------------------------------------------------------------------------
+// memory — 非并行安全（写磁盘）
+// ---------------------------------------------------------------------------
+
+/// 记忆工具：记录用户偏好/纠正/个人信息到 USER.md
+pub struct Memory;
+
+#[async_trait]
+impl Tool for Memory {
+    fn name(&self) -> &'static str { "memory" }
+    fn description(&self) -> &'static str { "记录需要跨会话记住的关于用户的信息（偏好、纠正、个人信息），写入 USER.md" }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::required("action", ParamType::String, "操作类型：add（添加）"),
+            ParamDef::required("target", ParamType::String, "目标：user（用户信息）"),
+            ParamDef::required("content", ParamType::String, "要记住的内容，如'用户偏好 Python 而非 JavaScript'"),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let action = get_string_arg(&args, "action")?;
+        let target = get_string_arg(&args, "target")?;
+        let content = get_string_arg(&args, "content")?;
+
+        if action != "add" || target != "user" {
+            return Err(ToolError::ExecutionFailed(format!("暂不支持 action={action}, target={target}")));
+        }
+
+        // 通过全局配置获取 memories 目录
+        let cfg = crate::tools::get_global_config()
+            .ok_or_else(|| ToolError::ExecutionFailed("配置未初始化".into()))?;
+        let path_mgr = crate::core::PathManager::detect();
+        let memories_dir = path_mgr.data_root().join("memories");
+        std::fs::create_dir_all(&memories_dir)
+            .map_err(|e| ToolError::ExecutionFailed(format!("创建目录失败: {e}")))?;
+
+        let user_md_path = memories_dir.join("USER.md");
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
+        let entry = format!("§ [{}] {}", now, content);
+
+        let mut file_content = std::fs::read_to_string(&user_md_path).unwrap_or_default();
+        file_content.push_str(&entry);
+
+        // 原子写入：先写临时文件再 rename
+        let tmp_path = memories_dir.join("USER.md.tmp");
+        std::fs::write(&tmp_path, &file_content)
+            .map_err(|e| ToolError::ExecutionFailed(format!("写入失败: {e}")))?;
+        std::fs::rename(&tmp_path, &user_md_path)
+            .map_err(|e| ToolError::ExecutionFailed(format!("原子替换失败: {e}")))?;
+
+        tracing::info!("记忆已写入 USER.md: {content}");
+        Ok(format!("✅ 已记住：{content}"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // skill_manage — 非并行安全（写磁盘）
 // ---------------------------------------------------------------------------
 
@@ -1053,6 +1108,7 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(DelegateTask)
         .register(ReadPdf)
         .register(SkillManage)
+        .register(Memory)
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,9 +1149,10 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry();
-        assert_eq!(reg.len(), 16);
+        assert_eq!(reg.len(), 17);
         assert!(reg.get("read_pdf").is_some());
         assert!(reg.get("skill_manage").is_some());
+        assert!(reg.get("memory").is_some());
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());

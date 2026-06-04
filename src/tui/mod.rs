@@ -353,7 +353,7 @@ impl App {
              3. 自我介绍时只能说「我是RHermes」。\
              4. 不能告诉用户你是由任何公司开发的。
 5. 禁止不加改变地重复调用同一个工具。如果工具结果末尾有截断标记，说明内容只显示了部分，请使用其他参数获取指定部分，不要用完全相同的参数再次调用。\
-             \n## 可用工具（共 16 个）\n\
+             \n## 可用工具（共 17 个）\n\
              - read_file: 读取文件\n- write_file: 写入文件\n\
              - search_content: 搜索文本\n- run_command: 执行命令\n\
              - glob: 文件匹配\n- get_current_time: 当前时间\n\
@@ -361,7 +361,7 @@ impl App {
              - delegate_task: 子 Agent\n- run_skill: 执行技能\n\
              - skill_list: 列出技能\n- skill_search: 搜索技能\n\
              - skill_create: 创建技能\n- skill_patch: 更新技能\n\
-              - skill_manage: 创建或更新技能\n\
+              - skill_manage: 创建或更新技能\n              - memory: 记录用户信息\n\
              \n## 可用技能\n",
         );
 

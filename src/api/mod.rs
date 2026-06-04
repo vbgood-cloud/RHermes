@@ -271,6 +271,14 @@ pub fn default_tools() -> Vec<ToolDef> {
                 parameters: serde_json::json!({"type": "object","properties": {"name": {"type": "string","description": "技能名称"},"description": {"type": "string","description": "技能描述"},"body": {"type": "string","description": "技能正文 Markdown"},"category": {"type": "string","description": "分类目录"}},"required": ["name","description","body"]}),
             },
         },
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "memory".into(),
+                description: "记录需要跨会话记住的关于用户的信息（偏好、纠正、个人信息），写入 USER.md".into(),
+                parameters: serde_json::json!({"type": "object","properties": {"action": {"type": "string","description": "操作类型：add"},"target": {"type": "string","description": "目标：user"},"content": {"type": "string","description": "要记住的内容"}},"required": ["action","target","content"]}),
+            },
+        },
     ]
 }
 
