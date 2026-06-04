@@ -588,6 +588,29 @@ impl App {
                                 tools: Some(crate::api::default_tools()),
                             };
 
+                            // 调试：prompt_dump 开启时写入完整提示词到文本文件
+                            if let Some(cfg) = crate::tools::get_global_config() {
+                                if cfg.debug.prompt_dump {
+                                    let dump_path = PathBuf::from("debug").join("prompt_dump.txt");
+                                    let _ = std::fs::create_dir_all("debug");
+                                    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                                    let mut dump = format!("\n{sep}\n=== 提示词转储 [{timestamp}] ===\n{sep}\n", sep = "=".repeat(60));
+                                    dump.push_str(&format!("模型: {}\n\n", request.model));
+                                    for msg in &request.messages {
+                                        dump.push_str(&format!("[{}]\n{}\n---\n", msg.role, msg.content));
+                                    }
+                                    if let Some(ref tools) = request.tools {
+                                        for t in tools {
+                                            dump.push_str(&format!("[工具] {}: {}\n", t.function.name, t.function.description));
+                                        }
+                                    }
+                                    dump.push_str(&format!("{}\n", "=".repeat(60)));
+                                    let _ = std::fs::OpenOptions::new()
+                                        .create(true).append(true).open(&dump_path)
+                                        .and_then(|mut f| std::io::Write::write_all(&mut f, dump.as_bytes()));
+                                }
+                            }
+
                             match client.chat(request).await {
                                 Ok(response) => {
                                     if let Some(choice) = response.choices.first() {

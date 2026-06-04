@@ -134,11 +134,14 @@ pub struct DebugConfig {
     /// 调试环缓冲区大小
     #[serde(default = "default_debug_buffer")]
     pub buffer_size: usize,
+    /// 是否将最终发送的提示词写入文本文件（供抓包工具捕获）
+    #[serde(default)]
+    pub prompt_dump: bool,
 }
 
 impl Default for DebugConfig {
     fn default() -> Self {
-        Self { enabled: false, buffer_size: default_debug_buffer() }
+        Self { enabled: false, buffer_size: default_debug_buffer(), prompt_dump: false }
     }
 }
 
