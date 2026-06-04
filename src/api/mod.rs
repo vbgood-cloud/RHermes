@@ -275,8 +275,8 @@ pub fn default_tools() -> Vec<ToolDef> {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "memory".into(),
-                description: "记录需要跨会话记住的关于用户的信息（偏好、纠正、个人信息），写入 USER.md".into(),
-                parameters: serde_json::json!({"type": "object","properties": {"action": {"type": "string","description": "操作类型：add"},"target": {"type": "string","description": "目标：user"},"content": {"type": "string","description": "要记住的内容"}},"required": ["action","target","content"]}),
+                description: "读写管理记忆文件 MEMORY.md 和 USER.md。action: add/replace/remove/read。target: user/memory。".into(),
+                parameters: serde_json::json!({"type": "object","properties": {"action": {"type": "string","description": "操作: add(添加)/replace(替换)/remove(删除)/read(读取)"},"target": {"type": "string","description": "目标: user(USER.md)/memory(MEMORY.md)"},"content": {"type": "string","description": "要添加/替换的内容（add/replace 时必填）"},"old_text": {"type": "string","description": "要匹配的旧文本子串（replace/remove 时必填）"}},"required": ["action","target"]}),
             },
         },
     ]

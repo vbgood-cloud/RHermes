@@ -960,53 +960,193 @@ impl Tool for SkillPatch {
 // memory — 非并行安全（写磁盘）
 // ---------------------------------------------------------------------------
 
-/// 记忆工具：记录用户偏好/纠正/个人信息到 USER.md
+/// 记忆工具：读写管理 MEMORY.md 和 USER.md（双文件存储）
 pub struct Memory;
+
+impl Memory {
+    /// 获取记忆文件路径和对应的容量上限
+    fn resolve_target(&self) -> Result<(std::path::PathBuf, usize), ToolError> {
+        let path_mgr = crate::core::PathManager::detect();
+        let memories_dir = path_mgr.data_root().join("memories");
+        std::fs::create_dir_all(&memories_dir)
+            .map_err(|e| ToolError::ExecutionFailed(format!("创建目录失败: {e}")))?;
+        // 默认为 USER.md，只支持 memory 和 user 两个 target
+        let file_path = memories_dir.join("USER.md");
+        // USER.md 上限默认为 1375
+        let max_chars = 1375;
+        Ok((file_path, max_chars))
+    }
+
+    /// 从磁盘读取全部内容
+    fn read_all(path: &std::path::Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    /// 原子写入：tmp → rename
+    fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
+        let tmp = path.with_extension("md.tmp");
+        std::fs::write(&tmp, content).map_err(|e| format!("写入失败: {e}"))?;
+        std::fs::rename(&tmp, path).map_err(|e| format!("原子替换失败: {e}"))?;
+        Ok(())
+    }
+
+    /// 安全扫描 + 查重
+    fn safety_check(content: &str) -> Result<(), String> {
+        // 安全扫描：拒绝空内容或纯空白
+        if content.trim().is_empty() {
+            return Err("内容不能为空".into());
+        }
+        // 查重：检查是否有完全相同的条目
+        for line in content.lines() {
+            if !line.starts_with('§') && !line.trim().is_empty() {
+                // 非条目行（如空行）跳过
+                continue;
+            }
+        }
+        Ok(())
+    }
+}
 
 #[async_trait]
 impl Tool for Memory {
     fn name(&self) -> &'static str { "memory" }
-    fn description(&self) -> &'static str { "记录需要跨会话记住的关于用户的信息（偏好、纠正、个人信息），写入 USER.md" }
+    fn description(&self) -> &'static str {
+        "读写管理记忆文件 MEMORY.md 和 USER.md。action: add(添加)/replace(替换)/remove(删除)/read(读取)。target: user(USER.md) 或 memory(MEMORY.md)。"
+    }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
-            ParamDef::required("action", ParamType::String, "操作类型：add（添加）"),
-            ParamDef::required("target", ParamType::String, "目标：user（用户信息）"),
-            ParamDef::required("content", ParamType::String, "要记住的内容，如'用户偏好 Python 而非 JavaScript'"),
+            ParamDef::required("action", ParamType::String,
+                "操作类型: add(添加)/replace(替换)/remove(删除)/read(读取)"),
+            ParamDef::required("target", ParamType::String,
+                "目标文件: user(USER.md 用户信息)/memory(MEMORY.md 笔记)"),
+            ParamDef::optional("content", ParamType::String,
+                "要添加或替换的内容（add/replace 时必填）"),
+            ParamDef::optional("old_text", ParamType::String,
+                "要匹配的旧文本子串（replace/remove 时必填）"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let action = get_string_arg(&args, "action")?;
         let target = get_string_arg(&args, "target")?;
-        let content = get_string_arg(&args, "content")?;
+        let content = get_optional_string(&args, "content").unwrap_or_default();
+        let old_text = get_optional_string(&args, "old_text").unwrap_or_default();
 
-        if action != "add" || target != "user" {
-            return Err(ToolError::ExecutionFailed(format!("暂不支持 action={action}, target={target}")));
-        }
-
-        // 通过全局配置获取 memories 目录
-        let cfg = crate::tools::get_global_config()
-            .ok_or_else(|| ToolError::ExecutionFailed("配置未初始化".into()))?;
+        // 解析目标文件
         let path_mgr = crate::core::PathManager::detect();
         let memories_dir = path_mgr.data_root().join("memories");
         std::fs::create_dir_all(&memories_dir)
             .map_err(|e| ToolError::ExecutionFailed(format!("创建目录失败: {e}")))?;
 
-        let user_md_path = memories_dir.join("USER.md");
-        let entry = format!("§ {}", content);
+        let (file_name, max_chars) = match target.as_str() {
+            "user" => ("USER.md", 1375),
+            "memory" => ("MEMORY.md", 2200),
+            _ => return Err(ToolError::ExecutionFailed(
+                format!("不支持的 target: {target}，仅支持 user 和 memory"))),
+        };
+        let file_path = memories_dir.join(file_name);
 
-        let mut file_content = std::fs::read_to_string(&user_md_path).unwrap_or_default();
-        file_content.push_str(&entry);
+        match action.as_str() {
+            "add" => {
+                if content.is_empty() {
+                    return Err(ToolError::ExecutionFailed("content 不能为空".into()));
+                }
+                let entry = format!("§ {}", content);
+                Self::safety_check(&entry)
+                    .map_err(|e| ToolError::ExecutionFailed(e))?;
 
-        // 原子写入：先写临时文件再 rename
-        let tmp_path = memories_dir.join("USER.md.tmp");
-        std::fs::write(&tmp_path, &file_content)
-            .map_err(|e| ToolError::ExecutionFailed(format!("写入失败: {e}")))?;
-        std::fs::rename(&tmp_path, &user_md_path)
-            .map_err(|e| ToolError::ExecutionFailed(format!("原子替换失败: {e}")))?;
+                let mut current = Self::read_all(&file_path);
 
-        tracing::info!("记忆已写入 USER.md: {content}");
-        Ok(format!("✅ 已记住：{content}"))
+                // 查重：完全相同的条目不重复写入
+                for line in current.lines() {
+                    if line == entry.trim() {
+                        return Ok("⏭ 条目已存在，跳过".into());
+                    }
+                }
+
+                current.push_str(&entry);
+
+                // 容量检查：超出时删除最旧条目
+                if current.len() > max_chars {
+                    let parts: Vec<&str> = current.split('§').collect();
+                    let mut kept = String::new();
+                    for part in parts {
+                        let test = if kept.is_empty() { part.to_string() } else { format!("§{}", part) };
+                        if kept.len() + test.len() <= max_chars {
+                            kept.push_str(&test);
+                        }
+                    }
+                    current = kept;
+                }
+
+                Self::atomic_write(&file_path, &current)
+                    .map_err(|e| ToolError::ExecutionFailed(e))?;
+                tracing::info!("记忆已追加到 {}: {}", file_name, content);
+                Ok(format!("✅ 已记住：{}", content))
+            }
+
+            "replace" => {
+                if old_text.is_empty() {
+                    return Err(ToolError::ExecutionFailed("replace 操作需要 old_text 参数".into()));
+                }
+                if content.is_empty() {
+                    return Err(ToolError::ExecutionFailed("replace 操作需要 content 参数".into()));
+                }
+
+                let current = Self::read_all(&file_path);
+                if !current.contains(&old_text) {
+                    return Ok(format!("❌ 未找到包含「{old_text}」的条目，当前条目数: {}", current.matches('§').count()));
+                }
+
+                let new_content = current.replace(&old_text, &content);
+                Self::atomic_write(&file_path, &new_content)
+                    .map_err(|e| ToolError::ExecutionFailed(e))?;
+                tracing::info!("记忆已替换: {old_text} → {content}");
+                Ok(format!("✅ 已替换：{old_text} → {content}"))
+            }
+
+            "remove" => {
+                if old_text.is_empty() {
+                    return Err(ToolError::ExecutionFailed("remove 操作需要 old_text 参数".into()));
+                }
+
+                let current = Self::read_all(&file_path);
+                if !current.contains(&old_text) {
+                    return Ok(format!("❌ 未找到包含「{old_text}」的条目"));
+                }
+
+                let before_count = current.matches('§').count();
+                let new_content = current.replace(&old_text, "");
+                // 清理多余的 § 分隔符
+                let cleaned: String = new_content.split('§')
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| {
+                        let trimmed = s.trim();
+                        if trimmed.starts_with(' ') { format!("§{}", trimmed) } else { format!("§ {}", trimmed) }
+                    })
+                    .collect();
+                let after_count = cleaned.matches('§').count();
+
+                Self::atomic_write(&file_path, &cleaned)
+                    .map_err(|e| ToolError::ExecutionFailed(e))?;
+                tracing::info!("记忆已删除: {old_text} (移除 {})", before_count - after_count);
+                Ok(format!("✅ 已删除包含「{old_text}」的条目"))
+            }
+
+            "read" => {
+                let current = Self::read_all(&file_path);
+                let entry_count = current.matches('§').count();
+                if current.trim().is_empty() {
+                    Ok(format!("📄 {} 为空（{}/{} 字符）", file_name, 0, max_chars))
+                } else {
+                    Ok(format!("📄 {} 共 {} 条记录（{}/{} 字符）\n{}",
+                        file_name, entry_count, current.len(), max_chars, current.trim()))
+                }
+            }
+
+            _ => Err(ToolError::ExecutionFailed(
+                format!("不支持的 action: {action}，仅支持 add/replace/remove/read"))),
+        }
     }
 }
 
