@@ -43,13 +43,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 🚀 启动编程 Agent（默认）
-    Code {
-        /// 项目目录（默认当前目录）
-        #[arg(short, long)]
-        dir: Option<String>,
-    },
-    /// ⚙️ 交互式初始化向导（API Key / 模型 / 部署方式）
+    /// ⚙️ 交互式初始化向导（API Key / 模型）
     Init,
     /// 🔍 调试工具
     Debug {
@@ -100,6 +94,10 @@ async fn main() {
 
     let cli = Cli::parse();
 
+    // 检查配置是否存在，不存在则引导初始化
+    let config_path = PathManager::detect().config_path();
+    let needs_init = !config_path.exists();
+
     match cli.command {
         Some(Commands::Init) => {
             if let Err(e) = init::run_init() {
@@ -118,6 +116,13 @@ async fn main() {
             }
         }
         _ => {
+            if needs_init {
+                println!("📋 未检测到配置文件，正在启动初始化向导...");
+                if let Err(e) = init::run_init() {
+                    eprintln!("[RHermes] 初始化失败: {e}");
+                    std::process::exit(1);
+                }
+            }
             run_code(cli.resume).await;
         }
     }
