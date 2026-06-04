@@ -177,6 +177,10 @@ pub struct AgentConfig {
     /// 自动技能提炼间隔（工具调用次数，0=禁用，默认 15）
     #[serde(default = "default_creation_nudge_interval")]
     pub creation_nudge_interval: u32,
+
+    /// 自动记忆提炼间隔（对话轮次，0=禁用，默认 10）
+    #[serde(default = "default_memory_nudge_interval")]
+    pub memory_nudge_interval: u32,
 }
 
 impl Default for AgentConfig {
@@ -185,12 +189,14 @@ impl Default for AgentConfig {
             max_rounds: default_max_rounds(),
             compression_ratio: default_compression_ratio(),
             creation_nudge_interval: default_creation_nudge_interval(),
+            memory_nudge_interval: default_memory_nudge_interval(),
         }
     }
 }
 
 fn default_compression_ratio() -> f64 { 0.8 }
 fn default_creation_nudge_interval() -> u32 { 15 }
+fn default_memory_nudge_interval() -> u32 { 10 }
 
 // ---- 默认值 ----
 

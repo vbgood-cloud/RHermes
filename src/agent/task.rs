@@ -214,6 +214,71 @@ pub async fn auto_refine_skill(
     }
 }
 
+/// 自动记忆提炼 Agent
+///
+/// 审查对话是否包含值得持久化的用户事实，调用 memory 工具写入 USER.md。
+pub async fn auto_refine_memory(
+    user_msg: &str,
+    assistant_msg: &str,
+    config: &Config,
+) -> SubAgentResult {
+    let start = std::time::Instant::now();
+    let system_prompt = format!(
+        "你是用户画像助手。审查以下对话中是否有值得跨会话记住的用户偏好、纠正或个人信息。\n\
+        规则：\n\
+        1. 如果发现值得记住的用户事实，用 memory(action='add', target='user', content='...') 记录下来\n\
+        2. 如果没有值得记录的内容，回复 'Nothing to save.'\n\
+        3. 只记录明确表达的用户事实，不要猜测或推断\n\
+        4. 内容要简洁完整，如'用户偏好 Python 而非 JavaScript'\n\n\
+        当前对话：\n用户: {user_msg}\nAI: {assistant_msg}"
+    );
+
+    let client = DeepSeekClient::new(config.clone());
+    let tools = default_tools();
+
+    let request = ChatRequest {
+        model: config.api.model.clone(),
+        messages: vec![crate::api::ApiMessage {
+            role: "system".into(),
+            content: system_prompt,
+        }],
+        stream: false,
+        max_tokens: Some(2048),
+        temperature: None,
+        tools: Some(tools),
+    };
+
+    match client.chat(request).await {
+        Ok(response) => {
+            let elapsed = start.elapsed().as_millis() as u64;
+            if let Some(choice) = response.choices.first() {
+                let text = choice.message.content.clone().unwrap_or_default();
+                // 注意：如果模型返回了 tool_calls（调用了 memory 工具），
+                // 这里只记录文本回复。memory 工具调用由 Agent Loop 处理。
+                SubAgentResult {
+                    output: format!("记忆审查: {text}"),
+                    duration_ms: elapsed,
+                    success: !text.contains("Nothing to save"),
+                }
+            } else {
+                SubAgentResult {
+                    output: "记忆审查无结果".into(),
+                    duration_ms: elapsed,
+                    success: false,
+                }
+            }
+        }
+        Err(e) => {
+            let elapsed = start.elapsed().as_millis() as u64;
+            SubAgentResult {
+                output: format!("记忆审查失败: {e}"),
+                duration_ms: elapsed,
+                success: false,
+            }
+        }
+    }
+}
+
 /// 并行运行多个子 Agent
 ///
 /// 所有子 Agent 同时启动，等待全部完成后返回结果。

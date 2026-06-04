@@ -407,6 +407,7 @@ impl App {
         let max_rounds = config.agent.max_rounds;
         let compress_ratio = config.agent.compression_ratio;
         let creation_nudge_interval = config.agent.creation_nudge_interval;
+        let memory_nudge_interval = config.agent.memory_nudge_interval;
         let display_config = config.display.clone();
         let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
@@ -732,6 +733,24 @@ impl App {
                                             &nudge_msg, &nudge_text, &cfg,
                                         ).await;
                                         tracing::info!("自动技能提炼结果: {} ({}ms)", result.output, result.duration_ms);
+                                    }
+                                });
+                            }
+
+                            // 6b2. 自动记忆提炼：每 N 轮后台审查用户事实
+                            if memory_nudge_interval > 0
+                                && round % memory_nudge_interval == 0
+                                && !final_text.is_empty()
+                            {
+                                let mem_msg = msg.clone();
+                                let mem_text = final_text.clone();
+                                let config = crate::tools::get_global_config();
+                                tokio::spawn(async move {
+                                    if let Some(cfg) = config {
+                                        let result = crate::agent::auto_refine_memory(
+                                            &mem_msg, &mem_text, &cfg,
+                                        ).await;
+                                        tracing::info!("自动记忆提炼结果: {} ({}ms)", result.output, result.duration_ms);
                                     }
                                 });
                             }
