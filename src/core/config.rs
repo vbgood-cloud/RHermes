@@ -18,6 +18,9 @@ use serde::{Deserialize, Serialize};
 /// `.env` 文件中 API Key 的键名
 const ENV_KEY_NAME: &str = "DEEPSEEK_API_KEY";
 
+/// 环境变量中 base_url 的键名（优先级高于 config.toml）
+const ENV_BASE_URL: &str = "RH_BASE_URL";
+
 /// `.env` 文件名
 const ENV_FILE_NAME: &str = ".env";
 
@@ -273,6 +276,14 @@ impl Config {
             }
         }
 
+        // 3. 环境变量覆盖 base_url（优先级：环境变量 > config.toml > 默认值）
+        if let Ok(val) = std::env::var(ENV_BASE_URL) {
+            let trimmed = val.trim().to_string();
+            if !trimmed.is_empty() {
+                cfg.api.base_url = trimmed;
+            }
+        }
+
         Ok(cfg)
     }
 
@@ -461,6 +472,7 @@ mod tests {
             memory: MemoryConfig {
                 max_memory_md_chars: 2200,
                 max_user_md_chars: 1375,
+                user_profile_enabled: false,
             },
             debug: DebugConfig {
                 enabled: false,
@@ -474,6 +486,7 @@ mod tests {
                 max_rounds: 50,
                 compression_ratio: 0.8,
                 creation_nudge_interval: 15,
+                memory_nudge_interval: 10,
             },
         };
 
