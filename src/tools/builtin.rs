@@ -993,8 +993,7 @@ impl Tool for Memory {
             .map_err(|e| ToolError::ExecutionFailed(format!("创建目录失败: {e}")))?;
 
         let user_md_path = memories_dir.join("USER.md");
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
-        let entry = format!("§ [{}] {}", now, content);
+        let entry = format!("§ {}", content);
 
         let mut file_content = std::fs::read_to_string(&user_md_path).unwrap_or_default();
         file_content.push_str(&entry);
