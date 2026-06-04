@@ -114,20 +114,8 @@ impl MemoryProvider for BuiltinProvider {
     }
 
     fn flush(&self) -> Result<(), String> {
-        // 持久化 MEMORY.md 和 USER.md
-        if let Some(ref dir) = self.memories_dir {
-            if let Ok(mem) = self.inner.lock() {
-                let md_path = dir.join("MEMORY.md");
-                let _ = mem.export_memory_md(&md_path, "rhermes", 50);
-                if self.max_memory_md_chars > 0 {
-                    let _ = mem.save_profile_with_limit(
-                        &mem.load_profile().unwrap_or_default(),
-                        Some(&dir.join("USER.md")),
-                        self.max_memory_md_chars,
-                    );
-                }
-            }
-        }
+        // 文件写入已全部收敛到 memory 工具（atomic_write），
+        // SQLite 是主存储，无需额外文件导出。
         Ok(())
     }
 }

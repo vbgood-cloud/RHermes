@@ -960,50 +960,64 @@ impl Tool for SkillPatch {
 // memory — 非并行安全（写磁盘）
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// 公共记忆写入函数（memory 工具 + /note + 系统内部统一使用）
+// ---------------------------------------------------------------------------
+
+/// 从磁盘读取记忆文件全部内容
+pub fn memory_read_all(path: &std::path::Path) -> String {
+    std::fs::read_to_string(path).unwrap_or_default()
+}
+
+/// 原子写入：tmp → rename（USER.md/MEMORY.md 的唯一写入入口）
+pub fn memory_atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
+    let tmp = path.with_extension("md.tmp");
+    std::fs::write(&tmp, content).map_err(|e| format!("写入失败: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("原子替换失败: {e}"))?;
+    Ok(())
+}
+
+/// § 分隔截断：超出 max_chars 时删除最旧条目
+pub fn memory_truncate_by_section(content: &str, max_chars: usize) -> String {
+    if content.len() <= max_chars {
+        return content.to_string();
+    }
+    let parts: Vec<&str> = content.split('§').collect();
+    let mut kept = String::new();
+    for part in parts {
+        let test = if kept.is_empty() { part.to_string() } else { format!("§{}", part) };
+        if kept.len() + test.len() <= max_chars {
+            kept.push_str(&test);
+        }
+    }
+    kept
+}
+
+/// 安全扫描 + 查重
+fn memory_safety_check(content: &str) -> Result<(), String> {
+    if content.trim().is_empty() {
+        return Err("内容不能为空".into());
+    }
+    Ok(())
+}
+
 /// 记忆工具：读写管理 MEMORY.md 和 USER.md（双文件存储）
 pub struct Memory;
 
 impl Memory {
-    /// 获取记忆文件路径和对应的容量上限
-    fn resolve_target(&self) -> Result<(std::path::PathBuf, usize), ToolError> {
-        let path_mgr = crate::core::PathManager::detect();
-        let memories_dir = path_mgr.data_root().join("memories");
-        std::fs::create_dir_all(&memories_dir)
-            .map_err(|e| ToolError::ExecutionFailed(format!("创建目录失败: {e}")))?;
-        // 默认为 USER.md，只支持 memory 和 user 两个 target
-        let file_path = memories_dir.join("USER.md");
-        // USER.md 上限默认为 1375
-        let max_chars = 1375;
-        Ok((file_path, max_chars))
-    }
-
     /// 从磁盘读取全部内容
     fn read_all(path: &std::path::Path) -> String {
-        std::fs::read_to_string(path).unwrap_or_default()
+        memory_read_all(path)
     }
 
     /// 原子写入：tmp → rename
     fn atomic_write(path: &std::path::Path, content: &str) -> Result<(), String> {
-        let tmp = path.with_extension("md.tmp");
-        std::fs::write(&tmp, content).map_err(|e| format!("写入失败: {e}"))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("原子替换失败: {e}"))?;
-        Ok(())
+        memory_atomic_write(path, content)
     }
 
     /// 安全扫描 + 查重
     fn safety_check(content: &str) -> Result<(), String> {
-        // 安全扫描：拒绝空内容或纯空白
-        if content.trim().is_empty() {
-            return Err("内容不能为空".into());
-        }
-        // 查重：检查是否有完全相同的条目
-        for line in content.lines() {
-            if !line.starts_with('§') && !line.trim().is_empty() {
-                // 非条目行（如空行）跳过
-                continue;
-            }
-        }
-        Ok(())
+        memory_safety_check(content)
     }
 }
 
@@ -1079,19 +1093,7 @@ impl Tool for Memory {
                 }
 
                 current.push_str(&entry);
-
-                // 容量检查：超出时删除最旧条目
-                if current.len() > max_chars {
-                    let parts: Vec<&str> = current.split('§').collect();
-                    let mut kept = String::new();
-                    for part in parts {
-                        let test = if kept.is_empty() { part.to_string() } else { format!("§{}", part) };
-                        if kept.len() + test.len() <= max_chars {
-                            kept.push_str(&test);
-                        }
-                    }
-                    current = kept;
-                }
+                current = memory_truncate_by_section(&current, max_chars);
 
                 Self::atomic_write(&file_path, &current)
                     .map_err(|e| ToolError::ExecutionFailed(e))?;

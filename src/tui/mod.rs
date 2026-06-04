@@ -957,21 +957,10 @@ impl App {
                             let _ = std::fs::create_dir_all(&self.memories_dir);
                             let now = chrono::Local::now().format("%Y-%m-%d %H:%M");
                             let entry = format!("§ [{}] {}", now, note);
-                            let mut content = std::fs::read_to_string(&md_path).unwrap_or_default();
+                            let mut content = crate::tools::memory_read_all(&md_path);
                             content.push_str(&entry);
-                            // § 分隔：超出时删除最旧条目
-                            if content.len() > self.max_memory_md_chars {
-                                let parts: Vec<&str> = content.split('§').collect();
-                                let mut kept = String::new();
-                                for part in parts {
-                                    let test = if kept.is_empty() { part.to_string() } else { format!("§{}", part) };
-                                    if kept.len() + test.len() <= self.max_memory_md_chars {
-                                        kept.push_str(&test);
-                                    }
-                                }
-                                content = kept;
-                            }
-                            let _ = std::fs::write(&md_path, content);
+                            content = crate::tools::memory_truncate_by_section(&content, self.max_memory_md_chars);
+                            let _ = crate::tools::memory_atomic_write(&md_path, &content);
                             self.messages.push(Message::system("📝 笔记已保存到 MEMORY.md"));
                         }
                     }
@@ -1826,17 +1815,7 @@ impl App {
     }
 
     fn archive_session(&self) {
-        // 保存画像到 USER.md（带字数限制）
-        if let Some(ref mem) = self.memory {
-            if let Ok(engine) = mem.lock() {
-                let md_path = self.memories_dir.join("USER.md");
-                let _ = engine.save_profile_with_limit(
-                    &engine.load_profile().unwrap_or_default(),
-                    Some(&md_path),
-                    self.max_memory_md_chars,
-                );
-            }
-        }
+        // USER.md 写入已全部收敛到 memory 工具，退出时不再额外写文件。
         let text: String = self.messages.iter()
             .filter(|m| m.role != Role::System)
             .map(|m| format!("{}: {}", match m.role {
