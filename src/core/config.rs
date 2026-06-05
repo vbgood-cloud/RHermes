@@ -9,6 +9,7 @@
 //! DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxx
 //! ```
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -30,13 +31,17 @@ const ENV_FILE_NAME: &str = ".env";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// DeepSeek API Key（仅从 .env 读取，不写入 config.toml）
-    #[serde(default, skip_serializing)]
+    /// DeepSeek API Key（仅从 .env 读取，永不写入 config.toml）
+    #[serde(default, skip)]
     pub api_key: String,
 
-    /// API 配置
+    /// API 配置（向后兼容，等价于 providers.deepseek）
     #[serde(default)]
     pub api: ApiConfig,
+
+    /// 多 Provider 配置表（新增，优先级高于 api）
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderConfig>,
 
     /// 请求配置
     #[serde(default)]
@@ -57,7 +62,64 @@ pub struct Config {
     /// Agent 行为配置
     #[serde(default)]
     pub agent: AgentConfig,
+
+    /// Provider Pool 配置（熔断器）
+    #[serde(default)]
+    pub provider_pool: ProviderPoolConfig,
 }
+
+/// Provider Pool 配置（熔断器）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderPoolConfig {
+    /// 熔断器阈值：连续失败 N 次后断开
+    #[serde(default = "default_circuit_breaker_threshold")]
+    pub circuit_breaker_threshold: u32,
+    /// 熔断器冷却时间（秒）
+    #[serde(default = "default_circuit_breaker_cooldown")]
+    pub circuit_breaker_cooldown_secs: u64,
+}
+
+impl Default for ProviderPoolConfig {
+    fn default() -> Self {
+        Self {
+            circuit_breaker_threshold: default_circuit_breaker_threshold(),
+            circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown(),
+        }
+    }
+}
+
+fn default_circuit_breaker_threshold() -> u32 { 3 }
+fn default_circuit_breaker_cooldown() -> u64 { 30 }
+
+/// 单个 Provider 的配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    /// API Key（仅从 .env 读取，永不写入或读取自 config.toml）
+    #[serde(skip)]
+    pub api_key: String,
+    /// API 基础 URL（不配置则根据 provider 名称使用默认值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// 模型名称（可选，默认使用 agents.defaults.model）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// API 协议类型：openai（默认）、anthropic、gemini、ollama
+    #[serde(default = "default_api_type")]
+    pub api_type: String,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            base_url: None,
+            model: None,
+            api_type: default_api_type(),
+        }
+    }
+}
+
+fn default_api_type() -> String { "openai".into() }
 
 /// API 相关配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,6 +252,10 @@ pub struct AgentConfig {
     /// 自动记忆提炼间隔（对话轮次，0=禁用，默认 10）
     #[serde(default = "default_memory_nudge_interval")]
     pub memory_nudge_interval: u32,
+
+    /// 默认 Provider 名称（如 "deepseek"、"openai"），空则自动推断
+    #[serde(default)]
+    pub default_provider: String,
 }
 
 impl Default for AgentConfig {
@@ -199,6 +265,7 @@ impl Default for AgentConfig {
             compression_ratio: default_compression_ratio(),
             creation_nudge_interval: default_creation_nudge_interval(),
             memory_nudge_interval: default_memory_nudge_interval(),
+            default_provider: String::new(),
         }
     }
 }
@@ -231,14 +298,18 @@ fn default_max_rounds() -> u32 {
 
 impl Default for Config {
     fn default() -> Self {
+        let mut providers = std::collections::HashMap::new();
+        providers.insert("deepseek".into(), ProviderConfig::default());
         Self {
             api_key: String::new(),
             api: ApiConfig::default(),
+            providers,
             request: RequestConfig::default(),
             memory: MemoryConfig::default(),
             debug: DebugConfig::default(),
             display: DisplayConfig::default(),
             agent: AgentConfig::default(),
+            provider_pool: ProviderPoolConfig::default(),
         }
     }
 }
@@ -259,30 +330,75 @@ impl Config {
             Err(e) => return Err(ConfigError::Io(e)),
         };
 
-        // 2. 从 .env 加载 API Key
+        // 2. 从 .env 加载所有 Provider 的 API Key
+        //    格式: {PROVIDER_NAME_UPPER}_API_KEY=sk-xxx
+        //    如: DEEPSEEK_API_KEY, OPENAI_API_KEY, SILICONFLOW_API_KEY
         let env_path = config_dir.join(ENV_FILE_NAME);
         if let Ok(content) = std::fs::read_to_string(&env_path) {
             for line in content.lines() {
                 let line = line.trim();
-                // 跳过空行和注释
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                // 解析 KEY=VALUE
                 if let Some((key, value)) = line.split_once('=') {
-                    if key.trim() == ENV_KEY_NAME {
-                        cfg.api_key = value.trim().to_string();
-                        break;
+                    let key = key.trim();
+                    let value = value.trim().to_string();
+                    // 兼容旧版 DEEPSEEK_API_KEY → Config.api_key
+                    if key == "DEEPSEEK_API_KEY" {
+                        cfg.api_key = value.clone();
+                        // 同步到 providers.deepseek
+                        let ds = cfg.providers.entry("deepseek".into()).or_default();
+                        if ds.api_key.is_empty() {
+                            ds.api_key = value;
+                        }
+                        continue;
+                    }
+                    // 通用格式: {PROVIDER}_API_KEY → providers.{provider_lower}.api_key
+                    if let Some(rest) = key.strip_suffix("_API_KEY") {
+                        if !rest.is_empty() {
+                            let provider_name = rest.to_lowercase();
+                            let entry = cfg.providers.entry(provider_name).or_default();
+                            entry.api_key = value;
+                        }
                     }
                 }
             }
         }
 
-        // 3. 环境变量覆盖 base_url（优先级：环境变量 > config.toml > 默认值）
+        // 3. 向后兼容：如果 [providers] 为空但 [api] 有配置，自动迁移
+        if cfg.providers.is_empty() && !cfg.api.model.is_empty() {
+            let mut deepseek = ProviderConfig::default();
+            if !cfg.api_key.is_empty() {
+                deepseek.api_key = cfg.api_key.clone();
+            }
+            if cfg.api.base_url != default_base_url() {
+                deepseek.base_url = Some(cfg.api.base_url.clone());
+            }
+            deepseek.model = Some(cfg.api.model.clone());
+            cfg.providers.insert("deepseek".into(), deepseek);
+        } else if cfg.providers.is_empty() {
+            // 默认初始化 deepseek
+            cfg.providers.insert("deepseek".into(), ProviderConfig::default());
+        }
+
+        // 4. 环境变量覆盖 base_url（优先级：环境变量 > config.toml > 默认值）
         if let Ok(val) = std::env::var(ENV_BASE_URL) {
             let trimmed = val.trim().to_string();
             if !trimmed.is_empty() {
-                cfg.api.base_url = trimmed;
+                cfg.api.base_url = trimmed.clone();
+                // 同步到 providers 中的 deepseek
+                if let Some(ds) = cfg.providers.get_mut("deepseek") {
+                    ds.base_url = Some(trimmed);
+                }
+            }
+        }
+
+        // 5. 将 .env 的 api_key 同步到 providers.deepseek（如果没设）
+        if !cfg.api_key.is_empty() {
+            if let Some(ds) = cfg.providers.get_mut("deepseek") {
+                if ds.api_key.is_empty() {
+                    ds.api_key = cfg.api_key.clone();
+                }
             }
         }
 
@@ -295,16 +411,34 @@ impl Config {
         std::fs::write(path.as_ref(), content).map_err(ConfigError::Io)
     }
 
-    /// 保存 API Key 到 `.env` 文件
+    /// 保存所有 Provider 的 API Key 到 `.env` 文件
     pub fn save_api_key(&self, config_path: impl AsRef<Path>) -> Result<(), ConfigError> {
         let config_dir = config_path.as_ref().parent().unwrap_or(Path::new("."));
         let env_path = config_dir.join(ENV_FILE_NAME);
-        let content = format!("{}={}\n", ENV_KEY_NAME, self.api_key);
+        let mut content = String::new();
+        content.push_str("# RHermes Provider API Keys\n");
+        // 兼容旧版：deepseek api key
+        if !self.api_key.is_empty() {
+            content.push_str(&format!("{}={}\n", ENV_KEY_NAME, self.api_key));
+        }
+        // 新版：每个 provider 一条
+        for (name, provider) in &self.providers {
+            if !provider.api_key.is_empty() {
+                let env_var = format!("{}_API_KEY", name.to_uppercase());
+                content.push_str(&format!("{env_var}={}\n", provider.api_key));
+            }
+        }
         std::fs::write(&env_path, content).map_err(ConfigError::Io)
     }
 
     /// 是否已配置（有 API Key）
     pub fn is_configured(&self) -> bool {
+        // 检查所有 provider 是否有 api_key
+        for p in self.providers.values() {
+            if !p.api_key.is_empty() {
+                return true;
+            }
+        }
         !self.api_key.is_empty()
     }
 }
@@ -467,6 +601,16 @@ mod tests {
                 model: "deepseek-v4-flash".into(),
                 base_url: "https://custom.api.com".into(),
             },
+            providers: {
+                let mut p = std::collections::HashMap::new();
+                p.insert("deepseek".into(), ProviderConfig {
+                    api_key: "sk-test".into(),
+                    base_url: Some("https://custom.api.com".into()),
+                    model: Some("deepseek-v4-flash".into()),
+                    ..Default::default()
+                });
+                p
+            },
             request: RequestConfig {
                 timeout_secs: 120,
                 max_retries: 5,
@@ -489,16 +633,20 @@ mod tests {
                 compression_ratio: 0.8,
                 creation_nudge_interval: 15,
                 memory_nudge_interval: 10,
+                default_provider: String::new(),
             },
+            provider_pool: ProviderPoolConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();
-        // api_key 不应该出现在 toml 中
-        assert!(!toml_str.contains("api_key"));
+        // 所有 api_key 字段都不应出现在 toml 中（因 #[serde(skip_serializing)]）
+        assert!(!toml_str.contains("api_key ="), "api_key 不应出现在 toml 中");
 
         let restored: Config = toml::from_str(&toml_str).unwrap();
         // api_key 没有被序列化，所以会是默认值
         assert!(restored.api_key.is_empty());
+        // providers 中的 api_key 同样不会被序列化
+        assert!(restored.providers.get("deepseek").map(|p| p.api_key.as_str()).unwrap_or("").is_empty());
         assert_eq!(restored.api.model, "deepseek-v4-flash");
         assert_eq!(restored.api.base_url, "https://custom.api.com");
     }

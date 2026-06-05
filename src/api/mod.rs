@@ -8,12 +8,14 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 
 
 use crate::core::Config;
+use crate::provider::Transport;
 
 // ---------------------------------------------------------------------------
 // 请求 / 响应结构
@@ -623,25 +625,52 @@ impl DeepSeekClient {
 }
 
 // ---------------------------------------------------------------------------
+// Transport trait 实现（兼容 Provider 层）
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl Transport for DeepSeekClient {
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, ApiError> {
+        self.chat(request).await
+    }
+
+    async fn chat_stream(
+        &self,
+        request: ChatRequest,
+        tx: tokio::sync::mpsc::UnboundedSender<ApiEvent>,
+    ) -> Result<(), ApiError> {
+        self.chat_stream(request, tx).await
+    }
+
+    async fn get_balance(&self) -> Result<f64, ApiError> {
+        self.get_balance().await
+    }
+
+    fn model_name(&self) -> &str {
+        self.model()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SSE 流式 chunk
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-struct StreamChunk {
+pub(crate) struct StreamChunk {
     pub choices: Vec<StreamChoice>,
     #[serde(default)]
     pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Deserialize)]
-struct StreamChoice {
+pub(crate) struct StreamChoice {
     pub delta: StreamDelta,
     #[serde(default)]
     pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-struct StreamDelta {
+pub(crate) struct StreamDelta {
     pub role: Option<String>,
     pub content: Option<String>,
     #[serde(default)]
@@ -649,7 +678,7 @@ struct StreamDelta {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct StreamToolCall {
+pub(crate) struct StreamToolCall {
     pub index: i32,
     #[serde(default)]
     pub id: Option<String>,
@@ -660,7 +689,7 @@ struct StreamToolCall {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct StreamToolCallFunction {
+pub(crate) struct StreamToolCallFunction {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]

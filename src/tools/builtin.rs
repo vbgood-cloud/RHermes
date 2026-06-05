@@ -777,8 +777,11 @@ impl Tool for DelegateTask {
         let config = GLOBAL_CONFIG.get().ok_or_else(|| {
             ToolError::ExecutionFailed("子 Agent 配置未初始化".into())
         })?;
+        let transport = GLOBAL_TRANSPORT.get().ok_or_else(|| {
+            ToolError::ExecutionFailed("子 Agent Transport 未初始化".into())
+        })?;
 
-        let result = crate::agent::run_sub_agent(&task, &context, config).await;
+        let result = crate::agent::run_sub_agent(&task, &context, config, transport.clone()).await;
 
         if result.success {
             Ok(format!(
@@ -1273,9 +1276,22 @@ pub fn get_global_config() -> Option<crate::core::Config> {
 /// 全局配置（子 Agent 工具使用）
 static GLOBAL_CONFIG: OnceLock<crate::core::Config> = OnceLock::new();
 
+/// 全局 Transport（Provider Pool）
+static GLOBAL_TRANSPORT: OnceLock<Arc<dyn crate::provider::Transport>> = OnceLock::new();
+
 /// 设置全局配置（在 main.rs 中调用）
 pub fn set_global_config(config: crate::core::Config) {
     let _ = GLOBAL_CONFIG.set(config);
+}
+
+/// 设置全局 Transport
+pub fn set_global_transport(transport: Arc<dyn crate::provider::Transport>) -> bool {
+    GLOBAL_TRANSPORT.set(transport).is_ok()
+}
+
+/// 获取全局 Transport
+pub fn get_global_transport() -> Option<Arc<dyn crate::provider::Transport>> {
+    GLOBAL_TRANSPORT.get().cloned()
 }
 
 use crate::tools::ToolRegistry;

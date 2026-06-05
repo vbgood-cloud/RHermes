@@ -3,6 +3,9 @@
 //! 基于 ratatui + crossterm 的终端交互界面。
 //! 通过 channel 与 API 客户端异步通信。
 
+mod markdown;
+pub mod channel;
+
 use std::io::{self, stdout};
 use std::time::{Duration, Instant};
 
@@ -28,12 +31,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::api::{ApiEvent, ApiMessage, DeepSeekClient, ToolCallData, Usage};
+use crate::api::{ApiEvent, ApiMessage, ToolCallData, Usage};
+use crate::channel::InboundMessage;
 use crate::core::Config;
 use crate::core::Context;
 use crate::agent::MemorySystem;
 use crate::tools::ToolCall;
 use crate::tools::ToolDispatcher;
+use crate::tui::markdown::render_markdown;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -234,6 +239,10 @@ pub struct App {
     last_response_secs: u64,
     /// 当前响应开始时间
     response_start: Option<Instant>,
+    /// 是否已对当前停滞请求发出过警告
+    stall_warned: bool,
+    /// 通道入站消息发送端（当通过 Channel 驱动时设置）
+    channel_inbound_tx: Option<tokio::sync::mpsc::UnboundedSender<InboundMessage>>,
 }
 
 /// 可用命令列表（命令, 说明）
@@ -256,6 +265,8 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/回忆",      "搜索跨会话记忆"),
     ("/recall",    "搜索跨会话记忆"),
     ("/remember",  "搜索跨会话记忆"),
+    ("/plan",      "先输出结构化计划，确认后再执行（/plan <任务描述>）"),
+    ("/model",     "查看当前模型（/model set <名称> 切换模型）"),
 ];
 
 impl App {
@@ -276,7 +287,28 @@ impl App {
 
         // 加载上一次会话（仅当 -r/--resume 标志）
         let saved_messages = if resume {
-            Self::load_session(&session_path)
+            // 先尝试从 SQLite 加载
+            if let Some(ref mem) = memory {
+                if let Ok(engine) = mem.lock() {
+                    if let Ok(Some(sid)) = engine.latest_session_id() {
+                        if let Ok(msgs) = engine.load_session_messages(&sid) {
+                            if !msgs.is_empty() {
+                                msgs
+                            } else {
+                                Self::load_session(&session_path)
+                            }
+                        } else {
+                            Self::load_session(&session_path)
+                        }
+                    } else {
+                        Self::load_session(&session_path)
+                    }
+                } else {
+                    Self::load_session(&session_path)
+                }
+            } else {
+                Self::load_session(&session_path)
+            }
         } else {
             Vec::new()
         };
@@ -311,6 +343,8 @@ impl App {
             memory,
             last_response_secs: 0,
             response_start: None,
+            stall_warned: false,
+            channel_inbound_tx: None,
         };
         app.stats.mode = mode.to_string();
 
@@ -339,7 +373,15 @@ impl App {
     }
 
     /// 初始化 API 客户端 + Agent Loop
-    pub fn init_api(&mut self, config: Config, path_mgr: &crate::core::PathManager) {
+    pub fn init_api(&mut self, config: Config, transport: Arc<dyn crate::provider::Transport>, path_mgr: &crate::core::PathManager) {
+        // 注册 panic 钩子，确保后台任务 panic 不会被静默吞噬
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            tracing::error!("[PANIC] 后台任务崩溃: {info}");
+            let location = info.location().map(|l| format!(" ({}:{})", l.file(), l.line())).unwrap_or_default();
+            eprintln!("[FATAL] RHermes 后台任务崩溃{location}: {info}");
+            prev_hook(info);
+        }));
         self.stats.model = config.api.model.clone();
         self.current_config = Some(config.clone());
 
@@ -458,7 +500,6 @@ impl App {
         let creation_nudge_interval = config.agent.creation_nudge_interval;
         let memory_nudge_interval = config.agent.memory_nudge_interval;
         let display_config = config.display.clone();
-        let client = DeepSeekClient::new(config);
         let mut ctx = Context::new(system_prompt);
 
         // volatile 层：session 开始时一次性冻结（时间 + 画像 + 项目上下文）
@@ -494,9 +535,9 @@ impl App {
         tokio::spawn(async move {
             // 启动时查询余额
             let balance_tx = event_tx.clone();
-            let balance_client = client.clone();
+            let balance_transport = transport.clone();
             tokio::spawn(async move {
-                match balance_client.get_balance().await {
+                match balance_transport.get_balance().await {
                     Ok(b) => {
                         let _ = balance_tx.send(ApiEvent::Balance(b));
                     }
@@ -567,7 +608,7 @@ impl App {
                                 // 用子 Agent 生成结构化摘要
                                 let sys_prompt = "你是一个对话摘要助手。请将以下历史对话按 6 段结构总结，每段 1-2 行，用中文。如果某段无内容就写\"无\"。6 段为: Goal, Decisions & rationale, Files & code, Commands & outcomes, Errors & fixes, Pending & next step。只输出摘要，不要额外说明。";
                                 let sub_request = crate::api::ChatRequest {
-                                    model: client.model().to_string(),
+                                    model: transport.model_name().to_string(),
                                     messages: vec![
                                         crate::api::ApiMessage { role: "system".into(), content: sys_prompt.into() },
                                         crate::api::ApiMessage { role: "user".into(), content: history_text },
@@ -577,14 +618,31 @@ impl App {
                                     temperature: None,
                                     tools: None,
                                 };
-                                let summary = match client.chat(sub_request).await {
+                                let summary = match transport.chat(sub_request).await {
                                     Ok(resp) => resp.choices.first()
                                         .and_then(|c| c.message.content.as_ref())
                                         .cloned()
                                         .unwrap_or_else(|| "压缩失败".into()),
                                     Err(e) => format!("压缩失败: {e}"),
                                 };
+                                // 归档压缩前的状态
+                                let msg_count = ctx.scratch_count();
+                                let ctx_len = ctx.prefix_len() + ctx.log_len();
+                                let summary_for_archive = summary.clone();
+                                let session_id = session_debug.as_ref()
+                                    .and_then(|d| d.lock().ok())
+                                    .map(|d| d.session_id.clone())
+                                    .unwrap_or_else(|| "unknown".into());
                                 ctx.compress(CONTEXT_WINDOW, compress_ratio, |_| summary);
+                                // 归档到 .jsonl
+                                crate::core::archive_compression(
+                                    &std::path::Path::new("."),
+                                    &session_id,
+                                    round,
+                                    msg_count,
+                                    ctx_len / 2,
+                                    &summary_for_archive,
+                                );
                                 let _ = event_tx.send(ApiEvent::StreamChunk("✅ 压缩完成\n".into()));
                             }
 
@@ -610,9 +668,9 @@ impl App {
 
                             let messages: Vec<ApiMessage> = ctx.get_messages();
 
-                            // 3. 调用非流式 API（支持 tool_calls）
+                            // 3. 调用非流式 API（支持 tool_calls），30 秒超时
                             let request = crate::api::ChatRequest {
-                                model: client.model().to_string(),
+                                model: transport.model_name().to_string(),
                                 messages,
                                 stream: false,
                                 max_tokens: Some(4096),
@@ -620,8 +678,13 @@ impl App {
                                 tools: Some(crate::api::default_tools()),
                             };
 
-                            match client.chat(request).await {
-                                Ok(response) => {
+                            let chat_result = tokio::time::timeout(
+                                std::time::Duration::from_secs(120),
+                                transport.chat(request),
+                            ).await;
+
+                            match chat_result {
+                                Ok(Ok(response)) => {
                                     if let Some(choice) = response.choices.first() {
                                         let has_tool_calls = choice.message.tool_calls.is_some();
                                         tracing::debug!(
@@ -650,9 +713,13 @@ impl App {
                                         }
                                     }
                                 }
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     tracing::error!("API 调用失败: {e}");
                                     let _ = event_tx.send(ApiEvent::Error(format!("API 错误: {e}")));
+                                }
+                                Err(_) => {
+                                    tracing::error!("API 调用超时（120s）");
+                                    let _ = event_tx.send(ApiEvent::Error("API 请求超时（120秒），请检查网络或 API 服务状态".into()));
                                 }
                             }
 
@@ -775,11 +842,12 @@ impl App {
                                 let nudge_msg = msg.clone();
                                 let nudge_text = final_text.clone();
                                 let se = skill_engine.clone();
+                                let refine_transport = transport.clone();
                                 let config = crate::tools::get_global_config();
                                 tokio::spawn(async move {
                                     if let Some(cfg) = config {
                                         let result = crate::agent::auto_refine_skill(
-                                            &nudge_msg, &nudge_text, &cfg,
+                                            &nudge_msg, &nudge_text, &cfg, refine_transport,
                                         ).await;
                                         tracing::info!("自动技能提炼结果: {} ({}ms)", result.output, result.duration_ms);
                                     }
@@ -793,11 +861,12 @@ impl App {
                             {
                                 let mem_msg = msg.clone();
                                 let mem_text = final_text.clone();
+                                let mem_transport = transport.clone();
                                 let config = crate::tools::get_global_config();
                                 tokio::spawn(async move {
                                     if let Some(cfg) = config {
                                         let result = crate::agent::auto_refine_memory(
-                                            &mem_msg, &mem_text, &cfg,
+                                            &mem_msg, &mem_text, &cfg, mem_transport,
                                         ).await;
                                         tracing::info!("自动记忆提炼结果: {} ({}ms)", result.output, result.duration_ms);
                                     }
@@ -862,6 +931,20 @@ impl App {
     // ---- API 事件处理 ----
 
     fn handle_api_events(&mut self) {
+        // 检测请求停滞：超过 20 秒无响应则提示
+        if self.running && !self.stall_warned {
+            if let Some(start) = self.response_start {
+                let elapsed = start.elapsed();
+                if elapsed > Duration::from_secs(20) {
+                    self.stall_warned = true;
+                    let secs = elapsed.as_secs();
+                    let warn_msg = format!("⚠ 请求已发送 {secs} 秒，仍未收到响应。网络可能较慢或 API 服务异常。");
+                    self.messages.push(Message::system(&warn_msg));
+                    tracing::warn!("{warn_msg}");
+                }
+            }
+        }
+
         while let Ok(event) = self.event_rx.try_recv() {
             match event {
                 ApiEvent::StreamChunk(chunk) => {
@@ -972,6 +1055,8 @@ impl App {
   /skill       — 管理技能 (list/create/search/delete)
   /回忆 <关键词> — 搜索跨会话记忆
   /归档       — 将当前对话摘要存入记忆
+  /plan <任务> — 先分析并输出结构化计划，确认后开始执行
+  /model       — 查看当前模型（/model set <名称> 切换模型）
 
 快捷键:
   Ctrl+Q       — 退出
@@ -1018,6 +1103,42 @@ impl App {
                     "/compress" => {
                         self.messages.push(Message::system(
                             "⏳ 压缩指令已发送（下轮请求会自动触发）"));
+                    }
+                    cmd if cmd == "/model" || cmd.starts_with("/model ") => {
+                        let rest = cmd.trim_start_matches("/model ").trim();
+                        if rest.is_empty() || rest == "/model" {
+                            let provider_name = self.current_config.as_ref()
+                                .and_then(|c| if c.agent.default_provider.is_empty() { None } else { Some(c.agent.default_provider.as_str()) })
+                                .unwrap_or("deepseek");
+                            self.messages.push(Message::system(format!(
+                                "当前模型: {} (provider: {})\n\
+                                 切换: /model set <模型名称>",
+                                self.stats.model,
+                                provider_name,
+                            )));
+                        } else if let Some(new_model) = rest.strip_prefix("set ") {
+                            let new_model = new_model.trim();
+                            if new_model.is_empty() {
+                                self.messages.push(Message::system("用法: /model set <模型名称>"));
+                            } else {
+                                // 更新 config.toml
+                                match self.set_config_value("api.model", new_model) {
+                                    Ok(msg) => {
+                                        self.stats.model = new_model.to_string();
+                                        self.messages.push(Message::system(format!(
+                                            "✅ 模型已切换为: {new_model}\n{msg}"
+                                        )));
+                                    }
+                                    Err(e) => {
+                                        self.messages.push(Message::system(format!(
+                                            "⚠ 切换失败: {e}")));
+                                    }
+                                }
+                            }
+                        } else {
+                            self.messages.push(Message::system(
+                                "用法:\n  /model          — 查看当前模型\n  /model set <名称> — 切换模型"));
+                        }
                     }
                     cmd if cmd == "/config" || cmd.starts_with("/config ") => {
                         let rest = cmd.trim_start_matches("/config ").trim();
@@ -1299,13 +1420,36 @@ impl App {
                         }
                     }
                     _ => {
+                        let (is_plan, plan_input) = if let Some(task) = input.strip_prefix("/plan ") {
+                            (true, task.to_string())
+                        } else if input == "/plan" {
+                            self.messages.push(Message::system("用法: /plan <任务描述> — 先输出结构化计划，确认后执行"));
+                            return;
+                        } else {
+                            (false, input.clone())
+                        };
+
                         // 正常消息：发送给 API
-                        self.messages.push(Message::user(&input));
+                        self.messages.push(Message::user(&if is_plan {
+                            format!(
+                                "【计划模式】请为以下任务输出一个结构化的执行计划。\n\
+                                 计划格式：\n\
+                                 ## 目标\n\
+                                 ## 涉及文件\n\
+                                 ## 执行步骤\n\
+                                 ## 注意事项\n\n\
+                                 任务描述：{}",
+                                plan_input
+                            )
+                        } else {
+                            input.clone()
+                        }));
 
                         if let Some(tx) = &self.cmd_tx {
-                            let _ = tx.send(AppCommand::SendMessage(input));
+                            let _ = tx.send(AppCommand::SendMessage(if is_plan { plan_input } else { input }));
                             self.running = true;
                             self.response_start = Some(Instant::now());
+                            self.stall_warned = false;
                             // 清空旧的计时，显示等待状态
                             self.streaming_buffer = String::new();
                             self.messages.push(Message::system("⏳ 发送请求中..."));
@@ -1589,89 +1733,155 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let mut lines: Vec<Line> = Vec::new();
+        // ---- 计算每条消息的视觉高度 ----
+        struct MsgBlock {
+            role: Role,
+            prefix_style: (Color, Modifier),
+            content: String,
+            content_rows: usize,
+        }
+
+        let mut blocks: Vec<MsgBlock> = Vec::new();
 
         for msg in &self.messages {
-            let (prefix, style) = match msg.role {
-                Role::User => (
-                    " ▶ 你",
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-                ),
-                Role::Assistant => (
-                    " ◇ RHermes",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Role::System => (
-                    " ● 系统",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::DIM),
-                ),
+            let (color, modifier) = match msg.role {
+                Role::User => (Color::Green, Modifier::BOLD),
+                Role::Assistant => (Color::Cyan, Modifier::BOLD),
+                Role::System => (Color::Yellow, Modifier::DIM),
             };
-
-            lines.push(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::raw(" │ "),
-            ]));
-
-            for content_line in msg.content.lines() {
-                lines.push(Line::from(Span::raw(format!("   {content_line}"))));
-            }
-            lines.push(Line::from(""));
+            let content_rows = msg.content.lines().count().max(1);
+            blocks.push(MsgBlock {
+                role: msg.role.clone(),
+                prefix_style: (color, modifier),
+                content: msg.content.clone(),
+                content_rows,
+            });
         }
 
-        // 如果有流式内容正在接收，显示出来
+        // 流式缓冲
         if self.running && !self.streaming_buffer.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    " ◇ RHermes",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" │ "),
-            ]));
-            for line in self.streaming_buffer.lines() {
-                lines.push(Line::from(Span::raw(format!("   {line}"))));
-            }
-            lines.push(Line::from(Span::styled(
-                "   ▊",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::SLOW_BLINK),
-            )));
+            let stream_rows = self.streaming_buffer.lines().count().max(1);
+            blocks.push(MsgBlock {
+                role: Role::Assistant,
+                prefix_style: (Color::Cyan, Modifier::BOLD),
+                content: self.streaming_buffer.clone(),
+                content_rows: stream_rows + 1, // +1 for cursor
+            });
         }
 
-        if self.scroll_offset > 0 {
-            lines.insert(
-                0,
-                Line::from(Span::styled(
-                    format!("   ↑ 已滚动 {} 行 ↑", self.scroll_offset),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::DIM),
-                )),
-            );
-        }
+        // ---- 计算总高度，确定滚动偏移 ----
+        let visible_height = inner.height.max(3) as usize;
+        // 每条 = prefix(1) + content_rows + 空行分隔(1)
+        let total_rows: usize = blocks.iter().map(|b| 1 + b.content_rows + 1).sum();
 
-        let visible_height = inner.height.max(1) as usize;
-        let total_lines = lines.len();
-        let scroll = if total_lines > visible_height {
-            let max_scroll = total_lines.saturating_sub(visible_height);
-            self.scroll_offset.min(max_scroll)
+        // 滚动偏移：从底部开始显示
+        let scroll = if total_rows > visible_height {
+            self.scroll_offset.min(total_rows.saturating_sub(visible_height))
         } else {
             0
         };
 
-        let start = total_lines.saturating_sub(visible_height + scroll);
-        let end = total_lines.saturating_sub(scroll);
-        let visible_lines: Vec<Line> = if start < end {
-            lines[start..end].to_vec()
-        } else {
-            vec![]
-        };
+        // ---- 从尾部往前跳过 scroll 行（从底部向上滚动） ----
+        let mut skip_remain = scroll;
+        let mut rev_visible: Vec<&MsgBlock> = Vec::new();
+        for b in blocks.iter().rev() {
+            let h = 1 + b.content_rows + 1;
+            if skip_remain >= h {
+                skip_remain -= h;
+                continue;
+            }
+            rev_visible.push(b);
+        }
+        let visible_blocks: Vec<&MsgBlock> = rev_visible.into_iter().rev().collect();
 
-        let paragraph = Paragraph::new(Text::from(visible_lines))
-            .style(Style::default().fg(Color::White).bg(Color::Black));
-        frame.render_widget(paragraph, inner);
+        // ---- 逐块渲染到 inner ----
+        let mut y_pos = 0u16;
+        let first_skip = skip_remain as u16;
+
+        for (bi, b) in visible_blocks.iter().enumerate() {
+            let h = 1u16 + b.content_rows as u16 + 1u16;
+            let block_start = y_pos.saturating_sub(first_skip);
+            if block_start >= visible_height as u16 {
+                break;
+            }
+            let block_end = (block_start + h).min(visible_height as u16);
+            if block_end <= block_start {
+                y_pos += h;
+                continue;
+            }
+
+            let block_rect = Rect {
+                x: inner.x,
+                y: inner.y + block_start,
+                width: inner.width,
+                height: block_end - block_start,
+            };
+
+            // 子布局：prefix(1) + content(n) + separator(1)
+            let content_rows = b.content_rows as u16;
+            let chunks = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(content_rows),
+                Constraint::Length(1),
+            ])
+            .split(block_rect);
+
+            // 前缀行
+            let prefix = match b.role {
+                Role::User => " ▶ 你",
+                Role::Assistant => " ◇ RHermes",
+                Role::System => " ● 系统",
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(b.prefix_style.0).add_modifier(b.prefix_style.1)),
+                    Span::raw(" │ "),
+                ])),
+                chunks[0],
+            );
+
+            // 内容（Markdown 渲染为带样式的 Line）
+            if !b.content.is_empty() {
+                let md_lines = render_markdown(&b.content);
+                frame.render_widget(
+                    Paragraph::new(Text::from(md_lines))
+                        .style(Style::default().fg(Color::White)),
+                    chunks[1],
+                );
+            }
+
+            // 流式缓冲末尾光标
+            if bi == visible_blocks.len() - 1 && self.running && !self.streaming_buffer.is_empty() {
+                let cy = chunks[1].y + chunks[1].height - 1;
+                if cy >= block_rect.y && cy < block_rect.y + block_rect.height {
+                    frame.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            "▊",
+                            Style::default().fg(Color::Cyan).add_modifier(Modifier::SLOW_BLINK),
+                        ))),
+                        Rect { x: chunks[1].x, y: cy, width: chunks[1].width, height: 1 },
+                    );
+                }
+            }
+
+            y_pos += h;
+        }
+
+        // 滚动指示器
+        if self.scroll_offset > 0 {
+            let scroll_bar = Paragraph::new(Line::from(Span::styled(
+                format!("   ↑ 已滚动 {} 行 ↑", self.scroll_offset),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )));
+            frame.render_widget(scroll_bar, Rect {
+                x: inner.x,
+                y: inner.y,
+                width: inner.width,
+                height: 1,
+            });
+        }
     }
 
     fn render_stats_bar(&self, frame: &mut Frame, area: Rect) {
@@ -1847,11 +2057,25 @@ impl App {
         }
     }
 
-    /// 将会话保存到文件
+    /// 将会话保存到文件或数据库
     fn save_session(&self) {
         if self.messages.is_empty() {
             return;
         }
+        // 优先尝试保存到 SQLite
+        if let Some(ref mem) = self.memory {
+            if let Ok(engine) = mem.lock() {
+                let session_id = self.debug.as_ref()
+                    .and_then(|d| d.lock().ok())
+                    .map(|d| d.session_id.clone())
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp_millis().to_string());
+                if engine.save_session_messages(&session_id, &self.messages).is_ok() {
+                    tracing::debug!("会话已保存到 SQLite: {} 条消息", self.messages.len());
+                    return;
+                }
+            }
+        }
+        // 回退到 JSON 文件
         match serde_json::to_string(&self.messages) {
             Ok(json) => {
                 if let Some(parent) = self.session_path.parent() {
@@ -1880,6 +2104,12 @@ impl App {
         }
     }
 
+    /// 设置通道入站消息发送端
+    /// 当通过 Channel 驱动时，用户消息通过此通道发送给 Agent Loop
+    pub fn set_channel_inbound(&mut self, tx: tokio::sync::mpsc::UnboundedSender<InboundMessage>) {
+        self.channel_inbound_tx = Some(tx);
+    }
+
     /// Set a config value by dotted key path (e.g. "api.model" -> deepseek-v4-pro)
     fn set_config_value(&self, key: &str, value: &str) -> Result<String, String> {
         let config_path = &self.config_path;
@@ -1887,7 +2117,18 @@ impl App {
             .map_err(|e| format!("加载配置失败: {e}"))?;
 
         match key {
-            "api.model" => cfg.api.model = value.to_string(),
+            "api.model" => {
+                cfg.api.model = value.to_string();
+                // 同步到当前激活的 provider
+                let provider_name = if cfg.agent.default_provider.is_empty() {
+                    "deepseek"
+                } else {
+                    &cfg.agent.default_provider
+                };
+                if let Some(p) = cfg.providers.get_mut(provider_name) {
+                    p.model = Some(value.to_string());
+                }
+            }
             "api.base_url" => cfg.api.base_url = value.to_string(),
             "request.timeout_secs" => {
                 cfg.request.timeout_secs = value.parse()

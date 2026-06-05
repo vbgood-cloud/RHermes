@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::PrefixCacheManager;
 use crate::tui::Role;
 
 /// Context window 压缩阈值比例（达到 80% 时触发）
@@ -84,7 +85,10 @@ impl From<Message> for ApiMessage {
 /// 没有 V8 GC 移动内存的干扰，指针固定不变。
 #[derive(Debug, Clone)]
 pub struct Context {
-    /// Session 内不可变的 byte 前缀（stable + context + volatile 三层合并）
+    /// Prefix Cache 管理器（管理三层前缀）
+    prefix_mgr: PrefixCacheManager,
+
+    /// Session 内不可变的 byte 前缀（三层的冻结结果）
     immutable_prefix: Arc<[u8]>,
 
     /// 只追加的对话日志（序列化后的 bytes）
@@ -108,9 +112,11 @@ impl Context {
     /// 所有层在 session 启动时一次性注入，后续不再修改 prefix。
     pub fn new(system_prompt: impl Into<String>) -> Self {
         let system_prompt: String = system_prompt.into();
-        let prefix = Self::serialize_system(&system_prompt);
+        let mut prefix_mgr = PrefixCacheManager::new(&system_prompt);
+        let immutable_prefix = prefix_mgr.freeze();
         Self {
-            immutable_prefix: prefix.into(),
+            prefix_mgr,
+            immutable_prefix,
             append_only_log: Vec::new(),
             scratch: Vec::new(),
             system_prompt,
@@ -124,6 +130,10 @@ impl Context {
         let mut new_prefix = self.immutable_prefix.to_vec();
         new_prefix.extend_from_slice(extra.as_ref());
         self.immutable_prefix = new_prefix.into();
+        // 同步到 PrefixCacheManager（将 extra 视为 layer3 的追加内容）
+        let extra_str = String::from_utf8_lossy(extra.as_ref());
+        let current_layer3 = self.prefix_mgr.layer3().to_string();
+        self.prefix_mgr.set_layer3(format!("{}{}", current_layer3, extra_str));
     }
 
     /// 追加一条消息到 Log（只追加，不重写）

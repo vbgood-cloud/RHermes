@@ -4,10 +4,12 @@
 
 mod agent;
 mod api;
+mod channel;
 mod core;
 mod cost;
 mod debug;
 mod init;
+mod provider;
 mod tools;
 mod tui;
 
@@ -18,6 +20,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use clap::{Parser, Subcommand};
+use crate::channel::{Channel, ChannelManager};
 use crate::core::Config;
 use crate::core::PathManager;
 use tools::builtin_registry;
@@ -267,15 +270,56 @@ async fn run_code(resume: bool) {
     let curator_report = curator.run();
     tracing::info!("{}", curator_report.message);
 
+    // ---- Channel 系统初始化 ----
+    use crate::tui::channel::TuiChannel;
+    let mut channel_mgr = ChannelManager::new();
+    let tui_channel = Arc::new(TuiChannel);
+    channel_mgr.register(tui_channel.clone());
+
     // 创建 TUI
     let config_path_buf = config_path.clone();
     let max_memory_md_chars = config.memory.max_memory_md_chars;
     let mut app = App::new(path_mgr.mode().name(), dispatcher, memory, skill_engine, resume, config_path_buf, max_memory_md_chars, memories_dir, session_debug);
 
+    // 将 TUI 接入 Channel 系统
+    let inbound_tx = channel_mgr.inbound_tx();
+    TuiChannel::attach(&mut app, inbound_tx);
+
     // 如果已有 API Key，初始化 API 客户端
     if config.is_configured() {
-        tracing::info!("API Key 已配置，初始化 DeepSeek 客户端");
-        app.init_api(config, &path_mgr);
+        tracing::info!("API Key 已配置，初始化 Provider Transport");
+
+        // 使用 ProviderFactory 自动选择 Transport
+        let transport = match crate::provider::create_main_transport(
+            &config,
+            config.provider_pool.circuit_breaker_threshold,
+            config.provider_pool.circuit_breaker_cooldown_secs,
+        ) {
+            Ok(t) => {
+                tracing::info!("Transport 已就绪: model={}, provider={}",
+                    config.api.model,
+                    config.agent.default_provider.as_str(),
+                );
+                t
+            }
+            Err(e) => {
+                tracing::error!("Transport 创建失败: {e}");
+                // fallback: 直接创建 DeepSeekTransport
+                let transport: Arc<dyn crate::provider::Transport> = Arc::new(
+                    crate::provider::ProviderPool::single(
+                        Arc::new(crate::provider::DeepSeekTransport::new(&config)),
+                        config.provider_pool.circuit_breaker_threshold,
+                        config.provider_pool.circuit_breaker_cooldown_secs,
+                    ),
+                );
+                transport
+            }
+        };
+
+        app.init_api(config, transport.clone(), &path_mgr);
+
+        // 设置全局 Transport（供子 Agent 工具使用）
+        crate::tools::set_global_transport(transport);
     } else {
         tracing::warn!("未检测到 API Key，运行在模拟模式");
         app.messages.push(tui::Message::system(

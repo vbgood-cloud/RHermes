@@ -126,7 +126,18 @@ impl MemorySystem {
             "CREATE TABLE IF NOT EXISTS user_profile (
                 key     TEXT PRIMARY KEY,
                 value   TEXT NOT NULL DEFAULT ''
-            );"
+            );
+
+            CREATE TABLE IF NOT EXISTS session_messages (
+                session_id  TEXT NOT NULL,
+                round       INTEGER NOT NULL DEFAULT 0,
+                role        TEXT NOT NULL,
+                content     TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_messages_id
+                ON session_messages(session_id);"
         )
         .map_err(MemoryError::Execute)?;
 
@@ -500,6 +511,80 @@ impl MemorySystem {
 
         self.save_profile(&profile, user_md_path)?;
         Ok(profile)
+    }
+
+    // ============================================================
+    // 会话消息持久化（替代 session.json）
+    // ============================================================
+
+    /// 保存会话消息到数据库
+    pub fn save_session_messages(
+        &self,
+        session_id: &str,
+        messages: &[crate::tui::Message],
+    ) -> Result<(), MemoryError> {
+        // 先删除该 session 的旧数据
+        self.db.execute(
+            "DELETE FROM session_messages WHERE session_id = ?1",
+            params![session_id],
+        ).map_err(MemoryError::Execute)?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        for (i, msg) in messages.iter().enumerate() {
+            let role_str = match msg.role {
+                crate::tui::Role::User => "user",
+                crate::tui::Role::Assistant => "assistant",
+                crate::tui::Role::System => "system",
+            };
+            self.db.execute(
+                "INSERT INTO session_messages (session_id, round, role, content, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session_id, i as u32, role_str, msg.content, now],
+            ).map_err(MemoryError::Execute)?;
+        }
+        Ok(())
+    }
+
+    /// 从数据库加载最近的会话消息（按 session_id）
+    pub fn load_session_messages(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::tui::Message>, MemoryError> {
+        let mut stmt = self.db.prepare(
+            "SELECT role, content FROM session_messages
+             WHERE session_id = ?1
+             ORDER BY round ASC"
+        ).map_err(MemoryError::Execute)?;
+
+        let messages = stmt.query_map(params![session_id], |row| {
+            let role_str: String = row.get(0)?;
+            let content: String = row.get(1)?;
+            let role = match role_str.as_str() {
+                "user" => crate::tui::Role::User,
+                "assistant" => crate::tui::Role::Assistant,
+                _ => crate::tui::Role::System,
+            };
+            Ok(crate::tui::Message { role, content })
+        }).map_err(MemoryError::Execute)?
+        .filter_map(|r| r.ok())
+        .collect();
+
+        Ok(messages)
+    }
+
+    /// 获取最新会话的 session_id
+    pub fn latest_session_id(&self) -> Result<Option<String>, MemoryError> {
+        let result = self.db.query_row(
+            "SELECT session_id FROM session_messages
+             ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(MemoryError::Execute(e)),
+        }
     }
 }
 

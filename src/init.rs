@@ -17,9 +17,10 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("├────────────────────────────────────────────┤");
     println!("│  本向导将引导你完成首次配置：               │");
     println!("│  1. 选择部署方式                           │");
-    println!("│  2. 配置 DeepSeek API Key                  │");
-    println!("│  3. 选择模型                               │");
-    println!("│  4. 确认保存                               │");
+    println!("│  2. 选择 AI 提供商（DeepSeek/智谱等）       │");
+    println!("│  3. 配置 API Key                           │");
+    println!("│  4. 选择模型                               │");
+    println!("│  5. 确认保存                               │");
     println!("└────────────────────────────────────────────┘");
     println!();
 
@@ -62,90 +63,191 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
-    // ── 步骤 3: API Key ──
-    println!("【步骤 2/4】配置 DeepSeek API Key");
-    println!("   获取地址: https://platform.deepseek.com/api_keys");
+    // ── 步骤 3: Provider 选择 ──
+    println!("【步骤 3/5】选择 AI 提供商");
+    println!();
+
+    let provider_options = &[
+        "deepseek    — DeepSeek V4 (默认，推荐)",
+        "zhipu       — 智谱 GLM-4/GLM-5",
+        "openai      — OpenAI GPT-4o 等",
+        "siliconflow — 硅基流动（托管多种模型）",
+        "其他 (自定义)",
+    ];
+
+    let provider_idx = dialoguer::Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("请选择 AI 提供商")
+        .items(provider_options)
+        .default(0)
+        .interact()?;
+
+    let (provider_name, provider_base_url) = match provider_idx {
+        0 => ("deepseek".to_string(), "https://api.deepseek.com".to_string()),
+        1 => ("zhipu".to_string(), "https://open.bigmodel.cn/api/paas/v4".to_string()),
+        2 => ("openai".to_string(), "https://api.openai.com/v1".to_string()),
+        3 => ("siliconflow".to_string(), "https://api.siliconflow.cn/v1".to_string()),
+        _ => {
+            let name: String = Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("输入提供商名称（如 moonshot、groq）")
+                .default("custom".into())
+                .interact_text()?;
+            let url: String = Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("输入 API 地址")
+                .default("https://api.openai.com/v1".into())
+                .interact_text()?;
+            (name, url)
+        }
+    };
+
+    println!();
+
+    // ── 步骤 4: API Key ──
+    println!("【步骤 4/5】配置 {provider_name} API Key");
+    match provider_name.as_str() {
+        "deepseek" => println!("   获取地址: https://platform.deepseek.com/api_keys"),
+        "zhipu" => println!("   获取地址: https://open.bigmodel.cn/usercenter/apikeys"),
+        "openai" => println!("   获取地址: https://platform.openai.com/api-keys"),
+        "siliconflow" => println!("   获取地址: https://cloud.siliconflow.cn/"),
+        _ => {}
+    }
     println!();
 
     let api_key: String = loop {
+        let prompt_text = if provider_name == "deepseek" {
+            "请输入你的 DeepSeek API Key".to_string()
+        } else {
+            format!("请输入你的 {} API Key", provider_name)
+        };
         let input: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("请输入你的 DeepSeek API Key")
+            .with_prompt(&prompt_text)
             .allow_empty(false)
             .interact_text()?;
 
         let trimmed = input.trim().to_string();
 
-        if trimmed.starts_with("sk-") && trimmed.len() >= 10 {
-            break trimmed;
-        } else if trimmed.starts_with("sk-") {
-            println!("   ⚠ API Key 格式正确但长度偏短，请确认");
-            if Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("继续使用?")
-                .default(true)
-                .interact()?
-            {
+        if provider_name == "deepseek" {
+            // DeepSeek Key 以 sk- 开头
+            if trimmed.starts_with("sk-") && trimmed.len() >= 10 {
                 break trimmed;
+            } else if trimmed.starts_with("sk-") {
+                println!("   ⚠ API Key 格式正确但长度偏短，请确认");
+                if Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("继续使用?")
+                    .default(true)
+                    .interact()?
+                {
+                    break trimmed;
+                }
+            } else {
+                println!("   ⚠ API Key 应以 sk- 开头");
+                if Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("继续使用?")
+                    .default(false)
+                    .interact()?
+                {
+                    break trimmed;
+                }
             }
         } else {
-            println!("   ⚠ API Key 应以 sk- 开头");
-            if Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("继续使用?")
-                .default(false)
-                .interact()?
-            {
+            // 其他 Provider 只要非空即可
+            if trimmed.len() >= 8 {
                 break trimmed;
+            } else {
+                println!("   ⚠ API Key 长度偏短，请确认");
+                if Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("继续使用?")
+                    .default(true)
+                    .interact()?
+                {
+                    break trimmed;
+                }
             }
         }
     };
 
     println!();
 
-    // ── 步骤 4: 模型选择 ──
-    println!("【步骤 3/4】选择模型");
+    // ── 步骤 5: 模型选择 ──
+    println!("【步骤 5/5】选择模型");
     println!();
 
-    let model_options = &[
-        "deepseek-v4-flash  — 日常开发，成本最低 (推荐)",
-        "deepseek-v4-pro    — 复杂任务，更强推理能力",
-        "自定义模型名称",
-    ];
+    let (model_options, default_idx): (&[&str], usize) = match provider_name.as_str() {
+        "zhipu" => (&[
+            "glm-4-flash     — 轻量快速，适合日常",
+            "glm-4-plus      — 更强能力，复杂任务",
+            "glm-5           — 最新旗舰模型",
+            "自定义模型名称",
+        ], 0),
+        "openai" => (&[
+            "gpt-4o          — 最强多模态 (推荐)",
+            "gpt-4o-mini     — 轻量低成本",
+            "o3-mini         — 推理模型",
+            "自定义模型名称",
+        ], 0),
+        "siliconflow" => (&[
+            "deepseek-v4-flash — 通过硅基流动调用",
+            "Qwen/Qwen2.5-Coder-32B-Instruct",
+            "Pro/deepseek-ai/DeepSeek-V3",
+            "自定义模型名称",
+        ], 0),
+        _ => (&[
+            "deepseek-v4-flash  — 日常开发，成本最低 (推荐)",
+            "deepseek-v4-pro    — 复杂任务，更强推理能力",
+            "自定义模型名称",
+        ], 0),
+    };
 
     let model_idx = dialoguer::Select::with_theme(&ColorfulTheme::default())
         .with_prompt("请选择默认模型")
         .items(model_options)
-        .default(0)
+        .default(default_idx)
         .interact()?;
 
     let model = match model_idx {
-        0 => "deepseek-v4-flash".to_string(),
-        1 => "deepseek-v4-pro".to_string(),
-        _ => {
+        x if x == model_options.len() - 1 => {
+            // 自定义
             Input::with_theme(&ColorfulTheme::default())
                 .with_prompt("输入模型名称")
-                .default("deepseek-v4-flash".into())
+                .default(model_options[0].split_once(' ').map(|(n, _)| n.to_string()).unwrap_or_else(|| "deepseek-v4-flash".into()))
                 .interact_text()?
+        }
+        _ => {
+            model_options[model_idx].split_once(' ').map(|(n, _)| n.to_string()).unwrap_or_else(|| "deepseek-v4-flash".into())
         }
     };
 
     println!();
 
-    // ── 步骤 5: 可选配置 ──
-    println!("【步骤 4/4】可选配置");
+    // ── 步骤 6: 可选配置 ──
+    println!("【步骤 6/6】可选配置（直接回车使用默认值）");
     println!();
 
     let base_url: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("API 地址（使用默认请直接回车）")
-        .default("https://api.deepseek.com".into())
+        .with_prompt("API 地址")
+        .default(provider_base_url.clone())
         .interact_text()?;
 
     println!();
 
     // ── 保存配置 ──
+    let mut providers = std::collections::HashMap::new();
+    providers.insert(provider_name.clone(), crate::core::ProviderConfig {
+        api_key: api_key.clone(),
+        base_url: Some(base_url.clone()),
+        model: Some(model.clone()),
+        ..Default::default()
+    });
+
     let config = Config {
         api_key: api_key.clone(),
         api: crate::core::ApiConfig {
-            model,
-            base_url,
+            model: model.clone(),
+            base_url: base_url.clone(),
+        },
+        providers,
+        agent: crate::core::AgentConfig {
+            default_provider: provider_name.clone(),
+            ..Default::default()
         },
         ..Default::default()
     };
@@ -173,8 +275,9 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("│  数据目录: {}", path_mgr.data_root().display());
     println!("│  配置文件: {}", config_path.display());
     println!("│  密钥文件: {}", env_path.display());
+    println!("│  提供商:   {}", provider_name);
     println!("│  模型:     {}", config.api.model);
-    println!("│  API Key:  sk-...{}", &api_key[api_key.len().saturating_sub(4)..]);
+    println!("│  API Key:  {}...{}", &api_key[..5.min(api_key.len())], &api_key[api_key.len().saturating_sub(4)..]);
     println!("├────────────────────────────────────────────┤");
     println!("│  ✅ API Key 已保存到 .env 文件              │");
     println!("│  运行 rhermes code 开始编程！               │");

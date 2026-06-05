@@ -1,7 +1,7 @@
 //! RHermes 子 Agent 系统
 //!
 //! 允许主 Agent 将子任务委托给独立的子 Agent 执行。
-//! 子 Agent 在隔离的 tokio task 中运行，拥有自己的 API 请求。
+//! 子 Agent 在隔离的 tokio task 中运行，使用共享的 ProviderPool。
 //!
 //! ## 使用场景
 //!
@@ -9,9 +9,11 @@
 //! - **深度分析**: 对单个文件进行深入分析，不影响主对话上下文
 //! - **嵌套任务**: 子 Agent 可以再派生子 Agent（受深度限制）
 
-use crate::api::{ChatRequest, DeepSeekClient};
+use std::sync::Arc;
+
+use crate::api::{ChatRequest, default_tools};
 use crate::core::Config;
-use crate::api::default_tools;
+use crate::provider::Transport;
 
 /// 子 Agent 的执行结果
 #[derive(Debug, Clone)]
@@ -32,6 +34,7 @@ pub async fn run_sub_agent(
     task: &str,
     context: &str,
     config: &Config,
+    transport: Arc<dyn Transport>,
 ) -> SubAgentResult {
     let start = std::time::Instant::now();
 
@@ -42,8 +45,6 @@ pub async fn run_sub_agent(
          \n\n## 上下文\n{context}\
          \n\n请基于以上信息完成任务并返回结果。"
     );
-
-    let client = DeepSeekClient::new(config.clone());
 
     let request = ChatRequest {
         model: config.api.model.clone(),
@@ -59,7 +60,7 @@ pub async fn run_sub_agent(
         tools: Some(default_tools()),
     };
 
-    match client.chat(request).await {
+    match transport.chat(request).await {
         Ok(response) => {
             let elapsed = start.elapsed().as_millis() as u64;
             if let Some(choice) = response.choices.first() {
@@ -95,6 +96,7 @@ pub async fn auto_refine_skill(
     user_msg: &str,
     assistant_msg: &str,
     config: &Config,
+    transport: Arc<dyn Transport>,
 ) -> SubAgentResult {
     let start = std::time::Instant::now();
     let max_iterations = 8u32;
@@ -109,7 +111,6 @@ pub async fn auto_refine_skill(
         当前对话：\n用户: {user_msg}\nAI: {assistant_msg}"
     );
 
-    let client = DeepSeekClient::new(config.clone());
     let tools = default_tools();
 
     let mut messages = vec![
@@ -119,7 +120,7 @@ pub async fn auto_refine_skill(
         },
     ];
 
-    for round in 0..max_iterations {
+    for _round in 0..max_iterations {
         let request = ChatRequest {
             model: config.api.model.clone(),
             messages: messages.clone(),
@@ -129,7 +130,7 @@ pub async fn auto_refine_skill(
             tools: Some(tools.clone()),
         };
 
-        match client.chat(request).await {
+        match transport.chat(request).await {
             Ok(response) => {
                 if let Some(choice) = response.choices.first() {
                     // 检查 tool_calls
@@ -221,6 +222,7 @@ pub async fn auto_refine_memory(
     user_msg: &str,
     assistant_msg: &str,
     config: &Config,
+    transport: Arc<dyn Transport>,
 ) -> SubAgentResult {
     let start = std::time::Instant::now();
     let system_prompt = format!(
@@ -233,7 +235,6 @@ pub async fn auto_refine_memory(
         当前对话：\n用户: {user_msg}\nAI: {assistant_msg}"
     );
 
-    let client = DeepSeekClient::new(config.clone());
     let tools = default_tools();
 
     let request = ChatRequest {
@@ -248,13 +249,11 @@ pub async fn auto_refine_memory(
         tools: Some(tools),
     };
 
-    match client.chat(request).await {
+    match transport.chat(request).await {
         Ok(response) => {
             let elapsed = start.elapsed().as_millis() as u64;
             if let Some(choice) = response.choices.first() {
                 let text = choice.message.content.clone().unwrap_or_default();
-                // 注意：如果模型返回了 tool_calls（调用了 memory 工具），
-                // 这里只记录文本回复。memory 工具调用由 Agent Loop 处理。
                 SubAgentResult {
                     output: format!("记忆审查: {text}"),
                     duration_ms: elapsed,
@@ -285,13 +284,15 @@ pub async fn auto_refine_memory(
 pub async fn run_parallel(
     tasks: Vec<(String, String)>,
     config: &Config,
+    transport: Arc<dyn Transport>,
 ) -> Vec<SubAgentResult> {
     let mut handles = Vec::new();
 
     for (task, context) in tasks {
         let config = config.clone();
+        let transport = transport.clone();
         handles.push(tokio::spawn(async move {
-            run_sub_agent(&task, &context, &config).await
+            run_sub_agent(&task, &context, &config, transport).await
         }));
     }
 

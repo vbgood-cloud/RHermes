@@ -194,10 +194,21 @@ impl Skill {
 
     /// 执行技能
     pub async fn run(&self, arguments: &str) -> crate::agent::SubAgentResult {
+        // 尝试从全局获取 Transport，回退到创建临时客户端
+        let transport = match crate::tools::get_global_transport() {
+            Some(t) => t,
+            None => {
+                return crate::agent::SubAgentResult {
+                    output: "Transport 未初始化".into(),
+                    duration_ms: 0,
+                    success: false,
+                };
+            }
+        };
         let config = crate::core::Config::load(Path::new(""))
             .unwrap_or_default();
         let context = format!("{}\n\n## 任务\n{}", self.body, arguments);
-        crate::agent::run_sub_agent(&context, "", &config).await
+        crate::agent::run_sub_agent(&context, "", &config, transport).await
     }
 }
 

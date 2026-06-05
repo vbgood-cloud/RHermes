@@ -8,11 +8,17 @@ pub use config::Config;
 pub use config::DebugConfig;
 pub use config::DisplayConfig;
 pub use config::MemoryConfig;
+pub use config::ProviderConfig;
+pub use config::ProviderPoolConfig;
 pub use config::RequestConfig;
 pub use context::Context;
 pub use context::Message;
 pub use path::PathManager;
+pub use prefix_cache::PrefixCacheManager;
+pub use archive::archive_compression;
 
+mod archive;
 mod config;
 mod context;
 mod path;
+mod prefix_cache;
