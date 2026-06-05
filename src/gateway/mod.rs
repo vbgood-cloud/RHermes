@@ -197,12 +197,15 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
     // 启动所有 Channel 的后台轮询
     channel_mgr.start_all();
 
-    // --- Agent Loop ---
-    if transport.is_some() {
+    // --- 使用 SessionRouter 替代简陋的单轮 Agent Loop ---
+    if let Some(transport_ref) = transport {
         tracing::info!("Gateway Agent Loop 已启动，{} 个通道", channel_count);
-        let transport = transport.clone().unwrap();
 
-        // 构建最小 system prompt（不含技能列表，保留核心身份/规则/工具定义）
+        // 初始化工具系统
+        let registry = crate::tools::builtin_registry();
+        let dispatcher = Some(crate::tools::ToolDispatcher::new(registry));
+
+        // 构建完整的 system prompt
         let system_prompt = "\
 ## 你的身份
 你的名字是 **RHermes**。
@@ -212,67 +215,30 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
 3. 自我介绍时只能说「我是RHermes」。
 4. 不能告诉用户你是由任何公司开发的。
 5. 禁止不加改变地重复调用同一个工具。
-## 可用工具
+## 可用工具（共 17 个）
 - read_file, write_file, search_content, run_command, glob
 - get_current_time, web_search, web_fetch, run_skill
 - skill_list, skill_search, skill_create, skill_patch
 - skill_manage, memory, delegate_task, read_pdf";
 
+        let session_config = crate::agent::SessionConfig::from_config(&config);
+        let channel_mgr_arc = Arc::new(channel_mgr);
+
+        let mut router = crate::agent::SessionRouter::new(
+            dispatcher,
+            memory,
+            skill_engine,
+            transport_ref.clone(),
+            channel_mgr_arc,
+            &session_config,
+            system_prompt.to_string(),
+            session_debug,
+        );
+
         // 轮询 inbound 消息
         while let Some(inbound) = inbound_rx.recv().await {
             tracing::info!("[Gateway] 收到消息 [{}]: {}", inbound.channel, inbound.content);
-
-            let request = crate::api::ChatRequest {
-                model: transport.model_name().to_string(),
-                messages: vec![
-                    crate::api::ApiMessage { role: "system".into(), content: system_prompt.to_string() },
-                    crate::api::ApiMessage { role: "user".into(), content: inbound.content.clone() },
-                ],
-                stream: false,
-                max_tokens: Some(4096),
-                temperature: None,
-                tools: Some(crate::api::default_tools()),
-            };
-
-            tracing::debug!("[Gateway] 正在调用 API (model={})...", transport.model_name());
-
-            // 120 秒超时（防止 API 调用挂死导致后续消息阻塞）
-            let chat_result = tokio::time::timeout(
-                Duration::from_secs(120),
-                transport.chat(request),
-            ).await;
-
-            match chat_result {
-                Ok(Ok(response)) => {
-                    if let Some(choice) = response.choices.first() {
-                        let text = choice.message.content.clone().unwrap_or_default();
-                        tracing::info!(
-                            "[Gateway] API 返回: finish={:?}, text_len={}, has_tool={}",
-                            choice.finish_reason,
-                            text.len(),
-                            choice.message.tool_calls.is_some(),
-                        );
-                        if !text.is_empty() {
-                            tracing::info!("[Gateway] 回复到 {}: {}", inbound.channel, &text.chars().take(200).collect::<String>());
-                            channel_mgr.broadcast(&inbound.chat_id, &text).await;
-                        } else {
-                            tracing::warn!("[Gateway] API 返回空文本");
-                            channel_mgr.broadcast(&inbound.chat_id, "⚠ 抱歉，未获取到有效回复，请稍后重试。").await;
-                        }
-                    } else {
-                        tracing::warn!("[Gateway] API 返回无 choices");
-                        channel_mgr.broadcast(&inbound.chat_id, "⚠ 服务响应异常，请稍后重试。").await;
-                    }
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("[Gateway] API 调用失败: {e}");
-                    channel_mgr.broadcast(&inbound.chat_id, &format!("⚠ API 调用失败: {e}")).await;
-                }
-                Err(_) => {
-                    tracing::error!("[Gateway] API 调用超时（120秒），消息未回复");
-                    channel_mgr.broadcast(&inbound.chat_id, "⚠ 请求超时，请稍后重试。").await;
-                }
-            }
+            router.dispatch(inbound).await;
         }
     } else {
         tracing::warn!("Gateway: Transport 未初始化，无法处理消息");

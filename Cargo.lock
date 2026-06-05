@@ -1727,7 +1727,7 @@ dependencies = [
 
 [[package]]
 name = "rhermes"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "async-trait",
  "base64",

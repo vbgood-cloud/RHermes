@@ -316,6 +316,11 @@ impl Context {
         self.scratch.len()
     }
 
+    /// 获取系统提示词文本
+    pub fn system_prompt(&self) -> &str {
+        &self.system_prompt
+    }
+
     /// 返回完整的消息列表（用于显示）
     pub fn all_messages(&self) -> Vec<Message> {
         // 从 raw bytes 反序列化出所有消息

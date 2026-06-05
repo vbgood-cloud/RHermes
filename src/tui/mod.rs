@@ -497,25 +497,18 @@ impl App {
         self.cmd_tx = Some(cmd_tx);
 
         // 构建 Agent Loop 所需的所有组件
-        let max_rounds = config.agent.max_rounds;
-        let compress_ratio = config.agent.compression_ratio;
-        let creation_nudge_interval = config.agent.creation_nudge_interval;
-        let memory_nudge_interval = config.agent.memory_nudge_interval;
-        let display_config = config.display.clone();
-        let mut ctx = Context::new(system_prompt);
+        let session_config = crate::agent::SessionConfig::from_config(&config);
 
         // volatile 层：session 开始时一次性冻结（时间 + 画像 + 项目上下文）
         let volatile_text = {
             let time_str = chrono::Local::now().format("当前时间: %Y-%m-%d %H:%M:%S (UTC+8)");
             let mut v = format!("\n## 当前状态\n⏰ {time_str}");
-            // 用户画像摘要
             if let Some(ref mem) = self.memory {
                 if let Ok(engine) = mem.lock() {
                     let summary = engine.load_profile().unwrap_or_default().summarize();
                     if !summary.is_empty() { v.push_str(&format!("\n{summary}")); }
                 }
             }
-            // 项目上下文（扫描当前目录下的 AGENTS.md，最多 2000 字符）
             if let Ok(agents) = std::fs::read_to_string("AGENTS.md") {
                 if !agents.is_empty() {
                     let truncated: String = agents.chars().take(2000).collect();
@@ -524,360 +517,50 @@ impl App {
             }
             v
         };
+        let mut ctx = Context::new(system_prompt);
         ctx.extend_prefix(volatile_text.as_bytes());
 
         let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
-        // 克隆 Arc 保持 TUI 端也能访问记忆系统和技能引擎
         let agent_memory = self.memory.clone();
         let skill_engine = self.skill_engine.clone();
         let _session_path = self.session_path.clone();
         let session_debug = self.debug.clone();
 
-        // 后台 Agent Loop
+        // 使用 TuiSink + AgentSession 替代内联的 600 行 Agent Loop
+        let balance_tx = event_tx.clone();
+        let sink = Arc::new(crate::agent::TuiSink::new(event_tx)) as Arc<dyn crate::agent::EventSink>;
+        let mut session = crate::agent::AgentSession::new(
+            "tui:local".to_string(),
+            ctx.system_prompt().to_string(),
+            Some(dispatcher),
+            agent_memory,
+            skill_engine,
+            transport.clone(),
+            sink,
+            session_config,
+            session_debug,
+        );
+
         tokio::spawn(async move {
             // 启动时查询余额
-            let balance_tx = event_tx.clone();
+            let balance_inner = balance_tx.clone();
             let balance_transport = transport.clone();
             tokio::spawn(async move {
                 match balance_transport.get_balance().await {
-                    Ok(b) => {
-                        let _ = balance_tx.send(ApiEvent::Balance(b));
-                    }
+                    Ok(b) => { let _ = balance_inner.send(ApiEvent::Balance(b)); }
                     Err(e) => {
                         tracing::warn!("余额查询失败: {e}");
-                        let _ = balance_tx.send(ApiEvent::Balance(0.0));
+                        let _ = balance_inner.send(ApiEvent::Balance(0.0));
                     }
                 }
             });
-            // 初始显示模型信息
-            let _ = event_tx.send(ApiEvent::Balance(0.0));
+            let _ = balance_tx.send(ApiEvent::Balance(0.0));
+
             while let Some(cmd) = cmd_rx.recv().await {
                 match cmd {
                     AppCommand::SendMessage(msg) => {
-                        // 1. 用户消息 → Context
-                        ctx.push_to_log(crate::core::Message::new(crate::tui::Role::User, &msg));
-
-                        // Agent Loop: 反复调用 API 直到获得最终文本回复
-                        let mut round = 0u32;
-                        let mut tool_call_counter: u32 = 0;
-                        loop {
-                            round += 1;
-                            if round > max_rounds {
-                                tracing::warn!("Agent Loop 超过 {} 轮，强制终止", max_rounds);
-                                let _ = event_tx.send(ApiEvent::Error(format!("工具调用次数过多（超过 {} 轮），已终止", max_rounds)));
-                                break;
-                            }
-                            // 2. 从 Context 获取消息列表
-                            let mut final_text = String::new();
-                            let mut tool_calls: Vec<ToolCallData> = Vec::new();
-
-
-
-                            // 2a. 每 5 轮展示进化建议（让模型自我优化）
-                            if round % 5 == 0 && round > 0 {
-                                if let Some(ref se) = skill_engine {
-                                    if let Ok(engine) = se.lock() {
-                                        let suggestions = engine.suggest_optimizations();
-                                        if suggestions.len() > 1 || !suggestions[0].starts_with("✅") {
-                                            let msg = format!("📊 进化建议:\n{}", suggestions.join("\n"));
-                                            ctx.push_to_log(crate::core::Message::new(
-                                                crate::tui::Role::System, &msg,
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 2b. 上下文压缩检查
-                            const CONTEXT_WINDOW: usize = 128000; // DeepSeek v4 上下文窗口
-                            if ctx.needs_compress(CONTEXT_WINDOW, compress_ratio) {
-                                tracing::info!("Context 达到 80% 阈值，触发压缩");
-                                let _ = event_tx.send(ApiEvent::StreamChunk("⏳ 压缩历史记录...".into()));
-                                let history_text: String = ctx.get_messages()
-                                    .iter()
-                                    .skip(1) // 跳过 system prompt
-                                    .map(|m| {
-                                        let role_label = match m.role.as_str() {
-                                            "user" => "用户",
-                                            "assistant" => "AI",
-                                            _ => "系统",
-                                        };
-                                        let preview: String = m.content.chars().take(500).collect();
-                                        format!("{}: {}", role_label, preview)
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n---\n");
-                                // 用子 Agent 生成结构化摘要
-                                let sys_prompt = "你是一个对话摘要助手。请将以下历史对话按 6 段结构总结，每段 1-2 行，用中文。如果某段无内容就写\"无\"。6 段为: Goal, Decisions & rationale, Files & code, Commands & outcomes, Errors & fixes, Pending & next step。只输出摘要，不要额外说明。";
-                                let sub_request = crate::api::ChatRequest {
-                                    model: transport.model_name().to_string(),
-                                    messages: vec![
-                                        crate::api::ApiMessage { role: "system".into(), content: sys_prompt.into() },
-                                        crate::api::ApiMessage { role: "user".into(), content: history_text },
-                                    ],
-                                    stream: false,
-                                    max_tokens: Some(1024),
-                                    temperature: None,
-                                    tools: None,
-                                };
-                                let summary = match transport.chat(sub_request).await {
-                                    Ok(resp) => resp.choices.first()
-                                        .and_then(|c| c.message.content.as_ref())
-                                        .cloned()
-                                        .unwrap_or_else(|| "压缩失败".into()),
-                                    Err(e) => format!("压缩失败: {e}"),
-                                };
-                                // 归档压缩前的状态
-                                let msg_count = ctx.scratch_count();
-                                let ctx_len = ctx.prefix_len() + ctx.log_len();
-                                let summary_for_archive = summary.clone();
-                                let session_id = session_debug.as_ref()
-                                    .and_then(|d| d.lock().ok())
-                                    .map(|d| d.session_id.clone())
-                                    .unwrap_or_else(|| "unknown".into());
-                                ctx.compress(CONTEXT_WINDOW, compress_ratio, |_| summary);
-                                // 归档到 .jsonl
-                                crate::core::archive_compression(
-                                    &std::path::Path::new("."),
-                                    &session_id,
-                                    round,
-                                    msg_count,
-                                    ctx_len / 2,
-                                    &summary_for_archive,
-                                );
-                                let _ = event_tx.send(ApiEvent::StreamChunk("✅ 压缩完成\n".into()));
-                            }
-
-                            // 2c. 记忆召回：搜索相关记忆注入 Context
-                            if let Some(ref mem) = agent_memory {
-                                if let Ok(mut mem_lock) = mem.lock() {
-                                    if let Ok(results) = mem_lock.search(&msg, 5) {
-                                        if !results.is_empty() {
-                                            let recall: String = results.iter()
-                                                .map(|e| format!("- [{}] {}", e.memory_type.as_str(), e.content))
-                                                .collect::<Vec<_>>()
-                                                .join("\n");
-                                            tracing::debug!("召回 {} 条记忆", results.len());
-                                            // 注入系统提示（写日志而非 scratch，避免污染 API 请求）
-                                            ctx.push_to_log(crate::core::Message::new(
-                                                crate::tui::Role::System,
-                                                &format!("【相关记忆】\n{}", recall),
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-
-                            let messages: Vec<ApiMessage> = ctx.get_messages();
-
-                            // 3. 调用非流式 API（支持 tool_calls），30 秒超时
-                            let request = crate::api::ChatRequest {
-                                model: transport.model_name().to_string(),
-                                messages,
-                                stream: false,
-                                max_tokens: Some(4096),
-                                temperature: None,
-                                tools: Some(crate::api::default_tools()),
-                            };
-
-                            let chat_result = tokio::time::timeout(
-                                std::time::Duration::from_secs(120),
-                                transport.chat(request),
-                            ).await;
-
-                            match chat_result {
-                                Ok(Ok(response)) => {
-                                    if let Some(choice) = response.choices.first() {
-                                        let has_tool_calls = choice.message.tool_calls.is_some();
-                                        tracing::debug!(
-                                            "API 响应: finish_reason={:?}, text_len={}, has_tool_calls={}",
-                                            choice.finish_reason,
-                                            choice.message.content.as_ref().map(|s| s.len()).unwrap_or(0),
-                                            has_tool_calls,
-                                        );
-
-                                        final_text = choice.message.content.clone().unwrap_or_default();
-                                        // 转发非流式文本到 TUI
-                                        if !final_text.is_empty() {
-                                            let _ = event_tx.send(ApiEvent::StreamChunk(final_text.clone()));
-                                        }
-                                        // 从响应中提取 tool_calls（赋给循环变量）
-                                        if let Some(ref calls) = choice.message.tool_calls {
-                                            tool_calls = calls.iter().map(|tc| ToolCallData {
-                                                id: tc.id.clone(),
-                                                name: tc.function.name.clone(),
-                                                arguments: tc.function.arguments.clone(),
-                                            }).collect();
-                                            if !tool_calls.is_empty() {
-                                                tracing::debug!("检测到 {} 个工具调用", tool_calls.len());
-                                                let _ = event_tx.send(ApiEvent::ToolCalls(tool_calls.clone()));
-                                            }
-                                        }
-                                    }
-                                }
-                                Ok(Err(e)) => {
-                                    tracing::error!("API 调用失败: {e}");
-                                    let _ = event_tx.send(ApiEvent::Error(format!("API 错误: {e}")));
-                                }
-                                Err(_) => {
-                                    tracing::error!("API 调用超时（120s）");
-                                    let _ = event_tx.send(ApiEvent::Error("API 请求超时（120秒），请检查网络或 API 服务状态".into()));
-                                }
-                            }
-
-                            // 4a. 记录 Context 状态
-                            tracing::debug!("Context 消息数: {}", ctx.scratch_count());
-
-                            // 5. 如果有工具调用 → 执行 → 继续循环
-                            if !tool_calls.is_empty() {
-                                tracing::info!("开始执行 {} 个工具调用", tool_calls.len());
-                                // tool_calls 已由 API 响应解析好，直接分发
-                                let calls_to_dispatch: Vec<ToolCall> = tool_calls
-                                    .iter()
-                                    .map(|tc| ToolCall {
-                                        id: tc.id.clone(),
-                                        name: tc.name.clone(),
-                                        arguments: serde_json::from_str(&tc.arguments).unwrap_or(serde_json::Value::Null),
-                                    })
-                                    .collect();
-
-                                // 5b. Dispatch 执行工具
-                                let results = dispatcher.dispatch(calls_to_dispatch).await;
-                                tracing::info!("工具执行完成: {} 个结果", results.len());
-                                tool_call_counter += results.len() as u32;
-
-                                // 记录工具调用到调试
-                                if let Some(ref d) = session_debug {
-                                    if let Ok(mut dbg) = d.lock() {
-                                        for r in &results {
-                                            dbg.record_tool_call(&r.name, "", &r.output, r.duration_ms, r.success);
-                                        }
-                                    }
-                                }
-
-                                // 5c. 工具结果写回 Context（截断过长输出）
-                                let mut has_delegate = false;
-                                for r in &results {
-                                    tracing::debug!("工具结果: {} ({}ms, success={})", r.name, r.duration_ms, r.success);
-                                    if r.name == "delegate_task" {
-                                        has_delegate = true;
-                                        final_text = r.output.clone();
-                                        if !final_text.is_empty() {
-                                            let _ = event_tx.send(ApiEvent::StreamChunk(final_text.clone()));
-                                        }
-                                        continue;
-                                    }
-                                    // 技能创建/更新结果直接显示给用户
-                                    if r.name == "skill_patch" || r.name == "skill_create" {
-                                        let _ = event_tx.send(ApiEvent::StreamChunk(format!("\n🧬 {}\n", r.output)));
-                                        let _ = event_tx.send(ApiEvent::Done);
-                                        // 也写入 Context 让模型知道
-                                        ctx.push_to_log(crate::core::Message::new(
-                                            crate::tui::Role::System,
-                                            &r.output,
-                                        ));
-                                        continue;
-                                    }
-                                    let mut output = r.output.clone();
-                                    let lines_before = output.lines().count();
-                                    let max_chars = display_config.tool_result_max_chars;
-                                    if output.len() > max_chars {
-                                        let truncated: String = output.chars().take(max_chars).collect();
-                                        let lines_after = truncated.lines().count();
-                                        output = format!("{}\n... (共{}行, 截断{}行)", truncated, lines_before, lines_before - lines_after);
-                                    }
-                                    let result_msg = if r.success {
-                                        format!("工具「{}」执行成功 ({}ms):\n{}", r.name, r.duration_ms, output)
-                                    } else {
-                                        format!("工具「{}」执行失败:\n{}", r.name, output)
-                                    };
-                                    ctx.push_to_log(crate::core::Message::new(
-                                        crate::tui::Role::User,
-                                        &result_msg,
-                                    ));
-                                }
-
-                                if has_delegate {
-                                    // delegate_task 的结果直接作为最终回复，退出循环
-                                    let _ = event_tx.send(ApiEvent::Done);
-                                    break;
-                                }
-                                continue;
-                            }
-
-                            // 6. 最终文本回复 → 写入 Context + 结束
-                            tracing::info!("Agent Loop 完成, final_text_len={}", final_text.len());
-
-                            // 记录轮次到调试
-                            if let Some(ref d) = session_debug {
-                                if let Ok(mut dbg) = d.lock() {
-                                    dbg.record_round(round, &msg, &final_text, 0);
-                                }
-                            }
-
-                            if !final_text.is_empty() {
-                                ctx.push_to_log(crate::core::Message::new(
-                                    crate::tui::Role::Assistant,
-                                    &final_text,
-                                ));
-                            }
-                            // 6a. 记忆写入：记录关键内容到长期记忆
-                            if !final_text.is_empty() && !msg.is_empty() {
-                                if let Some(ref mem) = agent_memory {
-                                    if let Ok(mut mem_lock) = mem.lock() {
-                                        let tags = vec!["auto", "conversation"];
-                                        let _ = mem_lock.remember(
-                                            &format!("【问题】{}\n【回答】{}", msg, final_text),
-                                            &tags,
-                                            "rhermes",
-                                        );
-                                        tracing::debug!("记忆已写入");
-                                    }
-                                }
-                            }
-                            // 6b. 自动技能提炼：达到阈值时后台触发
-                            if creation_nudge_interval > 0
-                                && tool_call_counter >= creation_nudge_interval
-                                && !msg.is_empty()
-                            {
-                                tool_call_counter = 0;
-                                let nudge_msg = msg.clone();
-                                let nudge_text = final_text.clone();
-                                let se = skill_engine.clone();
-                                let refine_transport = transport.clone();
-                                let config = crate::tools::get_global_config();
-                                tokio::spawn(async move {
-                                    if let Some(cfg) = config {
-                                        let result = crate::agent::auto_refine_skill(
-                                            &nudge_msg, &nudge_text, &cfg, refine_transport,
-                                        ).await;
-                                        tracing::info!("自动技能提炼结果: {} ({}ms)", result.output, result.duration_ms);
-                                    }
-                                });
-                            }
-
-                            // 6b2. 自动记忆提炼：每 N 轮后台审查用户事实
-                            if memory_nudge_interval > 0
-                                && round % memory_nudge_interval == 0
-                                && !final_text.is_empty()
-                            {
-                                let mem_msg = msg.clone();
-                                let mem_text = final_text.clone();
-                                let mem_transport = transport.clone();
-                                let config = crate::tools::get_global_config();
-                                tokio::spawn(async move {
-                                    if let Some(cfg) = config {
-                                        let result = crate::agent::auto_refine_memory(
-                                            &mem_msg, &mem_text, &cfg, mem_transport,
-                                        ).await;
-                                        tracing::info!("自动记忆提炼结果: {} ({}ms)", result.output, result.duration_ms);
-                                    }
-                                });
-                            }
-                            let _ = event_tx.send(ApiEvent::Done);
-
-                            break; // 退出 Agent Loop
-                        }
+                        tracing::debug!("AgentSession 处理消息: {:.60}", msg);
+                        session.handle_message(&msg).await;
                     }
                 }
             }
