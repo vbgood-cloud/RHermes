@@ -8,6 +8,7 @@ mod channel;
 mod core;
 mod cost;
 mod debug;
+mod gateway;
 mod init;
 mod provider;
 mod tools;
@@ -52,6 +53,44 @@ enum Commands {
     Debug {
         #[command(subcommand)]
         command: DebugCommand,
+    },
+    /// 🌐 Gateway 守护进程模式
+    Gateway {
+        #[command(subcommand)]
+        command: GatewayCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum GatewayCommand {
+    /// 🛠 交互式配置 Gateway（通道选择 + 参数设置）
+    Setup,
+    /// ▶ 启动 Gateway 守护进程
+    Start,
+    /// ⏹ 停止 Gateway 守护进程
+    Stop,
+    /// 📊 查看 Gateway 运行状态
+    Status,
+    /// 📡 管理通道启停
+    Channel {
+        #[command(subcommand)]
+        command: GatewayChannelCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum GatewayChannelCommand {
+    /// 列出所有通道及其启用状态
+    List,
+    /// 启用指定通道
+    Enable {
+        /// 通道名称（wechat / wecom）
+        name: String,
+    },
+    /// 禁用指定通道
+    Disable {
+        /// 通道名称（wechat / wecom）
+        name: String,
     },
 }
 
@@ -116,6 +155,12 @@ async fn main() {
                         std::process::exit(1);
                     });
                 }
+            }
+        }
+        Some(Commands::Gateway { command }) => {
+            if let Err(e) = crate::gateway::handle_command(command, &config_path).await {
+                eprintln!("[RHermes] Gateway 错误: {e}");
+                std::process::exit(1);
             }
         }
         _ => {
@@ -276,6 +321,20 @@ async fn run_code(resume: bool) {
     let tui_channel = Arc::new(TuiChannel);
     channel_mgr.register(tui_channel.clone());
 
+    // 企业微信通道
+    if config.channels.wecom.enabled {
+        let wecom_channel = Arc::new(crate::channel::wecom::WeComChannel::new(&config));
+        channel_mgr.register(wecom_channel);
+        tracing::info!("企业微信通道已注册");
+    }
+
+    // 微信个号通道
+    if config.channels.wechat.enabled {
+        let wechat_channel = Arc::new(crate::channel::wechat::WeChatChannel::new(&config));
+        channel_mgr.register(wechat_channel);
+        tracing::info!("微信个号通道已注册");
+    }
+
     // 创建 TUI
     let config_path_buf = config_path.clone();
     let max_memory_md_chars = config.memory.max_memory_md_chars;
@@ -284,6 +343,37 @@ async fn run_code(resume: bool) {
     // 将 TUI 接入 Channel 系统
     let inbound_tx = channel_mgr.inbound_tx();
     TuiChannel::attach(&mut app, inbound_tx);
+
+    // ── 扫码登录：检查所有 Channel 是否需要二维码 ──
+    for ch in channel_mgr.iter() {
+        if let Some((qr_text, img_data)) = ch.login_qrcode().await {
+            // 保存二维码图片
+            let qr_path = "wechat_qrcode.png";
+            if let Err(e) = std::fs::write(qr_path, &img_data) {
+                tracing::warn!("保存二维码图片失败: {e}");
+            } else {
+                // 跨平台打开图片查看器
+                let _ = std::process::Command::new("cmd")
+                    .args(["/C", "start", "", qr_path])
+                    .spawn();
+                tracing::info!("二维码已保存至: {}", qr_path);
+            }
+            // 在 TUI 中显示 ASCII 二维码
+            app.messages.push(tui::Message::system(format!(
+                "📱 微信扫码登录 — 二维码已保存到: {}",
+                qr_path
+            )));
+            let qr_lines = crate::tui::render_ascii_qr(&qr_text);
+            for line in &qr_lines {
+                app.messages.push(tui::Message::system(
+                    line.spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>().join(""),
+                ));
+            }
+            app.messages.push(tui::Message::system(
+                "⏳ 等待扫码... 扫码成功后自动开始接收消息",
+            ));
+        }
+    }
 
     // 如果已有 API Key，初始化 API 客户端
     if config.is_configured() {

@@ -66,6 +66,12 @@ impl ChannelManager {
         &mut self.inbound_rx
     }
 
+    /// 取出入站消息接收端（解除与 ChannelManager 的借用关系）
+    /// 调用后 ChannelManager 不再能接收新消息
+    pub fn take_inbound_rx(&mut self) -> mpsc::UnboundedReceiver<InboundMessage> {
+        std::mem::replace(&mut self.inbound_rx, mpsc::unbounded_channel::<InboundMessage>().1)
+    }
+
     /// 向所有 Channel 广播消息
     pub async fn broadcast(&self, chat_id: &str, text: &str) {
         for ch in &self.channels {
@@ -93,5 +99,10 @@ impl ChannelManager {
     /// 已注册的通道数量
     pub fn channel_count(&self) -> usize {
         self.channels.len()
+    }
+
+    /// 获取所有已注册通道的引用
+    pub fn iter(&self) -> impl Iterator<Item = &Arc<dyn Channel>> {
+        self.channels.iter()
     }
 }

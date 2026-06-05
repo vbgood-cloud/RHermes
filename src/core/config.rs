@@ -66,6 +66,145 @@ pub struct Config {
     /// Provider Pool 配置（熔断器）
     #[serde(default)]
     pub provider_pool: ProviderPoolConfig,
+
+    /// 消息通道配置
+    #[serde(default)]
+    pub channels: ChannelsConfig,
+
+    /// Gateway 守护进程配置
+    #[serde(default)]
+    pub gateway: GatewayConfig,
+}
+
+/// 消息通道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelsConfig {
+    /// 企业微信配置
+    #[serde(default)]
+    pub wecom: WeComConfig,
+    /// 微信个号 iLink Bot 通道配置
+    #[serde(default)]
+    pub wechat: WeChatConfig,
+}
+
+impl Default for ChannelsConfig {
+    fn default() -> Self {
+        Self {
+            wecom: WeComConfig::default(),
+            wechat: WeChatConfig::default(),
+        }
+    }
+}
+
+/// 企业微信 Bot 通道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeComConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// Webhook URL（发送消息用）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub webhook_url: String,
+    /// 企业 ID（接收消息用）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub corp_id: String,
+    /// 应用 Agent ID（接收消息用）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub agent_id: String,
+    /// 应用 Secret（接收消息用，仅从 .env 读取）
+    #[serde(default, skip)]
+    pub secret: String,
+    /// Webhook 关键词（用于验证）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub webhook_key: String,
+    /// 允许的发送者列表（空=全部允许）
+    #[serde(default)]
+    pub allow_from: Vec<String>,
+    /// 消息轮询间隔（秒）
+    #[serde(default = "default_wecom_poll_interval")]
+    pub poll_interval_secs: u64,
+}
+
+fn default_wecom_poll_interval() -> u64 { 5 }
+
+impl Default for WeComConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            webhook_url: String::new(),
+            corp_id: String::new(),
+            agent_id: String::new(),
+            secret: String::new(),
+            webhook_key: String::new(),
+            allow_from: Vec::new(),
+            poll_interval_secs: default_wecom_poll_interval(),
+        }
+    }
+}
+
+/// 微信个号 iLink Bot 通道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeChatConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 登录 token（扫码登录后自动获取，可持久化）
+    #[serde(default, skip)]
+    pub bot_token: String,
+    /// Proxy 代理地址（可选）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+    /// 轮询间隔（秒）
+    #[serde(default = "default_wechat_poll_interval")]
+    pub poll_interval_secs: u64,
+    /// Token 刷新后自动保存的路径
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub token_path: String,
+}
+
+fn default_wechat_poll_interval() -> u64 { 2 }
+
+impl Default for WeChatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: String::new(),
+            proxy: None,
+            poll_interval_secs: default_wechat_poll_interval(),
+            token_path: String::new(),
+        }
+    }
+}
+
+/// Gateway 守护进程配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GatewayConfig {
+    /// 是否启用 gateway 模式（供 rhermes gateway start 使用）
+    #[serde(default)]
+    pub enabled: bool,
+    /// PID 文件路径
+    #[serde(default = "default_gateway_pid_file")]
+    pub pid_file: String,
+    /// 日志文件路径
+    #[serde(default = "default_gateway_log_file")]
+    pub log_file: String,
+    /// Gateway 启动时自动启用的通道列表
+    #[serde(default)]
+    pub channels: Vec<String>,
+}
+
+fn default_gateway_pid_file() -> String { "home/gateway.pid".into() }
+fn default_gateway_log_file() -> String { "home/gateway.log".into() }
+
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            pid_file: default_gateway_pid_file(),
+            log_file: default_gateway_log_file(),
+            channels: vec!["wechat".into()],
+        }
+    }
 }
 
 /// Provider Pool 配置（熔断器）
@@ -310,6 +449,8 @@ impl Default for Config {
             display: DisplayConfig::default(),
             agent: AgentConfig::default(),
             provider_pool: ProviderPoolConfig::default(),
+            channels: ChannelsConfig::default(),
+            gateway: GatewayConfig::default(),
         }
     }
 }
@@ -636,6 +777,8 @@ mod tests {
                 default_provider: String::new(),
             },
             provider_pool: ProviderPoolConfig::default(),
+            channels: ChannelsConfig::default(),
+            gateway: GatewayConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();

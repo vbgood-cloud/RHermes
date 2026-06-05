@@ -1,6 +1,6 @@
 [package]
 name = "rhermes"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]
@@ -23,6 +23,8 @@ clap = { version = "4", features = ["derive"] }
 dialoguer = "0.11"
 rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
 chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+rand = "0.8"
 regex = "1"
 grep-regex = "0.1"
 grep-searcher = "0.1"
@@ -32,6 +34,7 @@ walkdir = "2"
 
 ratatui = "0.29"
 crossterm = "0.28"
+qrcodegen = "1.8.0"
 
 [dev-dependencies]
 tempfile = "3"

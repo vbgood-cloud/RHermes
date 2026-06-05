@@ -5,6 +5,8 @@
 
 mod markdown;
 pub mod channel;
+mod qrcode;
+pub use qrcode::render_ascii_qr;
 
 use std::io::{self, stdout};
 use std::time::{Duration, Instant};

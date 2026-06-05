@@ -12,6 +12,9 @@ mod types;
 pub use manager::ChannelManager;
 pub use types::InboundMessage;
 
+pub mod wechat;
+pub mod wecom;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -25,6 +28,7 @@ use tokio::task::JoinHandle;
 /// - `start()`: 启动消息接收循环
 /// - `send_message()`: 发送文本回复
 /// - `name()`: 返回通道名称
+/// - `login_qrcode()`: 可选，返回登录二维码（文本 + PNG 图片字节）
 #[async_trait]
 pub trait Channel: Send + Sync {
     /// 启动通道的消息接收循环
@@ -39,4 +43,10 @@ pub trait Channel: Send + Sync {
 
     /// 通道名称
     fn name(&self) -> &'static str;
+
+    /// 可选：返回登录二维码（二维码文本, PNG 字节）
+    /// 返回 None 表示该通道不需要扫码登录
+    async fn login_qrcode(&self) -> Option<(String, Vec<u8>)> {
+        None
+    }
 }

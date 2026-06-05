@@ -1,5 +1,7 @@
 //! 通道消息类型
 
+use std::collections::HashMap;
+
 /// 外部投递给 Agent 核心的入站消息
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
@@ -13,6 +15,8 @@ pub struct InboundMessage {
     pub content: String,
     /// 时间戳（毫秒）
     pub timestamp_ms: i64,
+    /// 额外元数据（如 context_token）
+    pub metadata: HashMap<String, String>,
 }
 
 impl InboundMessage {
@@ -24,6 +28,7 @@ impl InboundMessage {
             sender_id: chat_id_str,
             content: content.into(),
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            metadata: HashMap::new(),
         }
     }
 }
