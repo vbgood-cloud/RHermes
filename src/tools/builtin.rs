@@ -18,6 +18,58 @@ use crate::tools::{
 };
 
 // ---------------------------------------------------------------------------
+// 安全常量与检查函数
+// ---------------------------------------------------------------------------
+
+/// 危险命令模式 — 大小写不敏感匹配
+const DANGEROUS_PATTERNS: &[&str] = &[
+    "rm -rf", "rm -r /", "del /s /q c:", "format ",
+    "rmdir /s /q", "mkfs.", "dd if=",
+    "shutdown", "reboot", "halt", "poweroff",
+    "net user", "net localgroup", "passwd",
+    "curl | sh", "curl | bash", "wget | sh",
+    "chmod -r 777 /", "chown -r",
+    "taskkill /f", "kill -9 1",
+    "reg delete", "reg add",
+    "sc delete", "net stop",
+    "crontab -r",
+];
+
+/// 检查命令是否匹配危险模式
+fn is_dangerous_command(cmd: &str) -> Option<&'static str> {
+    let lower = cmd.to_lowercase();
+    for pattern in DANGEROUS_PATTERNS {
+        if lower.contains(&pattern.to_lowercase()) {
+            return Some(pattern);
+        }
+    }
+    None
+}
+
+/// 受保护文件 — Agent 不可覆盖
+const PROTECTED_FILES: &[&str] = &[
+    "config.toml", ".env", "config.yaml", "config.json",
+    "credentials.json", "secrets.toml", "secrets.env",
+    ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/authorized_keys",
+    "/etc/passwd", "/etc/shadow", "/etc/hosts",
+];
+
+/// 检查路径是否指向受保护文件
+fn is_protected_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_lowercase();
+    PROTECTED_FILES.iter().any(|p| {
+        normalized.ends_with(&p.to_lowercase()) || normalized.contains(&p.to_lowercase())
+    })
+}
+
+/// 全局工作目录配置，由 main/init 时设置
+pub static GLOBAL_WORKSPACE: OnceLock<String> = OnceLock::new();
+
+pub fn set_workspace(path: String) {
+    let _ = GLOBAL_WORKSPACE.set(path);
+}
+
+// ---------------------------------------------------------------------------
 // read_file — 并行安全
 // ---------------------------------------------------------------------------
 
@@ -371,6 +423,34 @@ impl Tool for WriteFile {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let path = get_string_arg(&args, "path")?;
+
+        // 安全检查: 配置文件保护
+        if is_protected_path(&path) {
+            tracing::warn!("⛔ 写保护: 拒绝写入受保护文件 {path}");
+            return Err(ToolError::ExecutionFailed(
+                format!("⛔ 安全策略: 路径 '{path}' 是受保护文件（配置/密钥/系统文件），不可通过 Agent 修改。")
+            ));
+        }
+
+        // 安全检查: 工作目录边界
+        if let Some(ws) = GLOBAL_WORKSPACE.get() {
+            if !ws.is_empty() {
+                let abs = if Path::new(&path).is_absolute() {
+                    path.clone()
+                } else {
+                    format!("{}/{}", ws.trim_end_matches('/').trim_end_matches('\\'), path)
+                };
+                let normalized = abs.replace('\\', "/").to_lowercase();
+                let ws_norm = ws.replace('\\', "/").to_lowercase();
+                if !normalized.starts_with(&ws_norm) {
+                    tracing::warn!("⛔ 路径越界: {path} 不在工作目录 {ws} 内");
+                    return Err(ToolError::ExecutionFailed(
+                        format!("⛔ 安全策略: 路径 '{path}' 超出工作目录 '{ws}'。")
+                    ));
+                }
+            }
+        }
+
         let content = get_string_arg(&args, "content")?;
 
         // 确保父目录存在
@@ -412,6 +492,15 @@ impl Tool for RunCommand {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let command = get_string_arg(&args, "command")?;
+
+        // 安全检查: 拦截危险命令
+        if let Some(pattern) = is_dangerous_command(&command) {
+            tracing::warn!("⛔ 拦截危险命令: 匹配 '{pattern}' → {command}");
+            return Err(ToolError::ExecutionFailed(
+                format!("⛔ 安全策略: 命令被拦截（匹配危险模式 '{pattern}'）。如确需执行请联系管理员。")
+            ));
+        }
+
         let timeout = args
             .get("timeout")
             .and_then(|v| v.as_u64())
@@ -590,9 +679,9 @@ impl Tool for WebSearch {
         }
 
         if results.is_empty() {
-            Ok(format!("未找到与「{query}」相关的搜索结果"))
+            Ok(format!("<untrusted>\n未找到与「{query}」相关的搜索结果\n</untrusted>"))
         } else {
-            Ok(format!("搜索结果「{query}」:\n{}", results.join("\n")))
+            Ok(format!("<untrusted>\n搜索结果「{query}」:\n{}\n</untrusted>", results.join("\n")))
         }
     }
 }
@@ -681,10 +770,11 @@ impl Tool for WebFetch {
         } else {
             String::new()
         };
-        Ok(format!(
+        let result = format!(
             "[{}] HTTP {status} · {content_type}\n{}{}",
             url, text, extra,
-        ))
+        );
+        Ok(format!("<untrusted>\n{result}\n</untrusted>"))
     }
 }
 
@@ -1385,5 +1475,38 @@ mod tests {
         assert!(safe.contains(&"glob"));
         assert!(!safe.contains(&"write_file"));
         assert!(!safe.contains(&"run_command"));
+    }
+
+    #[test]
+    fn test_dangerous_command_blocked() {
+        let blocked = ["rm -rf /", "format C:", "shutdown /s", "net user hacker pwd /add"];
+        for cmd in &blocked {
+            assert!(is_dangerous_command(cmd).is_some(), "应拦截: {}", cmd);
+        }
+        let allowed = ["cargo build", "npm install", "python main.py", "ls -la", "git status"];
+        for cmd in &allowed {
+            assert!(is_dangerous_command(cmd).is_none(), "不应拦截: {}", cmd);
+        }
+    }
+
+    #[test]
+    fn test_protected_path_blocked() {
+        let blocked = ["config.toml", ".env", "/etc/passwd", ".ssh/id_rsa"];
+        for p in &blocked {
+            assert!(is_protected_path(p), "应保护: {}", p);
+        }
+        let allowed = ["src/main.rs", "README.md", "output.txt", "data/config_backup.md"];
+        for p in &allowed {
+            assert!(!is_protected_path(p), "不应保护: {}", p);
+        }
+    }
+
+    #[test]
+    fn test_untrusted_wrapping() {
+        let content = "Hello World";
+        let wrapped = format!("<untrusted>\n{}\n</untrusted>", content);
+        assert!(wrapped.starts_with("<untrusted>"));
+        assert!(wrapped.ends_with("</untrusted>"));
+        assert!(wrapped.contains("Hello World"));
     }
 }

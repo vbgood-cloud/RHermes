@@ -315,6 +315,13 @@ async fn run_code(resume: bool) {
     let curator_report = curator.run();
     tracing::info!("{}", curator_report.message);
 
+    // 安全工作目录初始化
+    let workspace = config.agent.workspace.clone();
+    if !workspace.is_empty() {
+        crate::tools::set_workspace(workspace.clone());
+        tracing::info!("🔒 工作目录边界: {}", workspace);
+    }
+
     // ---- Channel 系统初始化 ----
     use crate::tui::channel::TuiChannel;
     let mut channel_mgr = ChannelManager::new();

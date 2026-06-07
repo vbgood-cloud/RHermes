@@ -395,6 +395,10 @@ pub struct AgentConfig {
     /// 默认 Provider 名称（如 "deepseek"、"openai"），空则自动推断
     #[serde(default)]
     pub default_provider: String,
+
+    /// 安全工作目录 — Agent 文件操作限制在此目录树下（空=不限制）
+    #[serde(default)]
+    pub workspace: String,
 }
 
 impl Default for AgentConfig {
@@ -405,6 +409,7 @@ impl Default for AgentConfig {
             creation_nudge_interval: default_creation_nudge_interval(),
             memory_nudge_interval: default_memory_nudge_interval(),
             default_provider: String::new(),
+            workspace: String::new(),
         }
     }
 }
@@ -775,6 +780,7 @@ mod tests {
                 creation_nudge_interval: 15,
                 memory_nudge_interval: 10,
                 default_provider: String::new(),
+                workspace: String::new(),
             },
             provider_pool: ProviderPoolConfig::default(),
             channels: ChannelsConfig::default(),

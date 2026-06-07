@@ -277,6 +277,16 @@ impl AgentSession {
                     tracing::info!("工具执行完成: {} 个结果", results.len());
                     tool_call_counter += results.len() as u32;
 
+                    // 安全检查: 全局工具调用次数限制
+                    const MAX_TOTAL_TOOL_CALLS: u32 = 200;
+                    if tool_call_counter > MAX_TOTAL_TOOL_CALLS {
+                        tracing::warn!("⛔ 工具调用总数超限 ({})，强制终止 Agent Loop", tool_call_counter);
+                        self.sink.on_error(&format!(
+                            "工具调用次数过多（{} 次），可能存在循环，已强制终止。", tool_call_counter
+                        )).await;
+                        break;
+                    }
+
                     if let Some(ref d) = self.session_debug {
                         if let Ok(mut dbg) = d.lock() {
                             for r in &results {
