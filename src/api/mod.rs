@@ -51,6 +51,7 @@ pub struct ToolFunction {
 }
 
 /// 构建默认工具列表
+#[deprecated(note = "请使用 tools_from_registry 替代，由 all_tool_defs() 统一调用")]
 pub fn default_tools() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -89,13 +90,15 @@ pub fn default_tools() -> Vec<ToolDef> {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "search_content".into(),
-                description: "在文件中搜索文本模式，支持正则".into(),
+                description: "在文件中搜索文本模式，返回匹配的文件:行号（基于 ripgrep）".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "pattern": {"type": "string", "description": "搜索模式"},
-                        "path": {"type": "string", "description": "搜索目录"},
-                        "glob": {"type": "string", "description": "文件名过滤"}
+                        "pattern": {"type": "string", "description": "搜索模式（支持正则）"},
+                        "path": {"type": "string", "description": "搜索目录（默认项目根）"},
+                        "glob": {"type": "string", "description": "文件名过滤"},
+                        "context_lines": {"type": "integer", "description": "上下文行数（默认 0，最大 3）"},
+                        "max_results": {"type": "integer", "description": "最大结果数（默认 200，最大 1000）"}
                     },
                     "required": ["pattern"]
                 }),
@@ -147,11 +150,12 @@ pub fn default_tools() -> Vec<ToolDef> {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "web_search".into(),
-                description: "搜索网络获取最新信息，无需 API Key".into(),
+                description: "搜索网络获取最新信息。返回标题、摘要和链接。支持中英文查询。".into(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "搜索关键词"}
+                        "query": {"type": "string", "description": "搜索关键词"},
+                        "max_results": {"type": "integer", "description": "最大结果数（默认 5，最大 10）"}
                     },
                     "required": ["query"]
                 }),
@@ -282,6 +286,53 @@ pub fn default_tools() -> Vec<ToolDef> {
             },
         },
     ]
+}
+
+/// 从 ToolRegistry 动态生成工具定义列表
+pub fn tools_from_registry(registry: &crate::tools::ToolRegistry) -> Vec<ToolDef> {
+    registry.all_entries().iter().map(|(name, tool)| {
+        ToolDef {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: name.clone(),
+                description: tool.description(),
+                parameters: param_defs_to_json(tool.parameters()),
+            },
+        }
+    }).collect()
+}
+
+/// 将 ParamDef 列表转换为 JSON Schema
+pub fn param_defs_to_json(params: Vec<crate::tools::ParamDef>) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+
+    for p in &params {
+        let type_str = match p.param_type {
+            crate::tools::ParamType::String => "string",
+            crate::tools::ParamType::Integer => "integer",
+            crate::tools::ParamType::Float => "number",
+            crate::tools::ParamType::Boolean => "boolean",
+            crate::tools::ParamType::Array => "array",
+            crate::tools::ParamType::Object => "object",
+        };
+        properties.insert(
+            p.name.clone(),
+            serde_json::json!({
+                "type": type_str,
+                "description": p.description
+            }),
+        );
+        if p.required {
+            required.push(p.name.clone());
+        }
+    }
+
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    })
 }
 
 /// API 消息格式
@@ -482,7 +533,7 @@ impl DeepSeekClient {
         let mut buffer = String::new();
         let mut stream = response.bytes_stream();
         // 工具调用累计器（跨 chunk 合并）
-        let _tool_acc: HashMap<i32, ToolCallData> = HashMap::new();
+        let mut tool_acc: HashMap<i32, ToolCallData> = HashMap::new();
 
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(ApiError::Request)?;
@@ -496,9 +547,11 @@ impl DeepSeekClient {
 
                 // 处理单个事件（可能有多行 data: ...）
                 for line in event.lines() {
-                    if let Some(data) = line.strip_prefix("data: ") {
+                    if let Some(data) = line.strip_prefix("data:") {
                         let data = data.trim();
                         if data == "[DONE]" {
+                            // 流结束，发送剩余的工具调用
+                            flush_tool_acc(&mut tool_acc, &tx);
                             continue;
                         }
 
@@ -521,16 +574,38 @@ impl DeepSeekClient {
                                             return Ok(());
                                         }
                                     }
-                                    // 转发工具调用（每个 chunk 都可能携带部分数据）
+
+                                    // 合并工具调用（跨 chunk 按 index 组装）
                                     if let Some(ref calls) = choice.delta.tool_calls {
-                                        let tool_data: Vec<ToolCallData> = calls.iter().map(|tc| ToolCallData {
-                                            id: tc.id.clone().unwrap_or_default(),
-                                            name: tc.function.as_ref().and_then(|f| f.name.clone()).unwrap_or_default(),
-                                            arguments: tc.function.as_ref().and_then(|f| f.arguments.clone()).unwrap_or_default(),
-                                        }).collect();
-                                        if !tool_data.is_empty() {
-                                            let _ = tx.send(ApiEvent::ToolCalls(tool_data));
+                                        for tc in calls {
+                                            let entry = tool_acc.entry(tc.index).or_insert_with(|| ToolCallData {
+                                                id: String::new(),
+                                                name: String::new(),
+                                                arguments: String::new(),
+                                            });
+                                            if let Some(ref id) = tc.id {
+                                                if !id.is_empty() {
+                                                    entry.id = id.clone();
+                                                }
+                                            }
+                                            if let Some(ref func) = tc.function {
+                                                if let Some(ref name) = func.name {
+                                                    if !name.is_empty() {
+                                                        entry.name = name.clone();
+                                                    }
+                                                }
+                                                if let Some(ref args) = func.arguments {
+                                                    if !args.is_empty() {
+                                                        entry.arguments.push_str(args);
+                                                    }
+                                                }
+                                            }
                                         }
+                                    }
+
+                                    // finish_reason == "tool_calls" → 发送合并后的工具调用
+                                    if choice.finish_reason.as_deref() == Some("tool_calls") {
+                                        flush_tool_acc(&mut tool_acc, &tx);
                                     }
                                 }
                             }
@@ -543,7 +618,8 @@ impl DeepSeekClient {
             }
         }
 
-        // 发送完成事件
+        // 流结束，发送完成事件（以及可能残留的工具调用）
+        flush_tool_acc(&mut tool_acc, &tx);
         let _ = tx.send(ApiEvent::Done);
 
         Ok(())
@@ -649,6 +725,21 @@ impl Transport for DeepSeekClient {
     fn model_name(&self) -> &str {
         self.model()
     }
+}
+
+/// 将工具调用累计器中的内容排序后发送
+/// 按 index 排序确保顺序正确
+fn flush_tool_acc(
+    tool_acc: &mut HashMap<i32, ToolCallData>,
+    tx: &tokio::sync::mpsc::UnboundedSender<ApiEvent>,
+) {
+    if tool_acc.is_empty() {
+        return;
+    }
+    let mut merged: Vec<(i32, ToolCallData)> = tool_acc.drain().collect();
+    merged.sort_by_key(|(index, _)| *index);
+    let tool_data: Vec<ToolCallData> = merged.into_iter().map(|(_, td)| td).collect();
+    let _ = tx.send(ApiEvent::ToolCalls(tool_data));
 }
 
 // ---------------------------------------------------------------------------

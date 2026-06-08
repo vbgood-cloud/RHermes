@@ -16,6 +16,9 @@ use serde_json::Value;
 use crate::tools::{
     get_optional_string, get_string_arg, ParamDef, ParamType, Tool, ToolError,
 };
+use crate::mcp::McpAdapterManager;
+use crate::tools::search::duckduckgo::DuckDuckGoEngine;
+use crate::tools::search::{MultiEngineSearcher, SearchCache};
 
 // ---------------------------------------------------------------------------
 // 安全常量与检查函数
@@ -45,6 +48,13 @@ fn is_dangerous_command(cmd: &str) -> Option<&'static str> {
     }
     None
 }
+
+// ---------------------------------------------------------------------------
+// 全局 MCP 管理器（用于优雅关闭）
+// ---------------------------------------------------------------------------
+
+/// MCP 连接管理器全局实例，确保在进程退出前关闭所有 MCP 连接
+static GLOBAL_MCP_MANAGER: OnceLock<McpAdapterManager> = OnceLock::new();
 
 /// 受保护文件 — Agent 不可覆盖
 const PROTECTED_FILES: &[&str] = &[
@@ -77,11 +87,11 @@ pub struct ReadFile;
 
 #[async_trait]
 impl Tool for ReadFile {
-    fn name(&self) -> &'static str {
-        "read_file"
+    fn name(&self) -> String {
+        "read_file".into()
     }
-    fn description(&self) -> &'static str {
-        "读取文件内容，可指定行范围（head/tail/range）"
+    fn description(&self) -> String {
+        "读取文件内容，可指定行范围（head/tail/range）".into()
     }
     fn parallel_safe(&self) -> bool {
         true
@@ -185,11 +195,11 @@ pub struct SearchContent;
 
 #[async_trait]
 impl Tool for SearchContent {
-    fn name(&self) -> &'static str {
-        "search_content"
+    fn name(&self) -> String {
+        "search_content".into()
     }
-    fn description(&self) -> &'static str {
-        "在文件中搜索文本模式，返回匹配的文件:行号（基于 ripgrep）"
+    fn description(&self) -> String {
+        "在文件中搜索文本模式，返回匹配的文件:行号（基于 ripgrep）".into()
     }
     fn parallel_safe(&self) -> bool {
         true
@@ -199,12 +209,24 @@ impl Tool for SearchContent {
             ParamDef::required("pattern", ParamType::String, "搜索模式（支持正则）"),
             ParamDef::optional("path", ParamType::String, "搜索目录（默认项目根）"),
             ParamDef::optional("glob", ParamType::String, "文件名过滤"),
+            ParamDef::optional("context_lines", ParamType::Integer, "上下文行数（默认 0，最大 3）"),
+            ParamDef::optional("max_results", ParamType::Integer, "最大结果数（默认 200，最大 1000）"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let pattern = get_string_arg(&args, "pattern")?;
         let search_path = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
         let glob_filter = get_optional_string(&args, "glob");
+        let context_lines = args
+            .get("context_lines")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .min(3) as usize;
+        let max_results = args
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(200)
+            .min(1000) as usize;
 
         // spawn_blocking：grep-searcher 是同步 API
         let result = tokio::task::spawn_blocking(move || {
@@ -212,12 +234,15 @@ impl Tool for SearchContent {
                 format!("正则无效: {e}")
             })?;
 
-            let mut searcher = SearcherBuilder::new()
-                .line_number(true)
-                .build();
+            let mut builder = SearcherBuilder::new();
+            builder.line_number(true);
+            if context_lines > 0 {
+                builder.before_context(context_lines);
+                builder.after_context(context_lines);
+            }
+            let mut searcher = builder.build();
 
             let mut results: Vec<String> = Vec::new();
-            let max_results = 200;
             let path = std::path::Path::new(&search_path);
 
             if path.is_file() {
@@ -290,8 +315,8 @@ pub struct ReadPdf;
 
 #[async_trait]
 impl Tool for ReadPdf {
-    fn name(&self) -> &'static str { "read_pdf" }
-    fn description(&self) -> &'static str { "读取 PDF 文件，返回纯文本内容" }
+    fn name(&self) -> String { "read_pdf".into() }
+    fn description(&self) -> String { "读取 PDF 文件，返回纯文本内容".into() }
     fn parallel_safe(&self) -> bool { true }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![ParamDef::required("path", ParamType::String, "PDF 文件路径")]
@@ -332,11 +357,11 @@ pub struct Glob;
 
 #[async_trait]
 impl Tool for Glob {
-    fn name(&self) -> &'static str {
-        "glob"
+    fn name(&self) -> String {
+        "glob".into()
     }
-    fn description(&self) -> &'static str {
-        "按 glob 模式列出文件"
+    fn description(&self) -> String {
+        "按 glob 模式列出文件".into()
     }
     fn parallel_safe(&self) -> bool {
         true
@@ -406,11 +431,11 @@ pub struct WriteFile;
 
 #[async_trait]
 impl Tool for WriteFile {
-    fn name(&self) -> &'static str {
-        "write_file"
+    fn name(&self) -> String {
+        "write_file".into()
     }
-    fn description(&self) -> &'static str {
-        "写入文件（创建或覆盖）"
+    fn description(&self) -> String {
+        "写入文件（创建或覆盖）".into()
     }
     fn parallel_safe(&self) -> bool {
         false
@@ -474,11 +499,11 @@ pub struct RunCommand;
 
 #[async_trait]
 impl Tool for RunCommand {
-    fn name(&self) -> &'static str {
-        "run_command"
+    fn name(&self) -> String {
+        "run_command".into()
     }
-    fn description(&self) -> &'static str {
-        "在 shell 中执行命令"
+    fn description(&self) -> String {
+        "在 shell 中执行命令".into()
     }
     fn parallel_safe(&self) -> bool {
         false
@@ -564,11 +589,11 @@ pub struct GetCurrentTime;
 
 #[async_trait]
 impl Tool for GetCurrentTime {
-    fn name(&self) -> &'static str {
-        "get_current_time"
+    fn name(&self) -> String {
+        "get_current_time".into()
     }
-    fn description(&self) -> &'static str {
-        "获取当前日期和时间"
+    fn description(&self) -> String {
+        "获取当前日期和时间".into()
     }
     fn parallel_safe(&self) -> bool {
         true
@@ -586,121 +611,53 @@ impl Tool for GetCurrentTime {
 // web_search — 非并行安全（网络请求）
 // ---------------------------------------------------------------------------
 
+/// 全局搜索引擎实例（懒初始化）
+static GLOBAL_SEARCHER: OnceLock<MultiEngineSearcher> = OnceLock::new();
+
+fn get_searcher() -> &'static MultiEngineSearcher {
+    GLOBAL_SEARCHER.get_or_init(|| {
+        let engines: Vec<Box<dyn crate::tools::search::SearchEngine>> = vec![
+            Box::new(DuckDuckGoEngine::new()),
+        ];
+        let cache = SearchCache::new(100, std::time::Duration::from_secs(600));
+        MultiEngineSearcher::new(engines, cache, std::time::Duration::from_secs(10))
+    })
+}
+
 /// 搜索网络信息
 ///
-/// 使用 DuckDuckGo Instant Answer API，无需 API Key。
-/// 返回搜索结果摘要和相关链接。
+/// 使用 DuckDuckGo HTML 搜索（免费、无需 API Key）。
+/// 支持多引擎降级和结果缓存。
 pub struct WebSearch;
 
 #[async_trait]
 impl Tool for WebSearch {
-    fn name(&self) -> &'static str {
-        "web_search"
+    fn name(&self) -> String {
+        "web_search".into()
     }
-    fn description(&self) -> &'static str {
-        "搜索网络获取最新信息"
+    fn description(&self) -> String {
+        "搜索网络获取最新信息。返回标题、摘要和链接。支持中英文查询。".into()
     }
     fn parallel_safe(&self) -> bool {
-        false
+        true
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
             ParamDef::required("query", ParamType::String, "搜索关键词"),
+            ParamDef::optional("max_results", ParamType::Integer, "最大结果数（默认 5，最大 10）"),
         ]
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let query = get_string_arg(&args, "query")?;
-        let url = format!(
-            "https://api.duckduckgo.com/?q={}&format=json&no_html=1&skip_disambig=1",
-            urlencoding(&query)
-        );
+        let max_results = args
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5)
+            .min(10) as usize;
 
-        let resp = reqwest::get(&url)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("搜索请求失败: {e}")))?;
-
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("解析搜索结果失败: {e}")))?;
-
-        let mut results = Vec::new();
-
-        // 摘要
-        if let Some(abstract_text) = body["AbstractText"].as_str() {
-            if !abstract_text.is_empty() {
-                results.push(format!("📝 摘要: {abstract_text}"));
-                if let Some(src) = body["AbstractSource"].as_str() {
-                    results.push(format!("   来源: {src}"));
-                }
-                if let Some(url) = body["AbstractURL"].as_str() {
-                    results.push(format!("   链接: {url}"));
-                }
-                results.push(String::new());
-            }
-        }
-
-        // 答案
-        if let Some(answer) = body["Answer"].as_str() {
-            if !answer.is_empty() {
-                results.push(format!("💡 答案: {answer}"));
-                if let Some(url) = body["AnswerURL"].as_str() {
-                    if !url.is_empty() {
-                        results.push(format!("   链接: {url}"));
-                    }
-                }
-                results.push(String::new());
-            }
-        }
-
-        // 相关结果
-        if let Some(topics) = body["RelatedTopics"].as_array() {
-            for topic in topics.iter().take(8) {
-                if let Some(text) = topic["Text"].as_str() {
-                    if let Some(url) = topic["FirstURL"].as_str() {
-                        results.push(format!("🔗 {text}"));
-                        results.push(format!("   {url}"));
-                    } else {
-                        results.push(format!("🔗 {text}"));
-                    }
-                }
-                // 处理嵌套的 Topics
-                if let Some(sub_topics) = topic["Topics"].as_array() {
-                    for sub in sub_topics.iter().take(3) {
-                        if let Some(text) = sub["Text"].as_str() {
-                            if let Some(url) = sub["FirstURL"].as_str() {
-                                results.push(format!("  • {text}"));
-                                results.push(format!("    {url}"));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if results.is_empty() {
-            Ok(format!("<untrusted>\n未找到与「{query}」相关的搜索结果\n</untrusted>"))
-        } else {
-            Ok(format!("<untrusted>\n搜索结果「{query}」:\n{}\n</untrusted>", results.join("\n")))
-        }
+        let searcher = get_searcher();
+        Ok(searcher.search(&query, max_results).await)
     }
-}
-
-/// URL 编码（简单版本，仅编码中文和特殊字符）
-fn urlencoding(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
-    for byte in input.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(byte as char);
-            }
-            b' ' => result.push_str("%20"),
-            _ => {
-                result.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    result
 }
 
 // ---------------------------------------------------------------------------
@@ -714,11 +671,11 @@ pub struct WebFetch;
 
 #[async_trait]
 impl Tool for WebFetch {
-    fn name(&self) -> &'static str {
-        "web_fetch"
+    fn name(&self) -> String {
+        "web_fetch".into()
     }
-    fn description(&self) -> &'static str {
-        "获取网页内容并提取可读文本"
+    fn description(&self) -> String {
+        "获取网页内容并提取可读文本".into()
     }
     fn parallel_safe(&self) -> bool {
         false
@@ -845,11 +802,11 @@ pub struct DelegateTask;
 
 #[async_trait]
 impl Tool for DelegateTask {
-    fn name(&self) -> &'static str {
-        "delegate_task"
+    fn name(&self) -> String {
+        "delegate_task".into()
     }
-    fn description(&self) -> &'static str {
-        "将子任务委托给独立的子 Agent 执行，返回分析结果"
+    fn description(&self) -> String {
+        "将子任务委托给独立的子 Agent 执行，返回分析结果".into()
     }
     fn parallel_safe(&self) -> bool {
         false
@@ -893,11 +850,11 @@ pub struct RunSkill;
 
 #[async_trait]
 impl Tool for RunSkill {
-    fn name(&self) -> &'static str {
-        "run_skill"
+    fn name(&self) -> String {
+        "run_skill".into()
     }
-    fn description(&self) -> &'static str {
-        "执行一个已安装的技能并返回结果"
+    fn description(&self) -> String {
+        "执行一个已安装的技能并返回结果".into()
     }
     fn parallel_safe(&self) -> bool {
         false
@@ -948,8 +905,8 @@ pub struct SkillList;
 
 #[async_trait]
 impl Tool for SkillList {
-    fn name(&self) -> &'static str { "skill_list" }
-    fn description(&self) -> &'static str { "列出所有已安装的技能名称和描述" }
+    fn name(&self) -> String { "skill_list".into() }
+    fn description(&self) -> String { "列出所有已安装的技能名称和描述".into() }
     fn parallel_safe(&self) -> bool { true }
     fn parameters(&self) -> Vec<ParamDef> { vec![] }
     async fn execute(&self, _args: Value) -> Result<String, ToolError> {
@@ -975,8 +932,8 @@ pub struct SkillSearch;
 
 #[async_trait]
 impl Tool for SkillSearch {
-    fn name(&self) -> &'static str { "skill_search" }
-    fn description(&self) -> &'static str { "按关键词搜索已安装的技能" }
+    fn name(&self) -> String { "skill_search".into() }
+    fn description(&self) -> String { "按关键词搜索已安装的技能".into() }
     fn parallel_safe(&self) -> bool { true }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![ParamDef::required("query", ParamType::String, "搜索关键词")]
@@ -1003,8 +960,8 @@ pub struct SkillCreate;
 
 #[async_trait]
 impl Tool for SkillCreate {
-    fn name(&self) -> &'static str { "skill_create" }
-    fn description(&self) -> &'static str { "创建新的可复用技能，让 AI 不断积累最佳实践" }
+    fn name(&self) -> String { "skill_create".into() }
+    fn description(&self) -> String { "创建新的可复用技能，让 AI 不断积累最佳实践".into() }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
@@ -1042,8 +999,8 @@ pub struct SkillPatch;
 
 #[async_trait]
 impl Tool for SkillPatch {
-    fn name(&self) -> &'static str { "skill_patch" }
-    fn description(&self) -> &'static str { "更新已有技能的内容（打补丁进化），保留使用统计" }
+    fn name(&self) -> String { "skill_patch".into() }
+    fn description(&self) -> String { "更新已有技能的内容（打补丁进化），保留使用统计".into() }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
@@ -1152,9 +1109,9 @@ impl Memory {
 
 #[async_trait]
 impl Tool for Memory {
-    fn name(&self) -> &'static str { "memory" }
-    fn description(&self) -> &'static str {
-        "读写管理记忆文件 MEMORY.md 和 USER.md。action: add(添加)/replace(替换)/remove(删除)/read(读取)。target: user(USER.md) 或 memory(MEMORY.md)。"
+    fn name(&self) -> String { "memory".into() }
+    fn description(&self) -> String {
+        "读写管理记忆文件 MEMORY.md 和 USER.md。action: add(添加)/replace(替换)/remove(删除)/read(读取)。target: user(USER.md) 或 memory(MEMORY.md)。".into()
     }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
@@ -1304,8 +1261,8 @@ pub struct SkillManage;
 
 #[async_trait]
 impl Tool for SkillManage {
-    fn name(&self) -> &'static str { "skill_manage" }
-    fn description(&self) -> &'static str { "创建或更新技能，名称存在则 patch，不存在则 create" }
+    fn name(&self) -> String { "skill_manage".into() }
+    fn description(&self) -> String { "创建或更新技能，名称存在则 patch，不存在则 create".into() }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
@@ -1385,6 +1342,7 @@ pub fn get_global_transport() -> Option<Arc<dyn crate::provider::Transport>> {
 }
 
 use crate::tools::ToolRegistry;
+use crate::api::ToolDef;
 
 /// 创建包含所有内置工具的注册表
 pub fn builtin_registry() -> ToolRegistry {
@@ -1406,6 +1364,139 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(ReadPdf)
         .register(SkillManage)
         .register(Memory)
+}
+
+// ---------------------------------------------------------------------------
+// MCP 融合注册
+// ---------------------------------------------------------------------------
+
+/// 全局注册表实例（包含内置工具 + MCP 远程工具）
+/// 在 full_registry() 完成后初始化，供 all_tool_defs() 使用
+static GLOBAL_REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
+
+/// 获取所有工具定义（内置 + MCP）
+///
+/// 从 GLOBAL_REGISTRY 动态生成 ToolDef，确保与注册表一致。
+/// 未初始化时 fallback 到 default_tools() 作为兼容后备。
+pub fn all_tool_defs() -> Vec<ToolDef> {
+    if let Some(registry) = GLOBAL_REGISTRY.get() {
+        crate::api::tools_from_registry(registry)
+    } else {
+        #[allow(deprecated)]
+        crate::api::default_tools()
+    }
+}
+
+/// MCP 连接报告，包含成功/失败的 Server 列表
+#[derive(Default)]
+pub struct McpConnectReport {
+    pub connected_servers: Vec<String>,
+    pub failed_servers: Vec<(String, String)>,
+    pub total_tools: usize,
+}
+
+/// 创建包含内置工具 + MCP 远程工具的完整注册表
+///
+/// 返回 (registry, report)，report 包含各 MCP Server 的连接结果。
+pub async fn full_registry(mcp_config: &crate::core::McpConfig) -> (ToolRegistry, McpConnectReport) {
+    let mut registry = builtin_registry();
+    let mut report = McpConnectReport {
+        connected_servers: Vec::new(),
+        failed_servers: Vec::new(),
+        total_tools: 0,
+    };
+
+    if !mcp_config.enabled || mcp_config.servers.is_empty() {
+        let _ = GLOBAL_REGISTRY.set(registry.clone());
+        return (registry, report);
+    }
+
+    let mut manager = crate::mcp::McpAdapterManager::new();
+    let mut mcp_tool_count: usize = 0;
+
+    // 手动逐一连接每个 Server，收集成功/失败结果
+    for (name, config) in &mcp_config.servers {
+        match crate::mcp::McpAdapter::connect(name.clone(), config).await {
+            Ok(mut adapter) => {
+                let tool_count = adapter.tools().len();
+                mcp_tool_count += tool_count;
+                report.connected_servers.push(format!("{} ({} 工具)", name, tool_count));
+
+                let parallel_safe = adapter.parallel_safe();
+                let tool_parallel_config = adapter.tool_parallel_safe().clone();
+
+                let adapter_arc = Arc::new(adapter);
+
+                for tool_info in adapter_arc.tools() {
+                    let remote_tool = crate::mcp::McpRemoteTool::new(
+                        name,
+                        &tool_info.original_name,
+                        tool_info.description.clone(),
+                        tool_info.input_schema.clone(),
+                        Arc::clone(&adapter_arc),
+                        parallel_safe,
+                        &tool_parallel_config,
+                    );
+                    registry = registry.register(remote_tool);
+                }
+
+                manager.adapters_mut().push(adapter_arc);
+            }
+            Err(e) => {
+                report.failed_servers.push((name.clone(), e.to_string()));
+                tracing::warn!("MCP [{}] 连接失败: {}", name, e);
+            }
+        }
+    }
+
+    report.total_tools = mcp_tool_count;
+    let server_count = manager.adapters().len();
+
+    // 保存 manager 到全局静态，以便进程退出时优雅关闭
+    if let Err(_) = GLOBAL_MCP_MANAGER.set(manager) {
+        tracing::warn!("GLOBAL_MCP_MANAGER 已存在（理论上不会发生）");
+    }
+
+    tracing::info!(
+        "MCP 已就绪 · {} 个 Server · {} 个远程工具",
+        server_count,
+        mcp_tool_count,
+    );
+
+    // 启动后台健康检查任务（每 5 分钟检查一次，首次 30 秒后开始）
+    if server_count > 0 {
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                interval.tick().await;
+                if let Some(manager) = GLOBAL_MCP_MANAGER.get() {
+                    for adapter in manager.adapters() {
+                        if let Err(e) = adapter.health_check().await {
+                            tracing::warn!("MCP [{}] 健康检查失败: {}", adapter.server_name(), e);
+                            if let Err(re) = adapter.reconnect().await {
+                                tracing::error!("MCP [{}] 重连失败: {}", adapter.server_name(), re);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // 保存最终注册表到全局，供 all_tool_defs() 动态生成 ToolDef
+    let _ = GLOBAL_REGISTRY.set(registry.clone());
+    (registry, report)
+}
+
+/// 关闭所有 MCP 连接（释放子进程、关闭 SSE 等）
+///
+/// 应在进程退出前调用，确保 MCP Server 被优雅关闭。
+pub async fn shutdown_mcp() {
+    if let Some(manager) = GLOBAL_MCP_MANAGER.get() {
+        manager.shutdown_all().await;
+        tracing::info!("MCP 连接已关闭");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1470,11 +1561,11 @@ mod tests {
     fn test_parallel_safe_classification() {
         let reg = builtin_registry();
         let safe = reg.parallel_safe_names();
-        assert!(safe.contains(&"read_file"));
-        assert!(safe.contains(&"search_content"));
-        assert!(safe.contains(&"glob"));
-        assert!(!safe.contains(&"write_file"));
-        assert!(!safe.contains(&"run_command"));
+        assert!(safe.iter().any(|s| s == "read_file"));
+        assert!(safe.iter().any(|s| s == "search_content"));
+        assert!(safe.iter().any(|s| s == "glob"));
+        assert!(!safe.iter().any(|s| s == "write_file"));
+        assert!(!safe.iter().any(|s| s == "run_command"));
     }
 
     #[test]

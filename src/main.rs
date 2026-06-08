@@ -10,6 +10,7 @@ mod cost;
 mod debug;
 mod gateway;
 mod init;
+mod mcp;
 mod provider;
 mod tools;
 mod tui;
@@ -58,6 +59,32 @@ enum Commands {
     Gateway {
         #[command(subcommand)]
         command: GatewayCommand,
+    },
+    /// 🔌 MCP 客户端管理
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    /// 🛠 交互式配置 MCP（添加/管理 MCP Server）
+    Setup,
+    /// 📋 列出已配置的 MCP Server
+    List,
+    /// ❌ 删除指定 MCP Server
+    Remove {
+        /// MCP Server 名称
+        name: String,
+    },
+    /// 📥 从标准 JSON 文件导入 MCP Server 配置（留空则粘贴 JSON 内容）
+    Import {
+        /// JSON 文件路径（可选，留空则进入交互粘贴模式）
+        path: Option<String>,
+        /// 覆盖已存在的同名 Server（默认跳过）
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -163,6 +190,61 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Mcp { command }) => {
+            match command {
+                McpCommand::Setup => {
+                    if let Err(e) = crate::mcp::setup::run_mcp_setup(&config_path) {
+                        eprintln!("[RHermes] MCP 配置失败: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                McpCommand::List => {
+                    let config = Config::load(&config_path).unwrap_or_default();
+                    println!("MCP 配置:");
+                    println!("  🔌 启用: {}", if config.mcp.enabled { "✅" } else { "⏹" });
+                    if config.mcp.servers.is_empty() {
+                        println!("  (暂无 MCP Server 配置)");
+                    } else {
+                        for (name, server) in &config.mcp.servers {
+                            println!("  · {} (command: {:?}, url: {:?})", name, server.command, server.url);
+                        }
+                    }
+                }
+                McpCommand::Remove { name } => {
+                    let mut config = Config::load(&config_path).map_err(|e| {
+                        eprintln!("[RHermes] 配置加载失败: {e}");
+                        std::process::exit(1);
+                    }).ok();
+                    if let Some(ref mut cfg) = config {
+                        if cfg.mcp.servers.remove(&name).is_some() {
+                            if let Err(e) = cfg.save(&config_path) {
+                                eprintln!("[RHermes] 保存配置失败: {e}");
+                                std::process::exit(1);
+                            }
+                            println!("✅ 已删除 MCP Server「{name}」");
+                        } else {
+                            println!("⚠ 未找到 MCP Server「{name}」");
+                        }
+                    }
+                }
+                McpCommand::Import { path, force } => {
+                    match path {
+                        Some(p) => {
+                            if let Err(e) = crate::mcp::import::import_from_file(&p, &config_path, force) {
+                                eprintln!("[RHermes] MCP 导入失败: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                        None => {
+                            if let Err(e) = crate::mcp::import::import_interactive(&config_path, force) {
+                                eprintln!("[RHermes] MCP 导入失败: {e}");
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         _ => {
             if needs_init {
                 println!("📋 未检测到配置文件，正在启动初始化向导...");
@@ -237,17 +319,7 @@ async fn run_code(resume: bool) {
         path_mgr.data_root().display(),
     );
 
-    // 初始化工具系统
-    let registry = builtin_registry();
-    let dispatcher = ToolDispatcher::new(registry.clone());
-
-    tracing::info!(
-        "工具注册表已就绪 · {} 个工具 · {} 个可并行",
-        registry.len(),
-        registry.parallel_safe_names().len(),
-    );
-
-    // 加载配置
+    // 加载配置（MCP 工具初始化需要配置）
     let config_path = path_mgr.config_path();
     let config = match Config::load(&config_path) {
         Ok(cfg) => cfg,
@@ -256,6 +328,21 @@ async fn run_code(resume: bool) {
             Config::default()
         }
     };
+
+    // 初始化工具系统（含 MCP 远程工具）
+    let registry = builtin_registry();
+    let (registry, mcp_report) = if config.mcp.enabled {
+        crate::tools::full_registry(&config.mcp).await
+    } else {
+        (registry.clone(), crate::tools::McpConnectReport::default())
+    };
+    let dispatcher = ToolDispatcher::new(registry.clone());
+
+    tracing::info!(
+        "工具注册表已就绪 · {} 个工具 · {} 个可并行",
+        registry.len(),
+        registry.parallel_safe_names().len(),
+    );
 
     // 初始化记忆系统
     let memories_dir = path_mgr.data_root().join("memories");
@@ -351,6 +438,23 @@ async fn run_code(resume: bool) {
     let inbound_tx = channel_mgr.inbound_tx();
     TuiChannel::attach(&mut app, inbound_tx);
 
+    // ── MCP 连接结果展示 ──
+    if !mcp_report.connected_servers.is_empty() {
+        app.messages.push(tui::Message::system(format!(
+            "✅ MCP 已连接: {}",
+            mcp_report.connected_servers.join(", ")
+        )));
+    }
+    if !mcp_report.failed_servers.is_empty() {
+        let failures: Vec<String> = mcp_report.failed_servers.iter()
+            .map(|(name, err)| format!("{} ({})", name, err))
+            .collect();
+        app.messages.push(tui::Message::system(format!(
+            "⚠ MCP 连接失败: {}",
+            failures.join("; ")
+        )));
+    }
+
     // ── 扫码登录：检查所有 Channel 是否需要二维码 ──
     for ch in channel_mgr.iter() {
         if let Some((qr_text, img_data)) = ch.login_qrcode().await {
@@ -429,7 +533,12 @@ async fn run_code(resume: bool) {
     }
 
     // 运行 TUI
-    if let Err(e) = app.run().await {
+    let run_result = app.run().await;
+
+    // 进程退出前关闭所有 MCP 连接
+    crate::tools::shutdown_mcp().await;
+
+    if let Err(e) = run_result {
         eprintln!("[RHermes] TUI 错误: {e}");
         std::process::exit(1);
     }

@@ -205,8 +205,8 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
     if let Some(transport_ref) = transport {
         tracing::info!("Gateway Agent Loop 已启动，{} 个通道", channel_count);
 
-        // 初始化工具系统
-        let registry = crate::tools::builtin_registry();
+        // 初始化工具系统（含 MCP 远程工具）
+        let (registry, _mcp_report) = crate::tools::full_registry(&config.mcp).await;
         let dispatcher = Some(crate::tools::ToolDispatcher::new(registry));
 
         // 构建完整的 system prompt
@@ -253,6 +253,9 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
         // 保持进程存活直到 Ctrl+C
         tokio::signal::ctrl_c().await.ok();
     }
+
+    // 进程退出前关闭所有 MCP 连接
+    crate::tools::shutdown_mcp().await;
 
     // 清理 PID 文件
     let _ = std::fs::remove_file(pid_file);

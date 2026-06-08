@@ -6,6 +6,11 @@ pub use registry::*;
 pub use builtin::*;
 pub use dispatcher::*;
 
+pub use registry::*;
+pub use builtin::*;
+pub use dispatcher::*;
+
 mod registry;
 mod builtin;
 mod dispatcher;
+pub mod search;

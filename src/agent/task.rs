@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use crate::api::{ChatRequest, default_tools};
+use crate::api::ChatRequest;
 use crate::core::Config;
 use crate::provider::Transport;
 
@@ -57,7 +57,7 @@ pub async fn run_sub_agent(
         stream: false,
         max_tokens: Some(2048),
         temperature: None,
-        tools: Some(default_tools()),
+        tools: Some(crate::tools::all_tool_defs()),
     };
 
     match transport.chat(request).await {
@@ -111,7 +111,7 @@ pub async fn auto_refine_skill(
         当前对话：\n用户: {user_msg}\nAI: {assistant_msg}"
     );
 
-    let tools = default_tools();
+    let tools = crate::tools::all_tool_defs();
 
     let mut messages = vec![
         crate::api::ApiMessage {
@@ -235,7 +235,7 @@ pub async fn auto_refine_memory(
         当前对话：\n用户: {user_msg}\nAI: {assistant_msg}"
     );
 
-    let tools = default_tools();
+    let tools = crate::tools::all_tool_defs();
 
     let request = ChatRequest {
         model: config.api.model.clone(),

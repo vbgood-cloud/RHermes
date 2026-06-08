@@ -214,7 +214,7 @@ impl AgentSession {
                 stream: false,
                 max_tokens: Some(4096),
                 temperature: None,
-                tools: Some(crate::api::default_tools()),
+                tools: Some(crate::tools::all_tool_defs()),
             };
 
             let chat_result = tokio::time::timeout(

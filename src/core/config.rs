@@ -74,6 +74,10 @@ pub struct Config {
     /// Gateway 守护进程配置
     #[serde(default)]
     pub gateway: GatewayConfig,
+
+    /// MCP 客户端配置
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 /// 消息通道配置
@@ -205,6 +209,61 @@ impl Default for GatewayConfig {
             channels: vec!["wechat".into()],
         }
     }
+}
+
+/// MCP 客户端配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: std::collections::HashMap<String, McpServerConfig>,
+    /// 是否启用 Sampling 能力（默认关闭，安全敏感）
+    #[serde(default)]
+    pub sampling_enabled: bool,
+    /// Sampling 请求的 max_tokens 上限（默认 1024）
+    #[serde(default = "default_sampling_max_tokens")]
+    pub sampling_max_tokens: u32,
+}
+
+fn default_sampling_max_tokens() -> u32 { 1024 }
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            servers: std::collections::HashMap::new(),
+            sampling_enabled: false,
+            sampling_max_tokens: default_sampling_max_tokens(),
+        }
+    }
+}
+
+/// 单个 MCP Server 的配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// 消息发送 URL（Direct 模式，SSE 不可用时使用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_url: Option<String>,
+    /// HTTP 请求头
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
+    /// Server 类型: stdio / sse / http（自动推断）
+    #[serde(default)]
+    pub server_type: String,
+    #[serde(default)]
+    pub parallel_safe: bool,
+    /// 工具级别的并行安全配置（按工具名覆盖 Server 级别设置）
+    #[serde(default)]
+    pub tool_parallel_safe: std::collections::HashMap<String, bool>,
 }
 
 /// Provider Pool 配置（熔断器）
@@ -456,6 +515,7 @@ impl Default for Config {
             provider_pool: ProviderPoolConfig::default(),
             channels: ChannelsConfig::default(),
             gateway: GatewayConfig::default(),
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -785,6 +845,7 @@ mod tests {
             provider_pool: ProviderPoolConfig::default(),
             channels: ChannelsConfig::default(),
             gateway: GatewayConfig::default(),
+            mcp: McpConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();

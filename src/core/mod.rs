@@ -8,6 +8,8 @@ pub use config::Config;
 pub use config::DebugConfig;
 pub use config::DisplayConfig;
 pub use config::GatewayConfig;
+pub use config::McpConfig;
+pub use config::McpServerConfig;
 pub use config::MemoryConfig;
 pub use config::ProviderConfig;
 pub use config::ProviderPoolConfig;

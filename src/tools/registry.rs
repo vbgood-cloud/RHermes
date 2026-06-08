@@ -45,32 +45,32 @@ impl std::fmt::Display for ParamType {
 
 #[derive(Debug, Clone)]
 pub struct ParamDef {
-    pub name: &'static str,
+    pub name: String,
     pub param_type: ParamType,
-    pub description: &'static str,
+    pub description: String,
     pub required: bool,
 }
 
 impl ParamDef {
-    pub const fn new(
-        name: &'static str,
+    pub fn new(
+        name: &str,
         param_type: ParamType,
-        description: &'static str,
+        description: &str,
         required: bool,
     ) -> Self {
         Self {
-            name,
+            name: name.to_string(),
             param_type,
-            description,
+            description: description.to_string(),
             required,
         }
     }
 
-    pub const fn required(name: &'static str, param_type: ParamType, description: &'static str) -> Self {
+    pub fn required(name: &str, param_type: ParamType, description: &str) -> Self {
         Self::new(name, param_type, description, true)
     }
 
-    pub const fn optional(name: &'static str, param_type: ParamType, description: &'static str) -> Self {
+    pub fn optional(name: &str, param_type: ParamType, description: &str) -> Self {
         Self::new(name, param_type, description, false)
     }
 }
@@ -127,10 +127,10 @@ impl ToolResult {
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     /// 工具名称（用于 API tool_calls 匹配）
-    fn name(&self) -> &'static str;
+    fn name(&self) -> String;
 
     /// 工具描述（用于模型理解何时调用）
-    fn description(&self) -> &'static str;
+    fn description(&self) -> String;
 
     /// 是否可并行执行
     fn parallel_safe(&self) -> bool;
@@ -181,7 +181,7 @@ impl std::error::Error for ToolError {}
 /// 所有工具在启动时注册，运行期只读
 #[derive(Clone)]
 pub struct ToolRegistry {
-    tools: Arc<HashMap<&'static str, Arc<dyn Tool>>>,
+    tools: Arc<HashMap<String, Arc<dyn Tool>>>,
 }
 
 impl ToolRegistry {
@@ -220,7 +220,7 @@ impl ToolRegistry {
     }
 
     /// 获取所有可并行工具的名称
-    pub fn parallel_safe_names(&self) -> Vec<&'static str> {
+    pub fn parallel_safe_names(&self) -> Vec<String> {
         self.tools
             .values()
             .filter(|t| t.parallel_safe())
@@ -229,8 +229,8 @@ impl ToolRegistry {
     }
 
     /// 获取所有工具的名称
-    pub fn all_names(&self) -> Vec<&'static str> {
-        self.tools.keys().copied().collect()
+    pub fn all_names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
     }
 
     /// 工具数量
@@ -241,6 +241,13 @@ impl ToolRegistry {
     /// 是否为空
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// 获取所有工具的（名称, 工具）对
+    pub fn all_entries(&self) -> Vec<(String, Arc<dyn Tool>)> {
+        self.tools.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 }
 
@@ -275,17 +282,17 @@ mod tests {
 
     /// 一个测试用的模拟工具
     struct MockTool {
-        name: &'static str,
+        name: String,
         safe: bool,
     }
 
     #[async_trait::async_trait]
     impl Tool for MockTool {
-        fn name(&self) -> &'static str {
-            self.name
+        fn name(&self) -> String {
+            self.name.clone()
         }
-        fn description(&self) -> &'static str {
-            "A mock tool for testing"
+        fn description(&self) -> String {
+            "A mock tool for testing".into()
         }
         fn parallel_safe(&self) -> bool {
             self.safe
@@ -302,8 +309,8 @@ mod tests {
     #[tokio::test]
     async fn test_tool_registry_register_and_get() {
         let registry = ToolRegistry::new()
-            .register(MockTool { name: "mock_read", safe: true })
-            .register(MockTool { name: "mock_write", safe: false });
+            .register(MockTool { name: "mock_read".into(), safe: true })
+            .register(MockTool { name: "mock_write".into(), safe: false });
 
         assert_eq!(registry.len(), 2);
 
@@ -316,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_execution() {
-        let tool = MockTool { name: "test", safe: true };
+        let tool = MockTool { name: "test".into(), safe: true };
         let args = serde_json::json!({"input": "hello"});
         let result = tool.execute(args).await.unwrap();
         assert_eq!(result, "mock: hello");
@@ -324,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_missing_param() {
-        let tool = MockTool { name: "test", safe: true };
+        let tool = MockTool { name: "test".into(), safe: true };
         let result = tool.execute(serde_json::json!({})).await;
         assert!(result.is_err());
     }
@@ -332,14 +339,14 @@ mod tests {
     #[test]
     fn test_registry_parallel_safe_names() {
         let registry = ToolRegistry::new()
-            .register(MockTool { name: "read", safe: true })
-            .register(MockTool { name: "search", safe: true })
-            .register(MockTool { name: "write", safe: false });
+            .register(MockTool { name: "read".into(), safe: true })
+            .register(MockTool { name: "search".into(), safe: true })
+            .register(MockTool { name: "write".into(), safe: false });
 
         let safe_names = registry.parallel_safe_names();
-        assert!(safe_names.contains(&"read"));
-        assert!(safe_names.contains(&"search"));
-        assert!(!safe_names.contains(&"write"));
+        assert!(safe_names.iter().any(|n| n == "read"));
+        assert!(safe_names.iter().any(|n| n == "search"));
+        assert!(!safe_names.iter().any(|n| n == "write"));
     }
 
     #[test]
