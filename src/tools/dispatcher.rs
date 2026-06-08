@@ -180,6 +180,7 @@ async fn execute_tool_call(registry: &ToolRegistry, call: ToolCall) -> ToolResul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Config;
     use crate::tools::builtin_registry;
     use serde_json::json;
 
@@ -193,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_empty() {
-        let reg = builtin_registry();
+        let reg = builtin_registry(&Config::default());
         let dispatcher = ToolDispatcher::new(reg);
         let results = dispatcher.dispatch(vec![]).await;
         assert!(results.is_empty());
@@ -201,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_unknown_tool() {
-        let reg = builtin_registry();
+        let reg = builtin_registry(&Config::default());
         let dispatcher = ToolDispatcher::new(reg);
         let results = dispatcher
             .dispatch(vec![make_call("nonexistent", json!({}))])
@@ -220,7 +221,7 @@ mod tests {
         tokio::fs::write(&f1, "hello").await.unwrap();
         tokio::fs::write(&f2, "world").await.unwrap();
 
-        let reg = builtin_registry();
+        let reg = builtin_registry(&Config::default());
         let dispatcher = ToolDispatcher::new(reg);
 
         let calls = vec![
@@ -241,7 +242,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file_path = tmp.path().join("test.txt").to_str().unwrap().to_string();
 
-        let reg = builtin_registry();
+        let reg = builtin_registry(&Config::default());
         let dispatcher = ToolDispatcher::new(reg);
 
         // write_file (serial) → read_file (parallel)
@@ -268,7 +269,7 @@ mod tests {
         tokio::fs::write(&f1, "alpha").await.unwrap();
         tokio::fs::write(&f2, "beta").await.unwrap();
 
-        let reg = builtin_registry();
+        let reg = builtin_registry(&Config::default());
         let dispatcher = ToolDispatcher::new(reg);
 
         let calls = vec![
@@ -290,7 +291,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_concurrency_limit() {
         let tmp = tempfile::tempdir().unwrap();
-        let reg = builtin_registry();
+        let reg = builtin_registry(&Config::default());
         let dispatcher = ToolDispatcher::new(reg).with_max_concurrency(2);
 
         // 创建 5 个文件并行读

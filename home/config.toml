@@ -1,0 +1,40 @@
+# ── 搜索引擎配置 ──
+[search]
+# 搜索超时（秒）
+timeout_secs = 15
+# 搜索结果缓存大小
+cache_size = 100
+# 缓存 TTL（秒）
+cache_ttl_secs = 600
+
+# 代理配置会从 [proxy] 读取，详见下方
+
+# ── 网络代理 ──
+[proxy]
+# 三种模式：
+#   "all"   — 所有请求走代理
+#   "off"   — 不使用代理
+#   "auto"  — 按 rules 各自决定
+mode = "auto"
+# 代理 URL（支持 http:// 和 socks5://）
+# url = "socks5://127.0.0.1:1080"
+
+# 不走代理的域名/IP
+no_proxy = [
+    "api.deepseek.com",
+    "open.bigmodel.cn",
+    "*.weixin.qq.com",
+    "qyapi.weixin.qq.com",
+    "localhost",
+    "127.0.0.1",
+]
+
+# 功能开关（仅 mode="auto" 时生效）
+[proxy.rules]
+llm = true               # AI API（DeepSeek/GLM 由 no_proxy 排除）
+web_search = true         # 搜索工具（DDG 国内不可达）
+web_fetch = true          # 网页抓取（国内域名由 no_proxy 排除）
+wechat = false            # 微信通道
+wecom = false             # 企业微信
+telegram = true           # Telegram 通道（国内不可达）
+command = false           # 子进程 HTTP_PROXY 注入

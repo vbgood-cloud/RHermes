@@ -89,10 +89,9 @@ pub struct WeComChannel {
 impl WeComChannel {
     /// 创建新的企业微信通道
     pub fn new(config: &Config) -> Self {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("创建 HTTP 客户端失败");
+        let client = crate::core::http_client::create_proxied_client(
+            &config.proxy, "wecom", Duration::from_secs(15),
+        );
         Self {
             config: Arc::new(config.clone()),
             client,

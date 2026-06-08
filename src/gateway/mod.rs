@@ -157,6 +157,17 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
                 channel_mgr.register(ch);
                 tracing::info!("WeCom 通道已注册");
             }
+            "telegram" if config.channels.telegram.enabled => {
+                match crate::channel::telegram::TelegramChannel::new(&config) {
+                    Ok(ch) => {
+                        channel_mgr.register(Arc::new(ch));
+                        tracing::info!("Telegram 通道已注册");
+                    }
+                    Err(e) => {
+                        tracing::error!("Telegram 通道创建失败: {e}");
+                    }
+                }
+            }
             n => {
                 tracing::warn!("未知或未启用的通道: {}", n);
             }
@@ -334,6 +345,7 @@ fn gateway_status(config_path: &Path) -> Result<(), String> {
         let enabled = match ch.as_str() {
             "wechat" => config.channels.wechat.enabled,
             "wecom" => config.channels.wecom.enabled,
+            "telegram" => config.channels.telegram.enabled,
             _ => false,
         };
         if enabled {
@@ -366,6 +378,17 @@ fn channel_list(config_path: &Path) -> Result<(), String> {
     if config.channels.wecom.enabled {
         println!("    webhook_url: {}", config.channels.wecom.webhook_url);
     }
+    println!();
+    println!("  telegram — Telegram Bot");
+    println!("    启用: {}", if config.channels.telegram.enabled { "✅" } else { "⏹" });
+    if config.channels.telegram.enabled {
+        let token_display = if config.channels.telegram.bot_token.is_empty() {
+            "未配置".into()
+        } else {
+            format!("{}...", &config.channels.telegram.bot_token[..8.min(config.channels.telegram.bot_token.len())])
+        };
+        println!("    bot_token: {}", token_display);
+    }
     Ok(())
 }
 
@@ -376,7 +399,8 @@ fn channel_enable_disable(config_path: &Path, name: &str, enable: bool) -> Resul
     match name {
         "wechat" => config.channels.wechat.enabled = enable,
         "wecom" => config.channels.wecom.enabled = enable,
-        _ => return Err(format!("不支持的通道: {name}，可用: wechat, wecom")),
+        "telegram" => config.channels.telegram.enabled = enable,
+        _ => return Err(format!("不支持的通道: {name}，可用: wechat, wecom, telegram")),
     }
 
     config.save(config_path).map_err(|e| format!("保存配置失败: {e}"))?;

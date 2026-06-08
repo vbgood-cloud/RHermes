@@ -65,6 +65,25 @@ enum Commands {
         #[command(subcommand)]
         command: McpCommand,
     },
+    /// ⚙️ 配置管理
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommand {
+    /// 生成带注释的配置模板
+    Init {
+        /// 输出路径（默认 config.toml）
+        #[arg(default_value = "config.toml")]
+        output: String,
+    },
+    /// ✅ 检查配置完整性
+    Check,
+    /// 💾 保存带完整注释的配置文件
+    Save,
 }
 
 #[derive(Subcommand)]
@@ -245,6 +264,51 @@ async fn main() {
                 }
             }
         }
+        Some(Commands::Config { command }) => {
+            match command {
+                ConfigCommand::Init { output } => {
+                    let path = std::path::Path::new(&output);
+                    if path.exists() {
+                        eprintln!("⚠️  {output} 已存在，跳过生成（避免覆盖已有配置）");
+                        println!("   如需重新生成，请先删除旧文件或指定其他路径：");
+                        println!("   rhermes config init -o config.new.toml");
+                        std::process::exit(1);
+                    }
+                    if let Err(e) = Config::generate_template(path) {
+                        eprintln!("[RHermes] 配置模板生成失败: {e}");
+                        std::process::exit(1);
+                    }
+                    println!("✅ 配置文件已生成: {output}");
+                    println!("   请编辑 config.toml 和 .env 后启动程序");
+                }
+                ConfigCommand::Check => {
+                    let config = Config::load(&config_path).unwrap_or_default();
+                    let mut issues = Vec::new();
+                    if config.api_key.is_empty() && config.providers.values().all(|p| p.api_key.is_empty()) {
+                        issues.push("未配置任何 API Key（在 .env 中设置 DEEPSEEK_API_KEY）");
+                    }
+                    if config.channels.telegram.enabled && config.channels.telegram.bot_token.is_empty() {
+                        issues.push("Telegram 已启用但 bot_token 为空（在 .env 中设置 TELEGRAM_BOT_TOKEN）");
+                    }
+                    if issues.is_empty() {
+                        println!("✅ 配置检查通过");
+                    } else {
+                        println!("⚠️  配置问题：");
+                        for issue in &issues {
+                            println!("   - {issue}");
+                        }
+                    }
+                }
+                ConfigCommand::Save => {
+                    let config = Config::load(&config_path).unwrap_or_default();
+                    if let Err(e) = config.save_annotated(&config_path) {
+                        eprintln!("[RHermes] 保存配置失败: {e}");
+                        std::process::exit(1);
+                    }
+                    println!("✅ 配置已保存（带完整注释）");
+                }
+            }
+        }
         _ => {
             if needs_init {
                 println!("📋 未检测到配置文件，正在启动初始化向导...");
@@ -330,11 +394,10 @@ async fn run_code(resume: bool) {
     };
 
     // 初始化工具系统（含 MCP 远程工具）
-    let registry = builtin_registry();
     let (registry, mcp_report) = if config.mcp.enabled {
         crate::tools::full_registry(&config.mcp).await
     } else {
-        (registry.clone(), crate::tools::McpConnectReport::default())
+        (builtin_registry(&config), crate::tools::McpConnectReport::default())
     };
     let dispatcher = ToolDispatcher::new(registry.clone());
 

@@ -53,10 +53,9 @@ impl DeepSeekTransport {
     /// 从配置创建 Transport
     pub fn new(config: &Config) -> Self {
         let timeout = Duration::from_secs(config.request.timeout_secs);
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .expect("创建 HTTP 客户端失败");
+        let http = crate::core::http_client::create_proxied_client(
+            &config.proxy, "llm", timeout,
+        );
         Self {
             http,
             config: Arc::new(config.clone()),
@@ -100,7 +99,10 @@ impl Transport for DeepSeekTransport {
             .map_err(ApiError::Request)?;
 
         if !response.status().is_success() {
-            return Err(ApiError::HttpStatus(response.status().as_u16()));
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            let _preview: String = body.chars().take(500).collect();
+            return Err(ApiError::HttpStatus(status, _preview));
         }
 
         response.json().await.map_err(ApiError::Parse)
@@ -127,8 +129,10 @@ impl Transport for DeepSeekTransport {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let _ = tx.send(ApiEvent::Error(format!("HTTP {status}")));
-            return Err(ApiError::HttpStatus(status));
+            let body = response.text().await.unwrap_or_default();
+            let _preview: String = body.chars().take(500).collect();
+            let _ = tx.send(ApiEvent::Error(format!("HTTP {status}: {_preview}")));
+            return Err(ApiError::HttpStatus(status, _preview));
         }
 
         // 解析 SSE 流
@@ -210,7 +214,10 @@ impl Transport for DeepSeekTransport {
             .await
             .map_err(ApiError::Request)?;
         if !resp.status().is_success() {
-            return Err(ApiError::HttpStatus(resp.status().as_u16()));
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            let _preview: String = body.chars().take(500).collect();
+            return Err(ApiError::HttpStatus(status, _preview));
         }
         let balance_resp: BalanceResponse = resp.json().await.map_err(ApiError::Parse)?;
         for info in &balance_resp.balance_infos {

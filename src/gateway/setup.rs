@@ -64,6 +64,11 @@ pub fn run_gateway_setup(config_path: &Path) -> Result<(), String> {
         .default(false)
         .interact().map_err(|e| e.to_string())?;
 
+    let enable_telegram = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("启用 Telegram Bot?")
+        .default(false)
+        .interact().map_err(|e| e.to_string())?;
+
     println!();
 
     // ── 步骤 2: 配置各通道参数 ──
@@ -152,6 +157,34 @@ pub fn run_gateway_setup(config_path: &Path) -> Result<(), String> {
         println!();
     }
 
+    // Telegram
+    let mut telegram = crate::core::TelegramConfig::default();
+    if enable_telegram {
+        println!("【步骤 2/3】配置 Telegram Bot 通道参数");
+        println!("  ⚠ Bot Token 请在 .env 文件中设置 TELEGRAM_BOT_TOKEN");
+        println!();
+
+        let allowed_chats_str: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("允许的 chat_id 列表（逗号分隔，留空=全部允许）")
+            .default("".into())
+            .interact_text().map_err(|e| e.to_string())?;
+
+        let poll_timeout: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("Long Polling 超时（秒）")
+            .default("30".into())
+            .interact_text().map_err(|e| e.to_string())?;
+
+        telegram.enabled = true;
+        telegram.allowed_chats = allowed_chats_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        telegram.poll_timeout_secs = poll_timeout.parse().unwrap_or(30);
+
+        println!();
+    }
+
     // ── 步骤 3: Gateway 自身参数 ──
     println!("【步骤 3/3】Gateway 进程参数");
     println!();
@@ -171,13 +204,17 @@ pub fn run_gateway_setup(config_path: &Path) -> Result<(), String> {
     // ── 保存配置 ──
     config.channels.wechat = wechat;
     config.channels.wecom = wecom;
-    config.gateway.pid_file = pid_file;
-    config.gateway.log_file = log_file;
+    config.channels.telegram = telegram;
 
+    // 构建 channels 列表
     let mut channels = Vec::new();
     if enable_wechat { channels.push("wechat".into()); }
     if enable_wecom { channels.push("wecom".into()); }
+    if enable_telegram { channels.push("telegram".into()); }
     config.gateway.channels = channels;
+
+    config.gateway.pid_file = pid_file;
+    config.gateway.log_file = log_file;
 
     config.save(config_path).map_err(|e| format!("保存配置失败: {e}"))?;
 

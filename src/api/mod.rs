@@ -495,7 +495,11 @@ impl DeepSeekClient {
             .map_err(ApiError::Request)?;
 
         if !response.status().is_success() {
-            return Err(ApiError::HttpStatus(response.status().as_u16()));
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap_or_default();
+            let preview: String = body.chars().take(500).collect();
+            tracing::error!("API 返回 HTTP {}: {}", status, preview);
+            return Err(ApiError::HttpStatus(status, preview));
         }
 
         response.json().await.map_err(ApiError::Parse)
@@ -525,8 +529,11 @@ impl DeepSeekClient {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let _ = tx.send(ApiEvent::Error(format!("HTTP {status}")));
-            return Err(ApiError::HttpStatus(status));
+            let body = response.text().await.unwrap_or_default();
+            let preview: String = body.chars().take(500).collect();
+            tracing::error!("API 返回 HTTP {}: {}", status, preview);
+            let _ = tx.send(ApiEvent::Error(format!("HTTP {status}: {preview}")));
+            return Err(ApiError::HttpStatus(status, preview));
         }
 
         // 解析 SSE 流
@@ -664,7 +671,10 @@ impl DeepSeekClient {
             .await
             .map_err(ApiError::Request)?;
         if !resp.status().is_success() {
-            return Err(ApiError::HttpStatus(resp.status().as_u16()));
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            let preview: String = body.chars().take(500).collect();
+            return Err(ApiError::HttpStatus(status, preview));
         }
         let balance_resp: BalanceResponse = resp.json().await.map_err(ApiError::Parse)?;
         // 提取 CNY 余额
@@ -795,8 +805,8 @@ pub(crate) struct StreamToolCallFunction {
 pub enum ApiError {
     /// HTTP 请求失败（网络/超时）
     Request(reqwest::Error),
-    /// HTTP 状态码错误（4xx/5xx）
-    HttpStatus(u16),
+    /// HTTP 状态码错误（4xx/5xx），附带响应体摘要
+    HttpStatus(u16, String),
     /// 响应解析失败
     Parse(reqwest::Error),
     /// 重试耗尽
@@ -810,7 +820,7 @@ impl ApiError {
             // 网络错误可重试
             Self::Request(_) => true,
             // 5xx 可重试，4xx 不可重试
-            Self::HttpStatus(status) => *status >= 500,
+            Self::HttpStatus(status, _) => *status >= 500,
             // 解析错误不可重试
             Self::Parse(_) => false,
             Self::RetryExhausted => false,
@@ -822,7 +832,13 @@ impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Request(e) => write!(f, "网络请求失败: {e}"),
-            Self::HttpStatus(s) => write!(f, "HTTP {s}"),
+            Self::HttpStatus(s, body) => {
+                if body.is_empty() {
+                    write!(f, "HTTP {s}")
+                } else {
+                    write!(f, "HTTP {s}: {body}")
+                }
+            }
             Self::Parse(e) => write!(f, "响应解析失败: {e}"),
             Self::RetryExhausted => write!(f, "重试次数耗尽"),
         }
@@ -892,16 +908,16 @@ mod tests {
     #[test]
     fn test_api_error_is_retryable() {
         // reqwest::Error 无法直接构造，用 HttpStatus 5xx 模拟可重试错误
-        assert!(ApiError::HttpStatus(500).is_retryable());
+        assert!(ApiError::HttpStatus(500, String::new()).is_retryable());
 
-        assert!(ApiError::HttpStatus(500).is_retryable());
-        assert!(ApiError::HttpStatus(502).is_retryable());
-        assert!(ApiError::HttpStatus(503).is_retryable());
+        assert!(ApiError::HttpStatus(500, String::new()).is_retryable());
+        assert!(ApiError::HttpStatus(502, String::new()).is_retryable());
+        assert!(ApiError::HttpStatus(503, String::new()).is_retryable());
 
-        assert!(!ApiError::HttpStatus(400).is_retryable());
-        assert!(!ApiError::HttpStatus(401).is_retryable());
-        assert!(!ApiError::HttpStatus(403).is_retryable());
-        assert!(!ApiError::HttpStatus(429).is_retryable());
+        assert!(!ApiError::HttpStatus(400, String::new()).is_retryable());
+        assert!(!ApiError::HttpStatus(401, String::new()).is_retryable());
+        assert!(!ApiError::HttpStatus(403, String::new()).is_retryable());
+        assert!(!ApiError::HttpStatus(429, String::new()).is_retryable());
 
         assert!(!ApiError::RetryExhausted.is_retryable());
     }

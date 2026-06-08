@@ -71,6 +71,10 @@ pub struct Config {
     #[serde(default)]
     pub channels: ChannelsConfig,
 
+    /// 网络代理配置
+    #[serde(default)]
+    pub proxy: ProxyConfig,
+
     /// Gateway 守护进程配置
     #[serde(default)]
     pub gateway: GatewayConfig,
@@ -83,6 +87,74 @@ pub struct Config {
     pub search: SearchConfig,
 }
 
+// ---------------------------------------------------------------------------
+// 代理配置
+// ---------------------------------------------------------------------------
+
+/// 代理模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyMode {
+    /// 全部走代理（忽略 rules，但 no_proxy 仍生效）
+    All,
+    /// 全部不走代理
+    Off,
+    /// 按 rules 功能开关各自决定
+    Auto,
+}
+
+impl Default for ProxyMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// 网络代理配置
+///
+/// 三种模式：
+/// - `all`：所有 HTTP 请求走代理
+/// - `off`：不使用代理
+/// - `auto`：按 `[proxy.rules]` 功能开关各自决定
+///
+/// `no_proxy` 列表排除不需要代理的域名/IP，reqwest 原生支持。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProxyConfig {
+    #[serde(default)]
+    pub mode: ProxyMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub no_proxy: Vec<String>,
+    /// 功能开关（仅 mode="auto" 时生效）
+    /// key = 功能名（llm/web_search/web_fetch/wechat/wecom/telegram/command）
+    #[serde(default)]
+    pub rules: HashMap<String, bool>,
+}
+
+impl ProxyConfig {
+    /// 判断指定功能是否需要走代理
+    pub fn need_proxy(&self, feature: &str) -> bool {
+        match self.mode {
+            ProxyMode::All => self.url.is_some(),
+            ProxyMode::Off => false,
+            ProxyMode::Auto => {
+                self.rules.get(feature).copied().unwrap_or(false) && self.url.is_some()
+            }
+        }
+    }
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            mode: ProxyMode::Auto,
+            url: None,
+            no_proxy: Vec::new(),
+            rules: HashMap::new(),
+        }
+    }
+}
+
 /// 消息通道配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelsConfig {
@@ -92,6 +164,9 @@ pub struct ChannelsConfig {
     /// 微信个号 iLink Bot 通道配置
     #[serde(default)]
     pub wechat: WeChatConfig,
+    /// Telegram Bot 通道配置
+    #[serde(default)]
+    pub telegram: TelegramConfig,
 }
 
 impl Default for ChannelsConfig {
@@ -99,6 +174,7 @@ impl Default for ChannelsConfig {
         Self {
             wecom: WeComConfig::default(),
             wechat: WeChatConfig::default(),
+            telegram: TelegramConfig::default(),
         }
     }
 }
@@ -179,6 +255,36 @@ impl Default for WeChatConfig {
             proxy: None,
             poll_interval_secs: default_wechat_poll_interval(),
             token_path: String::new(),
+        }
+    }
+}
+
+/// Telegram Bot 通道配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelegramConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// Bot Token（优先从 .env 的 TELEGRAM_BOT_TOKEN 读取）
+    #[serde(default, skip)]
+    pub bot_token: String,
+    /// 允许的 chat_id 列表（空=全部允许）
+    #[serde(default)]
+    pub allowed_chats: Vec<String>,
+    /// Long Polling 超时（秒）
+    #[serde(default = "default_telegram_poll_timeout")]
+    pub poll_timeout_secs: u32,
+}
+
+fn default_telegram_poll_timeout() -> u32 { 30 }
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: String::new(),
+            allowed_chats: Vec::new(),
+            poll_timeout_secs: default_telegram_poll_timeout(),
         }
     }
 }
@@ -556,6 +662,7 @@ impl Default for Config {
             gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
             search: SearchConfig::default(),
+            proxy: ProxyConfig::default(),
         }
     }
 }
@@ -615,6 +722,10 @@ impl Config {
                     if key == "SEARCH_PROXY" {
                         cfg.search.proxy = Some(value.clone());
                     }
+                    // TELEGRAM_BOT_TOKEN → channels.telegram.bot_token
+                    if key == "TELEGRAM_BOT_TOKEN" {
+                        cfg.channels.telegram.bot_token = value.clone();
+                    }
                 }
             }
         }
@@ -633,6 +744,16 @@ impl Config {
         } else if cfg.providers.is_empty() {
             // 默认初始化 deepseek
             cfg.providers.insert("deepseek".into(), ProviderConfig::default());
+        }
+
+        // 3c. 向后兼容：迁移 channels.wechat.proxy → proxy
+        if let Some(ref wechat_proxy) = cfg.channels.wechat.proxy {
+            if !wechat_proxy.is_empty() {
+                if cfg.proxy.url.is_none() {
+                    cfg.proxy.url = Some(wechat_proxy.clone());
+                }
+                cfg.proxy.rules.insert("wechat".to_string(), true);
+            }
         }
 
         // 4. 环境变量覆盖 base_url（优先级：环境变量 > config.toml > 默认值）
@@ -659,10 +780,18 @@ impl Config {
         Ok(cfg)
     }
 
-    /// 保存非敏感配置到 `config.toml`（不会写入 API Key）
+    // 保存非敏感配置到 `config.toml`（不会写入 API Key）
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), ConfigError> {
         let content = toml::to_string_pretty(self).map_err(ConfigError::Serialize)?;
         std::fs::write(path.as_ref(), content).map_err(ConfigError::Io)
+    }
+
+    /// 保存带完整注释的配置文件（保留注释，只替换用户修改过的值）
+    pub fn save_annotated(&self, path: impl AsRef<Path>) -> Result<(), ConfigError> {
+        let template = Self::generate_annotated_template();
+        let compact = toml::to_string_pretty(self).map_err(ConfigError::Serialize)?;
+        let merged = merge_template_with_config(&template, &compact);
+        std::fs::write(path.as_ref(), merged).map_err(ConfigError::Io)
     }
 
     /// 保存所有 Provider 的 API Key 到 `.env` 文件
@@ -694,6 +823,336 @@ impl Config {
             }
         }
         !self.api_key.is_empty()
+    }
+
+    /// 生成带完整注释的 config.toml 模板
+    pub fn generate_template(path: impl AsRef<Path>) -> Result<(), std::io::Error> {
+        let template = Self::generate_annotated_template();
+        std::fs::write(path, template)
+    }
+
+    /// 生成带完整注释的 config.toml 模板字符串
+    ///
+    /// 所有值来自 Config::default()，注释硬编码为中文。
+    /// 空值字段用注释形式展示（# key = value）。
+    pub fn generate_annotated_template() -> String {
+        let d = Config::default();
+        let mut s = String::new();
+
+        // 文件头
+        s.push_str("# RHermes 配置文件\n");
+        s.push_str("#\n");
+        s.push_str("# 首次使用: rhermes config-init 生成此文件\n");
+        s.push_str("# API Key 等敏感信息请放在同目录的 .env 文件中\n");
+        s.push_str("#\n\n");
+
+        // ── API 配置 ──
+        s.push_str("# ── API 配置（向后兼容，等价于 [providers.deepseek]）──\n");
+        s.push_str("[api]\n");
+        s.push_str(&format!("# 模型名称\nmodel = {:?}\n", d.api.model));
+        s.push_str(&format!("# API 基础 URL（DeepSeek: https://api.deepseek.com, 智谱: https://open.bigmodel.cn/api/paas/v4, OpenAI: https://api.openai.com/v1）\nbase_url = {:?}\n\n", d.api.base_url));
+
+        // ── 多 Provider 配置 ──
+        s.push_str("# ── 多 Provider 配置 ──\n");
+        s.push_str("# 每个 Provider 对应一个 AI 服务商，格式: [providers.{name}]\n");
+        s.push_str("# API Key 从 .env 读取: {NAME}_API_KEY=xxx\n");
+        s.push_str("# 支持的 provider: deepseek, openai, zhipu, siliconflow, moonshot, ollama 等\n");
+        s.push_str("[providers.deepseek]\n");
+        s.push_str("# API 协议类型: openai（默认）/ anthropic / gemini / ollama\n");
+        s.push_str(&format!("api_type = {:?}\n", d.providers.get("deepseek").map(|p| &p.api_type).unwrap_or(&default_api_type())));
+        s.push_str("# 可选覆盖 base_url 和 model:\n");
+        s.push_str("# base_url = \"https://api.deepseek.com\"\n");
+        s.push_str("# model = \"deepseek-v4-flash\"\n\n");
+
+        s.push_str("# 示例：更多 Provider 配置（取消注释启用）\n");
+        s.push_str("# [providers.zhipu]\n");
+        s.push_str("# api_type = \"openai\"\n");
+        s.push_str("# base_url = \"https://open.bigmodel.cn/api/paas/v4\"\n");
+        s.push_str("# model = \"glm-5.1\"\n\n");
+        s.push_str("# [providers.openai]\n");
+        s.push_str("# api_type = \"openai\"\n");
+        s.push_str("# base_url = \"https://api.openai.com/v1\"\n");
+        s.push_str("# model = \"gpt-4o\"\n\n");
+
+        // ── 请求配置 ──
+        s.push_str("# ── 请求配置 ──\n");
+        s.push_str("[request]\n");
+        s.push_str("# API 请求超时（秒）\n");
+        s.push_str(&format!("timeout_secs = {}\n", d.request.timeout_secs));
+        s.push_str("# 请求失败最大重试次数\n");
+        s.push_str(&format!("max_retries = {}\n\n", d.request.max_retries));
+
+        // ── 记忆配置 ──
+        s.push_str("# ── 记忆与笔记配置 ──\n");
+        s.push_str("[memory]\n");
+        s.push_str("# MEMORY.md 最大字符数（超出后自动删除旧条目）\n");
+        s.push_str(&format!("max_memory_md_chars = {}\n", d.memory.max_memory_md_chars));
+        s.push_str("# USER.md 最大字符数\n");
+        s.push_str(&format!("max_user_md_chars = {}\n", d.memory.max_user_md_chars));
+        s.push_str("# 是否启用用户画像文件（USER.md）\n");
+        s.push_str(&format!("user_profile_enabled = {}\n\n", d.memory.user_profile_enabled));
+
+        // ── 调试配置 ──
+        s.push_str("# ── 调试配置 ──\n");
+        s.push_str("[debug]\n");
+        s.push_str("# 是否启用调试追踪\n");
+        s.push_str(&format!("enabled = {}\n", d.debug.enabled));
+        s.push_str("# 调试环缓冲区大小（条数）\n");
+        s.push_str(&format!("buffer_size = {}\n\n", d.debug.buffer_size));
+
+        // ── 显示配置 ──
+        s.push_str("# ── 显示与截断配置 ──\n");
+        s.push_str("[display]\n");
+        s.push_str("# 工具返回结果最大字符数（超出后截断）\n");
+        s.push_str(&format!("tool_result_max_chars = {}\n", d.display.tool_result_max_chars));
+        s.push_str("# read_pdf 预览最大字符数\n");
+        s.push_str(&format!("read_pdf_max_chars = {}\n\n", d.display.read_pdf_max_chars));
+
+        // ── Agent 配置 ──
+        s.push_str("# ── Agent 行为配置 ──\n");
+        s.push_str("[agent]\n");
+        s.push_str("# Agent Loop 最大轮次（工具调用次数上限）\n");
+        s.push_str(&format!("max_rounds = {}\n", d.agent.max_rounds));
+        s.push_str("# 上下文压缩阈值比例（0.0~1.0，达到后触发压缩）\n");
+        s.push_str(&format!("compression_ratio = {}\n", d.agent.compression_ratio));
+        s.push_str("# 自动技能提炼间隔（工具调用次数，0=禁用）\n");
+        s.push_str(&format!("creation_nudge_interval = {}\n", d.agent.creation_nudge_interval));
+        s.push_str("# 自动记忆提炼间隔（对话轮次，0=禁用）\n");
+        s.push_str(&format!("memory_nudge_interval = {}\n", d.agent.memory_nudge_interval));
+        s.push_str("# 默认 Provider 名称（如 \"deepseek\" / \"zhipu\"，空则根据模型名自动推断）\n");
+        if d.agent.default_provider.is_empty() {
+            s.push_str("# default_provider = \"\"\n");
+        } else {
+            s.push_str(&format!("default_provider = {:?}\n", d.agent.default_provider));
+        }
+        s.push_str("# 安全工作目录（Agent 文件操作限制在此目录下，空=不限制）\n");
+        if d.agent.workspace.is_empty() {
+            s.push_str("# workspace = \"\"\n\n");
+        } else {
+            s.push_str(&format!("workspace = {:?}\n\n", d.agent.workspace));
+        }
+
+        // ── Provider Pool ──
+        s.push_str("# ── Provider Pool 配置（熔断器）──\n");
+        s.push_str("[provider_pool]\n");
+        s.push_str("# 熔断器阈值：连续失败 N 次后断开该 Provider\n");
+        s.push_str(&format!("circuit_breaker_threshold = {}\n", d.provider_pool.circuit_breaker_threshold));
+        s.push_str("# 熔断器冷却时间（秒）\n");
+        s.push_str(&format!("circuit_breaker_cooldown_secs = {}\n\n", d.provider_pool.circuit_breaker_cooldown_secs));
+
+        // ── 通道配置 ──
+        s.push_str("# ── 消息通道配置 ──\n\n");
+
+        // wecom
+        s.push_str("# 企业微信 Bot 通道\n[channels.wecom]\n");
+        s.push_str(&format!("enabled = {}\n", d.channels.wecom.enabled));
+        s.push_str("# Webhook URL（发送消息用）\n# webhook_url = \"\"\n");
+        s.push_str("# 企业 ID（接收消息用）\n# corp_id = \"\"\n");
+        s.push_str("# 应用 Agent ID（接收消息用）\n# agent_id = \"\"\n");
+        s.push_str("# Webhook 关键词\n# webhook_key = \"\"\n");
+        s.push_str("# 允许的发送者列表（空=全部允许）\n# allow_from = []\n");
+        s.push_str(&format!("poll_interval_secs = {}\n\n", d.channels.wecom.poll_interval_secs));
+
+        // wechat
+        s.push_str("# 微信个号 iLink Bot 通道\n[channels.wechat]\n");
+        s.push_str(&format!("enabled = {}\n", d.channels.wechat.enabled));
+        s.push_str("# 代理地址（可选，支持 http:// 和 socks5://）\n# proxy = \"socks5://127.0.0.1:1080\"\n");
+        s.push_str(&format!("poll_interval_secs = {}\n", d.channels.wechat.poll_interval_secs));
+        s.push_str("# Token 刷新后自动保存路径\n# token_path = \"\"\n\n");
+
+        // telegram
+        s.push_str("# Telegram Bot 通道\n[channels.telegram]\n");
+        s.push_str(&format!("enabled = {}\n", d.channels.telegram.enabled));
+        s.push_str("# Bot Token 请在 .env 中设置 TELEGRAM_BOT_TOKEN\n");
+        s.push_str("# allowed_chats = []\n");
+        s.push_str(&format!("poll_timeout_secs = {}\n\n", d.channels.telegram.poll_timeout_secs));
+
+        // ── 代理 ──
+        s.push_str("# ── 网络代理 ──\n[proxy]\n");
+        s.push_str("# 代理模式: \"all\"（全部走代理）/ \"off\"（不走代理）/ \"auto\"（按 rules 决定）\n");
+        let mode_str = match d.proxy.mode {
+            crate::core::ProxyMode::All => "all",
+            crate::core::ProxyMode::Off => "off",
+            crate::core::ProxyMode::Auto => "auto",
+        };
+        s.push_str(&format!("mode = {:?}\n", mode_str));
+        s.push_str("# 代理 URL（支持 http:// 和 socks5://），取消注释启用\n");
+        s.push_str("# url = \"socks5://127.0.0.1:1080\"\n");
+        s.push_str("# 不走代理的域名/IP（支持 *. 通配符，推荐配置：）\n");
+        s.push_str("# no_proxy = [\n");
+        s.push_str("#     \"api.deepseek.com\",\n");
+        s.push_str("#     \"open.bigmodel.cn\",\n");
+        s.push_str("#     \"*.weixin.qq.com\",\n");
+        s.push_str("#     \"qyapi.weixin.qq.com\",\n");
+        s.push_str("#     \"localhost\",\n");
+        s.push_str("#     \"127.0.0.1\",\n");
+        s.push_str("# ]\n\n");
+
+        // proxy.rules
+        s.push_str("# 功能开关（仅 mode=\"auto\" 时生效）\n[proxy.rules]\n");
+        let default_rules = ["llm", "web_search", "web_fetch", "wechat", "wecom", "telegram", "command"];
+        let default_values = [true, true, true, false, false, true, false];
+        let rule_comments = [
+            "# AI API 请求（DeepSeek/GLM 由 no_proxy 排除）",
+            "# 搜索工具（DDG/Serper，国内不可达）",
+            "# 网页抓取（国内域名由 no_proxy 排除）",
+            "# 微信通道",
+            "# 企业微信",
+            "# Telegram 通道（国内不可达）",
+            "# 子进程 HTTP_PROXY 环境变量注入",
+        ];
+        for (i, name) in default_rules.iter().enumerate() {
+            s.push_str(&format!("{} = {}   {}\n", name, default_values[i], rule_comments[i]));
+        }
+        s.push('\n');
+
+        // ── Gateway ──
+        s.push_str("# ── Gateway 守护进程配置 ──\n[gateway]\n");
+        s.push_str("# 是否启用 gateway 模式\n");
+        s.push_str(&format!("enabled = {}\n", d.gateway.enabled));
+        s.push_str("# 启动时自动启用的通道列表\n");
+        let channels_str: Vec<String> = d.gateway.channels.iter().map(|c| format!("\"{}\"", c)).collect();
+        s.push_str(&format!("channels = [{}]\n", channels_str.join(", ")));
+        s.push_str(&format!("# PID 文件路径\npid_file = {:?}\n", d.gateway.pid_file));
+        s.push_str(&format!("# 日志文件路径\nlog_file = {:?}\n\n", d.gateway.log_file));
+
+        // ── MCP ──
+        s.push_str("# ── MCP 客户端配置 ──\n[mcp]\n");
+        s.push_str(&format!("enabled = {}\n", d.mcp.enabled));
+        s.push_str("# Sampling 能力（允许 MCP Server 通过 Agent 发起 LLM 请求，默认关闭）\n");
+        s.push_str(&format!("sampling_enabled = {}\n", d.mcp.sampling_enabled));
+        s.push_str("# Sampling 请求的 max_tokens 上限\n");
+        s.push_str(&format!("sampling_max_tokens = {}\n\n", d.mcp.sampling_max_tokens));
+
+        s.push_str("# MCP Server 示例配置（取消注释启用）：\n");
+        s.push_str("# [mcp.servers.fs]\n");
+        s.push_str("# command = \"npx\"\n");
+        s.push_str("# args = [\"-y\", \"@anthropic/mcp-server-filesystem\", \"/path/to/dir\"]\n\n");
+
+        // ── 搜索 ──
+        s.push_str("# ── 搜索引擎配置 ──\n[search]\n");
+        s.push_str("# Serper API Key 请在 .env 中设置 SERPER_API_KEY\n");
+        s.push_str(&format!("# 搜索超时（秒）\ntimeout_secs = {}\n", d.search.timeout_secs));
+        s.push_str(&format!("# 搜索结果缓存大小（条数）\ncache_size = {}\n", d.search.cache_size));
+        s.push_str(&format!("# 缓存 TTL（秒）\ncache_ttl_secs = {}\n\n", d.search.cache_ttl_secs));
+
+        s
+    }
+}
+
+/// 将用户配置的值合并到带注释的模板中
+///
+/// 逐行扫描模板，对每个 `key = value` 或 `# key = ` 行，
+/// 在 compact_toml 中查找对应 key，找到且值不同则取消注释并替换。
+fn merge_template_with_config(template: &str, compact_toml: &str) -> String {
+    // 解析紧凑 TOML 为层级 map
+    let compact_value: toml::Value = match toml::from_str(compact_toml) {
+        Ok(v) => v,
+        Err(_) => return template.to_string(), // fallback
+    };
+
+    let mut result = String::new();
+    let mut current_section: Vec<String> = Vec::new();
+    let mut in_commented_section = false;
+
+    for line in template.lines() {
+        let trimmed = line.trim();
+        let leading = &line[..line.len() - line.trim_start().len()];
+
+        // 检测 commented section 行 (如 # [providers.zhipu])
+        if trimmed.starts_with("# [") && trimmed.ends_with(']') {
+            in_commented_section = true;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        // 检测 active section 行
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let section_name = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
+            current_section = section_name.split('.').map(|s| s.trim().to_string()).collect();
+            in_commented_section = false;
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        // 在注释示例 section 内，保持原样
+        if in_commented_section {
+            result.push_str(line);
+            result.push('\n');
+            continue;
+        }
+
+        // 检测 key = value 或 # key = value 行
+        let is_commented = trimmed.starts_with("# ");
+        let content = if is_commented { &trimmed[2..] } else { trimmed };
+
+        if let Some(eq_pos) = content.find('=') {
+            let key = content[..eq_pos].trim();
+
+            // 跳过非配置行
+            if key.starts_with('[') || key.starts_with('#') || key.starts_with("//") || key.starts_with('─') {
+                result.push_str(line);
+                result.push('\n');
+                continue;
+            }
+
+            // 在 compact_toml 中查找该 key
+            let compact_val = find_value_in_toml(&compact_value, &current_section, key);
+
+            if let Some(val_str) = compact_val {
+                // 取消注释并替换值
+                let new_line = format!("{}{} = {}", leading, key, val_str);
+                result.push_str(&new_line);
+                result.push('\n');
+            } else {
+                // 值相同或未找到，保持原样
+                result.push_str(line);
+                result.push('\n');
+            }
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+
+    result
+}
+
+/// 在 TOML Value 中按 section 路径查找 key 的值，返回值的字符串表示
+fn find_value_in_toml(value: &toml::Value, section: &[String], key: &str) -> Option<String> {
+    let mut current = value;
+
+    // 遍历 section 路径
+    for seg in section {
+        match current {
+            toml::Value::Table(table) => {
+                current = table.get(seg)?;
+            }
+            _ => return None,
+        }
+    }
+
+    // 在最终 table 中查找 key
+    match current {
+        toml::Value::Table(table) => {
+            let val = table.get(key)?;
+            // 用 toml 格式输出值
+            Some(toml::to_string(&toml::Value::Table({
+                let mut m = toml::map::Map::new();
+                m.insert(key.to_string(), val.clone());
+                m
+            }))
+            .ok()?
+            .lines()
+            .next()?
+            .splitn(2, '=')
+            .nth(1)?
+            .trim()
+            .to_string())
+        }
+        _ => None,
     }
 }
 
@@ -895,6 +1354,7 @@ mod tests {
             gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
             search: SearchConfig::default(),
+            proxy: ProxyConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();
@@ -908,5 +1368,51 @@ mod tests {
         assert!(restored.providers.get("deepseek").map(|p| p.api_key.as_str()).unwrap_or("").is_empty());
         assert_eq!(restored.api.model, "deepseek-v4-flash");
         assert_eq!(restored.api.base_url, "https://custom.api.com");
+    }
+
+    #[test]
+    fn test_generate_annotated_template_contains_all_sections() {
+        let template = Config::generate_annotated_template();
+        let sections = ["[api]", "[request]", "[memory]", "[debug]", "[display]", "[agent]",
+                        "[provider_pool]", "[channels.wecom]", "[channels.wechat]", "[channels.telegram]",
+                        "[proxy]", "[proxy.rules]", "[gateway]", "[mcp]", "[search]"];
+        for section in &sections {
+            assert!(template.contains(section), "模板应包含 section: {section}");
+        }
+    }
+
+    #[test]
+    fn test_generate_annotated_template_has_comments() {
+        let template = Config::generate_annotated_template();
+        let comment_count = template.lines().filter(|l| l.trim().starts_with('#')).count();
+        assert!(comment_count >= 30, "模板应有至少 30 个注释行，实际有 {comment_count}");
+    }
+
+    #[test]
+    fn test_save_annotated_preserves_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toml_path = tmp.path().join("config.toml");
+
+        let cfg = Config {
+            request: RequestConfig {
+                timeout_secs: 120,
+                max_retries: 5,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        cfg.save_annotated(&toml_path).unwrap();
+
+        // 验证保存后的文件包含注释
+        let content = std::fs::read_to_string(&toml_path).unwrap();
+        assert!(content.contains("timeout_secs = 120"));
+        assert!(content.contains("#"));
+        assert!(content.contains("[request]"));
+
+        // 重新加载，验证值不变
+        let loaded = Config::load(&toml_path).unwrap();
+        assert_eq!(loaded.request.timeout_secs, 120);
+        assert_eq!(loaded.request.max_retries, 5);
     }
 }

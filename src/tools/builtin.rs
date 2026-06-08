@@ -496,7 +496,15 @@ impl Tool for WriteFile {
 // run_command — 非并行安全（副作用）
 // ---------------------------------------------------------------------------
 
-pub struct RunCommand;
+pub struct RunCommand {
+    proxy_url: Option<String>,
+}
+
+impl RunCommand {
+    pub fn new(proxy_url: Option<String>) -> Self {
+        Self { proxy_url }
+    }
+}
 
 #[async_trait]
 impl Tool for RunCommand {
@@ -547,6 +555,18 @@ impl Tool for RunCommand {
         cmd.arg(flag).arg(&command);
         // 重要：必须断开 stdin，否则子进程会抢走 TUI 的键盘输入
         cmd.stdin(std::process::Stdio::null());
+
+        // 注入代理环境变量（如果配置了 command 代理）
+        if let Some(ref proxy) = self.proxy_url {
+            cmd.env("HTTP_PROXY", proxy);
+            cmd.env("HTTPS_PROXY", proxy);
+            cmd.env("ALL_PROXY", proxy);
+            if let Some(cfg) = GLOBAL_CONFIG.get() {
+                if !cfg.proxy.no_proxy.is_empty() {
+                    cmd.env("NO_PROXY", cfg.proxy.no_proxy.join(","));
+                }
+            }
+        }
 
         // 可选的工作目录
         if let Some(cwd) = get_optional_string(&args, "cwd") {
@@ -690,7 +710,15 @@ impl Tool for WebSearch {
 /// 获取网页内容
 ///
 /// 下载指定 URL 的内容并提取可读文本。
-pub struct WebFetch;
+pub struct WebFetch {
+    http: reqwest::Client,
+}
+
+impl WebFetch {
+    pub fn new(http: reqwest::Client) -> Self {
+        Self { http }
+    }
+}
 
 #[async_trait]
 impl Tool for WebFetch {
@@ -751,7 +779,7 @@ impl Tool for WebFetch {
             .and_then(|v| v.as_u64())
             .unwrap_or(5000) as usize;
 
-        let resp = get_http_client()
+        let resp = self.http
             .get(&url)
             .send()
             .await
@@ -1474,34 +1502,13 @@ pub fn get_global_config() -> Option<crate::core::Config> {
 /// 全局配置（子 Agent 工具使用）
 static GLOBAL_CONFIG: OnceLock<crate::core::Config> = OnceLock::new();
 
-/// 全局 HTTP Client（WebFetch 使用，复用连接池）
-static GLOBAL_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-fn get_http_client() -> &'static reqwest::Client {
-    GLOBAL_HTTP_CLIENT.get_or_init(|| {
-        let proxy = GLOBAL_CONFIG.get().and_then(|c| c.search.proxy.as_deref());
-        let mut builder = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-            .timeout(std::time::Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::limited(10));
-        if let Some(proxy_url) = proxy {
-            if let Ok(p) = reqwest::Proxy::all(proxy_url) {
-                builder = builder.proxy(p);
-            } else {
-                tracing::warn!("get_http_client: 代理配置无效: {}", proxy_url);
-            }
-        }
-        builder.build().unwrap_or_default()
-    })
-}
-
-/// 全局 Transport（Provider Pool）
-static GLOBAL_TRANSPORT: OnceLock<Arc<dyn crate::provider::Transport>> = OnceLock::new();
-
 /// 设置全局配置（在 main.rs 中调用）
 pub fn set_global_config(config: crate::core::Config) {
     let _ = GLOBAL_CONFIG.set(config);
 }
+
+/// 全局 Transport（Provider Pool）
+static GLOBAL_TRANSPORT: OnceLock<Arc<dyn crate::provider::Transport>> = OnceLock::new();
 
 /// 设置全局 Transport
 pub fn set_global_transport(transport: Arc<dyn crate::provider::Transport>) -> bool {
@@ -1517,13 +1524,22 @@ use crate::tools::ToolRegistry;
 use crate::api::ToolDef;
 
 /// 创建包含所有内置工具的注册表
-pub fn builtin_registry() -> ToolRegistry {
+pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
+    let fetch_client = crate::core::http_client::create_proxied_client(
+        &config.proxy, "web_fetch", std::time::Duration::from_secs(30),
+    );
+    let command_proxy = if config.proxy.need_proxy("command") {
+        config.proxy.url.clone()
+    } else {
+        None
+    };
+
     ToolRegistry::new()
         .register(ReadFile)
         .register(SearchContent)
         .register(Glob)
         .register(WriteFile)
-        .register(RunCommand)
+        .register(RunCommand::new(command_proxy))
         .register(GetCurrentTime)
         .register(RunSkill)
         .register(SkillList)
@@ -1531,7 +1547,7 @@ pub fn builtin_registry() -> ToolRegistry {
         .register(SkillCreate)
         .register(SkillPatch)
         .register(WebSearch)
-        .register(WebFetch)
+        .register(WebFetch::new(fetch_client))
         .register(DelegateTask)
         .register(ReadPdf)
         .register(SkillManage)
@@ -1571,7 +1587,8 @@ pub struct McpConnectReport {
 ///
 /// 返回 (registry, report)，report 包含各 MCP Server 的连接结果。
 pub async fn full_registry(mcp_config: &crate::core::McpConfig) -> (ToolRegistry, McpConnectReport) {
-    let mut registry = builtin_registry();
+    let config = GLOBAL_CONFIG.get().cloned().unwrap_or_default();
+    let mut registry = builtin_registry(&config);
     let mut report = McpConnectReport {
         connected_servers: Vec::new(),
         failed_servers: Vec::new(),
@@ -1696,7 +1713,7 @@ mod tests {
 
     #[test]
     fn test_run_command_not_parallel_safe() {
-        let tool = RunCommand;
+        let tool = RunCommand::new(None);
         assert!(!tool.parallel_safe());
     }
 
@@ -1708,7 +1725,7 @@ mod tests {
 
     #[test]
     fn test_builtin_registry() {
-        let reg = builtin_registry();
+        let reg = builtin_registry(&crate::core::Config::default());
         assert_eq!(reg.len(), 17);
         assert!(reg.get("read_pdf").is_some());
         assert!(reg.get("skill_manage").is_some());
@@ -1731,7 +1748,7 @@ mod tests {
 
     #[test]
     fn test_parallel_safe_classification() {
-        let reg = builtin_registry();
+        let reg = builtin_registry(&crate::core::Config::default());
         let safe = reg.parallel_safe_names();
         assert!(safe.iter().any(|s| s == "read_file"));
         assert!(safe.iter().any(|s| s == "search_content"));

@@ -1,6 +1,6 @@
 [package]
 name = "rhermes"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]
@@ -14,7 +14,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "socks", "multipart"] }
 serde_json = "1"
 unicode-width = "0.2"
 futures-util = "0.3"

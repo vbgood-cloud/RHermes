@@ -14,6 +14,7 @@ pub use types::InboundMessage;
 
 pub mod wechat;
 pub mod wecom;
+pub mod telegram;
 
 use std::sync::Arc;
 

@@ -182,23 +182,9 @@ pub struct WeChatChannel {
 impl WeChatChannel {
     /// 创建新的微信个号通道
     pub fn new(config: &Config) -> Self {
-        let wechat = &config.channels.wechat;
-
-        let mut client_builder = Client::builder()
-            .timeout(Duration::from_secs(15));
-
-        // 配置代理
-        if let Some(ref proxy_url) = wechat.proxy {
-            if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
-                client_builder = client_builder.proxy(proxy);
-            } else {
-                tracing::warn!("WeChat: 代理地址无效: {}", proxy_url);
-            }
-        }
-
-        let client = client_builder
-            .build()
-            .expect("创建 HTTP 客户端失败");
+        let client = crate::core::http_client::create_proxied_client(
+            &config.proxy, "wechat", Duration::from_secs(15),
+        );
 
         Self {
             config: Arc::new(config.clone()),

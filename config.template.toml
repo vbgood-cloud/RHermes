@@ -1,0 +1,165 @@
+# RHermes 配置文件
+#
+# 首次使用：运行 `rhermes config init` 生成此文件
+# API Key 等敏感信息请放入同目录的 .env 文件
+
+# ── API 配置（向后兼容，等价于 providers.deepseek）──
+[api]
+# 模型名称
+model = "deepseek-v4-flash"
+# API 基础 URL（DeepSeek: https://api.deepseek.com, 智谱: https://open.bigmodel.cn/api/paas/v4 等）
+base_url = "https://api.deepseek.com"
+
+# ── 多 Provider 配置 ──
+[providers.deepseek]
+# API 类型: openai（默认）、anthropic、gemini、ollama
+api_type = "openai"
+# 可选：覆盖 api.base_url
+# base_url = "https://api.deepseek.com"
+# 可选：覆盖 api.model
+# model = "deepseek-v4-flash"
+
+# ── 请求配置 ──
+[request]
+# 请求超时（秒）
+timeout_secs = 60
+# 最大重试次数
+max_retries = 3
+
+# ── 记忆与笔记配置 ──
+[memory]
+# MEMORY.md 最大字符数
+max_memory_md_chars = 2200
+# USER.md 最大字符数
+max_user_md_chars = 1375
+# 是否启用用户画像文件
+user_profile_enabled = true
+
+# ── 调试配置 ──
+[debug]
+# 是否启用调试追踪
+enabled = false
+# 调试缓冲大小
+buffer_size = 500
+
+# ── 显示与截断配置 ──
+[display]
+# 工具结果最大字符数
+tool_result_max_chars = 15000
+# read_pdf 预览最大字符数
+read_pdf_max_chars = 30000
+
+# ── Agent 行为配置 ──
+[agent]
+# 最大工具调用轮次
+max_rounds = 50
+# 上下文压缩阈值（0.0~1.0）
+compression_ratio = 0.8
+# 自动技能提炼间隔（工具调用次数，0=禁用）
+creation_nudge_interval = 15
+# 自动记忆提炼间隔（对话轮次，0=禁用）
+memory_nudge_interval = 10
+# 默认 Provider 名称（如 "deepseek"、"openai"），空则自动推断
+default_provider = ""
+# 安全工作目录（Agent 文件操作限制在此目录下，空=不限制）
+workspace = ""
+
+# ── Provider Pool 配置（熔断器）──
+[provider_pool]
+# 熔断器阈值：连续失败 N 次后断开
+circuit_breaker_threshold = 3
+# 熔断器冷却时间（秒）
+circuit_breaker_cooldown_secs = 30
+
+# ── 消息通道配置 ──
+[channels.wecom]
+# 是否启用企业微信 Bot
+enabled = false
+# Webhook URL（发送消息用）
+webhook_url = ""
+# 企业 ID（接收消息用）
+corp_id = ""
+# 应用 Agent ID（接收消息用）
+agent_id = ""
+# Webhook 关键词
+webhook_key = ""
+# 允许的发送者列表（空=全部允许）
+allow_from = []
+# 消息轮询间隔（秒）
+poll_interval_secs = 5
+
+[channels.wechat]
+# 是否启用微信 iLink Bot
+enabled = false
+# 轮询间隔（秒）
+poll_interval_secs = 2
+# Token 刷新后自动保存的路径
+token_path = ""
+
+[channels.telegram]
+# 是否启用 Telegram Bot
+enabled = false
+# 允许的 chat_id 列表（空=全部允许）
+allowed_chats = []
+# Long Polling 超时（秒）
+poll_timeout_secs = 30
+# Bot Token 请在 .env 中设置 TELEGRAM_BOT_TOKEN
+
+# ── 网络代理 ──
+[proxy]
+# 代理模式: "all"（全部走代理）/ "off"（不走代理）/ "auto"（按 rules 决定）
+mode = "auto"
+# 代理 URL（支持 http:// 和 socks5://），取消注释启用
+# url = "socks5://127.0.0.1:1080"
+# 不走代理的域名/IP（支持 *. 通配符）
+no_proxy = [
+    "api.deepseek.com",
+    "open.bigmodel.cn",
+    "*.weixin.qq.com",
+    "qyapi.weixin.qq.com",
+    "localhost",
+    "127.0.0.1",
+]
+
+[proxy.rules]
+# AI API（DeepSeek/GLM 由 no_proxy 排除）
+llm = true
+# 搜索工具（DDG 国内不可达）
+web_search = true
+# 网页抓取（国内域名由 no_proxy 排除）
+web_fetch = true
+# 微信通道
+wechat = false
+# 企业微信
+wecom = false
+# Telegram 通道（国内不可达）
+telegram = true
+# 子进程 HTTP_PROXY 注入
+command = false
+
+# ── Gateway 守护进程配置 ──
+[gateway]
+# 启动时自动启用的通道列表
+channels = ["wechat"]
+# PID 文件路径
+pid_file = "home/gateway.pid"
+# 日志文件路径
+log_file = "home/gateway.log"
+
+# ── MCP 客户端配置 ──
+[mcp]
+# 是否启用 MCP
+enabled = false
+# Sampling（LLM 子决策）默认关闭
+sampling_enabled = false
+# Sampling 请求的 max_tokens 上限
+sampling_max_tokens = 1024
+
+# ── 搜索引擎配置 ──
+[search]
+# 搜索超时（秒）
+timeout_secs = 15
+# 搜索结果缓存大小
+cache_size = 100
+# 缓存 TTL（秒）
+cache_ttl_secs = 600
