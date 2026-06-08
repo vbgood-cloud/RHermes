@@ -4,6 +4,7 @@
 //! API: https://google.serper.dev/search
 
 use async_trait::async_trait;
+use reqwest::Proxy;
 
 use crate::tools::search::{SearchEngine, SearchError, SearchResult};
 
@@ -13,12 +14,17 @@ pub struct SerperEngine {
 }
 
 impl SerperEngine {
-    pub fn new(api_key: String) -> Self {
-        #[allow(unused_mut)]
-        let mut client_builder = reqwest::Client::builder()
+    pub fn new(api_key: String, proxy: Option<&str>) -> Self {
+        let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10));
-        // 注意：如果系统代理有问题，可以添加 .no_proxy()
-        let client = client_builder.build().unwrap_or_default();
+        if let Some(proxy_url) = proxy {
+            if let Ok(p) = Proxy::all(proxy_url) {
+                builder = builder.proxy(p);
+            } else {
+                tracing::warn!("SerperEngine: 代理配置无效: {}", proxy_url);
+            }
+        }
+        let client = builder.build().unwrap_or_default();
         Self { client, api_key }
     }
 }

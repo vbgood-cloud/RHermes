@@ -17,6 +17,7 @@ use crate::tools::{
     get_optional_string, get_string_arg, ParamDef, ParamType, Tool, ToolError,
 };
 use crate::mcp::McpAdapterManager;
+use crate::tools::search::bing::BingEngine;
 use crate::tools::search::duckduckgo::DuckDuckGoEngine;
 use crate::tools::search::{MultiEngineSearcher, SearchCache};
 
@@ -616,11 +617,33 @@ static GLOBAL_SEARCHER: OnceLock<MultiEngineSearcher> = OnceLock::new();
 
 fn get_searcher() -> &'static MultiEngineSearcher {
     GLOBAL_SEARCHER.get_or_init(|| {
-        let engines: Vec<Box<dyn crate::tools::search::SearchEngine>> = vec![
-            Box::new(DuckDuckGoEngine::new()),
-        ];
-        let cache = SearchCache::new(100, std::time::Duration::from_secs(600));
-        MultiEngineSearcher::new(engines, cache, std::time::Duration::from_secs(10))
+        let config = GLOBAL_CONFIG.get().map(|c| &c.search);
+        let proxy = config.and_then(|s| s.proxy.as_deref());
+        let timeout = config.map(|s| std::time::Duration::from_secs(s.timeout_secs))
+            .unwrap_or_else(|| std::time::Duration::from_secs(10));
+        let cache_size = config.map(|s| s.cache_size).unwrap_or(100);
+        let cache_ttl = config.map(|s| std::time::Duration::from_secs(s.cache_ttl_secs))
+            .unwrap_or_else(|| std::time::Duration::from_secs(600));
+
+        let mut engines: Vec<Box<dyn crate::tools::search::SearchEngine>> = Vec::new();
+
+        // Serper（付费，最可靠，有 API Key 时优先）
+        if let Some(api_key) = config.and_then(|s| {
+            if s.serper_api_key.is_empty() { None } else { Some(s.serper_api_key.as_str()) }
+        }) {
+            engines.push(Box::new(crate::tools::search::serper::SerperEngine::new(
+                api_key.to_string(), proxy,
+            )));
+        }
+
+        // DuckDuckGo（免费 HTML 解析）
+        engines.push(Box::new(DuckDuckGoEngine::new(proxy)));
+
+        // Bing（免费 HTML 解析，DDG 降级）
+        engines.push(Box::new(BingEngine::new(proxy)));
+
+        let cache = SearchCache::new(cache_size, cache_ttl);
+        MultiEngineSearcher::new(engines, cache, timeout)
     })
 }
 
@@ -678,7 +701,7 @@ impl Tool for WebFetch {
         "获取网页内容并提取可读文本".into()
     }
     fn parallel_safe(&self) -> bool {
-        false
+        true
     }
     fn parameters(&self) -> Vec<ParamDef> {
         vec![
@@ -688,12 +711,49 @@ impl Tool for WebFetch {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let url = get_string_arg(&args, "url")?;
+
+        // 1. URL scheme 检查：只允许 http/https
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(ToolError::ExecutionFailed(
+                "不支持的 URL 协议，仅支持 http/https".into(),
+            ));
+        }
+
+        // 2. 扩展名预检：拒绝已知的二进制格式
+        let ext = url
+            .split('?')
+            .next()
+            .unwrap_or(&url)
+            .rsplit('.')
+            .next()
+            .map(|e| e.to_lowercase())
+            .filter(|e| {
+                matches!(
+                    e.as_str(),
+                    "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx"
+                        | "zip" | "tar" | "gz" | "rar" | "7z" | "bz2"
+                        | "exe" | "msi" | "dmg" | "iso"
+                        | "mp3" | "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv"
+                        | "ogg" | "wav" | "flac" | "ape"
+                        | "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "ico" | "svg"
+                        | "ttf" | "woff" | "woff2" | "eot"
+                )
+            });
+        if let Some(ext) = ext {
+            return Err(ToolError::ExecutionFailed(format!(
+                "该 URL 指向 .{} 文件，web_fetch 仅支持文本网页。如需处理此文件请使用专门的工具",
+                ext
+            )));
+        }
+
         let max_chars = args
             .get("max_chars")
             .and_then(|v| v.as_u64())
             .unwrap_or(5000) as usize;
 
-        let resp = reqwest::get(&url)
+        let resp = get_http_client()
+            .get(&url)
+            .send()
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("请求失败: {e}")))?;
 
@@ -705,14 +765,47 @@ impl Tool for WebFetch {
             .unwrap_or("")
             .to_string();
 
+        // 3. Content-Type 检查
+        let ct_check = content_type.split(';').next().unwrap_or(&content_type).trim().to_lowercase();
+        if !ct_check.is_empty()
+            && !ct_check.starts_with("text/")
+            && ct_check != "application/json"
+            && ct_check != "application/xml"
+            && ct_check != "application/javascript"
+            && ct_check != "application/xhtml+xml"
+        {
+            if ct_check.starts_with("image/")
+                || ct_check.starts_with("audio/")
+                || ct_check.starts_with("video/")
+                || ct_check == "application/octet-stream"
+            {
+                return Err(ToolError::ExecutionFailed(format!(
+                    "目标文件类型为 {content_type}，web_fetch 仅支持文本网页"
+                )));
+            }
+        }
+
+        // 4. Content-Length 检查（>5MB 拒绝）
+        const MAX_SIZE: u64 = 5 * 1024 * 1024;
+        if let Some(cl) = resp.headers().get("content-length") {
+        if let Some(size) = cl.to_str().ok().and_then(|s| s.parse::<u64>().ok()) {
+                if size > MAX_SIZE {
+                    return Err(ToolError::ExecutionFailed(format!(
+                        "目标文件过大（{} 字节），web_fetch 限制 5MB",
+                        size
+                    )));
+                }
+            }
+        }
+
         let body = resp
             .text()
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("读取响应失败: {e}")))?;
 
-        // 提取可读文本（简单 HTML 标签剥离）
+        // 提取可读文本
         let text = if content_type.contains("text/html") {
-            strip_html_tags(&body)
+            extract_article_text(&body)
         } else {
             body.clone()
         };
@@ -788,6 +881,64 @@ fn strip_html_tags(html: &str) -> String {
     }
 
     result.trim().to_string()
+}
+
+/// 用 scraper 提取网页正文（优先 article/main，移除噪声元素）
+fn extract_article_text(html: &str) -> String {
+    let document = scraper::Html::parse_document(html);
+    let body_sel = scraper::Selector::parse("body").unwrap();
+    let remove_sel = scraper::Selector::parse(
+        "script, style, nav, header, footer, aside, noscript, iframe, form, button",
+    )
+    .unwrap();
+
+    // 优先从 article 或 main 提取
+    let main_sel = scraper::Selector::parse("article, main, [role='main']").unwrap();
+    let root = document
+        .select(&main_sel)
+        .next()
+        .or_else(|| document.select(&body_sel).next());
+
+    let Some(root) = root else {
+        return strip_html_tags(html);
+    };
+
+    // 收集文本
+    let mut parts = Vec::new();
+    collect_text(&root, &remove_sel, &mut parts);
+    let text = parts.join("\n");
+
+    if text.trim().is_empty() {
+        // fallback: 用旧方法
+        return strip_html_tags(html);
+    }
+    text
+}
+
+/// 递归收集文本，跳过需要移除的元素
+fn collect_text(
+    node: &scraper::ElementRef<'_>,
+    remove_sel: &scraper::Selector,
+    parts: &mut Vec<String>,
+) {
+    use scraper::ElementRef;
+
+    for child in node.children() {
+        if let Some(child_ref) = ElementRef::wrap(child) {
+            let tag = child_ref.value().name();
+            if matches!(tag, "script" | "style" | "nav" | "header" | "footer"
+                | "aside" | "noscript" | "iframe" | "form" | "button")
+            {
+                continue;
+            }
+            collect_text(&child_ref, remove_sel, parts);
+        } else if let Some(text) = child.value().as_text() {
+            let text = text.trim();
+            if !text.is_empty() {
+                parts.push(text.to_string());
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,6 +1473,27 @@ pub fn get_global_config() -> Option<crate::core::Config> {
 
 /// 全局配置（子 Agent 工具使用）
 static GLOBAL_CONFIG: OnceLock<crate::core::Config> = OnceLock::new();
+
+/// 全局 HTTP Client（WebFetch 使用，复用连接池）
+static GLOBAL_HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn get_http_client() -> &'static reqwest::Client {
+    GLOBAL_HTTP_CLIENT.get_or_init(|| {
+        let proxy = GLOBAL_CONFIG.get().and_then(|c| c.search.proxy.as_deref());
+        let mut builder = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::limited(10));
+        if let Some(proxy_url) = proxy {
+            if let Ok(p) = reqwest::Proxy::all(proxy_url) {
+                builder = builder.proxy(p);
+            } else {
+                tracing::warn!("get_http_client: 代理配置无效: {}", proxy_url);
+            }
+        }
+        builder.build().unwrap_or_default()
+    })
+}
 
 /// 全局 Transport（Provider Pool）
 static GLOBAL_TRANSPORT: OnceLock<Arc<dyn crate::provider::Transport>> = OnceLock::new();

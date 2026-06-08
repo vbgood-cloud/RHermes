@@ -2,14 +2,15 @@
 //!
 //! 提供 SearchEngine trait + 搜索缓存 + 多引擎降级
 
+pub mod bing;
 pub mod duckduckgo;
 pub mod serper;
 
 use std::num::NonZeroUsize;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // SearchResult — 统一的搜索结果
@@ -53,12 +54,35 @@ pub trait SearchEngine: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// 查询词归一化（缓存 key 使用）
+// ---------------------------------------------------------------------------
+
+fn normalize_query(query: &str) -> String {
+    let mut result = String::with_capacity(query.len());
+    let mut prev_was_space = false;
+    for ch in query.trim().chars() {
+        if ch.is_whitespace() {
+            if !prev_was_space {
+                result.push(' ');
+                prev_was_space = true;
+            }
+        } else {
+            for c in ch.to_lowercase() {
+                result.push(c);
+            }
+            prev_was_space = false;
+        }
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
 // SearchCache — LRU + TTL 缓存
 // ---------------------------------------------------------------------------
 
 struct CacheEntry {
     formatted: String,
-    timestamp: Instant,
+    timestamp: std::time::Instant,
 }
 
 pub struct SearchCache {
@@ -74,38 +98,41 @@ impl SearchCache {
         }
     }
 
-    pub fn get(&self, query: &str) -> Option<String> {
-        let mut cache = self.entries.lock().ok()?;
-        if let Some(entry) = cache.get(&query.to_lowercase()) {
+    pub async fn get(&self, query: &str) -> Option<String> {
+        let key = normalize_query(query);
+        let mut cache = self.entries.lock().await;
+        if let Some(entry) = cache.get(&key) {
             if entry.timestamp.elapsed() < self.ttl {
                 return Some(entry.formatted.clone());
             }
-            cache.pop(&query.to_lowercase());
+            cache.pop(&key);
         }
         None
     }
 
-    pub fn put(&self, query: &str, formatted: String) {
-        if let Ok(mut cache) = self.entries.lock() {
-            cache.put(
-                query.to_lowercase(),
-                CacheEntry {
-                    formatted,
-                    timestamp: Instant::now(),
-                },
-            );
-        }
+    pub async fn put(&self, query: &str, formatted: String) {
+        let key = normalize_query(query);
+        let mut cache = self.entries.lock().await;
+        cache.put(
+            key,
+            CacheEntry {
+                formatted,
+                timestamp: std::time::Instant::now(),
+            },
+        );
     }
 }
 
 // ---------------------------------------------------------------------------
-// MultiEngineSearcher — 多引擎降级
+// MultiEngineSearcher — 多引擎降级 + 重试 + 速率限制
 // ---------------------------------------------------------------------------
 
 pub struct MultiEngineSearcher {
     engines: Vec<Box<dyn SearchEngine>>,
     cache: SearchCache,
     timeout: Duration,
+    last_request: tokio::sync::Mutex<std::time::Instant>,
+    min_interval: Duration,
 }
 
 impl MultiEngineSearcher {
@@ -114,48 +141,96 @@ impl MultiEngineSearcher {
             engines,
             cache,
             timeout,
+            last_request: tokio::sync::Mutex::new(std::time::Instant::now()),
+            min_interval: Duration::from_secs(1),
         }
     }
 
-    /// 带缓存和降级的搜索
+    /// 带缓存、速率限制、重试和降级的搜索
     pub async fn search(&self, query: &str, max_results: usize) -> String {
-        // 1. 检查缓存
-        if let Some(cached) = self.cache.get(query) {
+        // 1. 检查缓存（用归一化后的 key）
+        let cache_key = normalize_query(query);
+        if let Some(cached) = self.cache.get(&cache_key).await {
             tracing::debug!("搜索缓存命中: query={}", query);
             return cached;
         }
 
-        // 2. 依次尝试引擎
+        // 2. 速率限制：确保两次请求之间至少间隔 min_interval
+        {
+            let mut last = self.last_request.lock().await;
+            let elapsed = last.elapsed();
+            if elapsed < self.min_interval {
+                let sleep_time = self.min_interval - elapsed;
+                tracing::debug!("搜索速率限制: 等待 {}ms", sleep_time.as_millis());
+                tokio::time::sleep(sleep_time).await;
+            }
+            *last = std::time::Instant::now();
+        }
+
+        // 3. 依次尝试引擎（每个引擎最多重试 2 次）
         for engine in &self.engines {
-            match tokio::time::timeout(self.timeout, engine.search(query, max_results)).await {
-                Ok(Ok(results)) if !results.is_empty() => {
-                    let formatted = format_results(query, &results);
-                    self.cache.put(query, formatted.clone());
-                    tracing::info!(
-                        "搜索成功: engine={}, results={}",
-                        engine.name(),
-                        results.len()
-                    );
-                    return formatted;
-                }
-                Ok(Ok(_)) => {
-                    tracing::warn!("搜索返回空结果: engine={}", engine.name());
-                    continue;
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!("搜索失败: engine={}, error={}", engine.name(), e);
-                    continue;
-                }
-                Err(_) => {
-                    tracing::warn!("搜索超时: engine={}, timeout={}s", engine.name(), self.timeout.as_secs());
-                    continue;
-                }
+            if let Some(results) = self.try_engine_with_retry(engine.as_ref(), query, max_results).await {
+                let formatted = format_results(query, &results);
+                self.cache.put(&cache_key, formatted.clone()).await;
+                tracing::info!(
+                    "搜索成功: engine={}, results={}",
+                    engine.name(),
+                    results.len()
+                );
+                return formatted;
             }
         }
 
         format!(
             "<untrusted>\n未找到与「{query}」相关的搜索结果（已尝试所有搜索引擎）\n</untrusted>"
         )
+    }
+
+    /// 尝试单个引擎，最多重试 2 次
+    async fn try_engine_with_retry(
+        &self,
+        engine: &dyn SearchEngine,
+        query: &str,
+        max_results: usize,
+    ) -> Option<Vec<SearchResult>> {
+        let mut last_error = None;
+
+        for attempt in 0..2 {
+            match tokio::time::timeout(self.timeout, engine.search(query, max_results)).await {
+                Ok(Ok(results)) if !results.is_empty() => return Some(results),
+                Ok(Ok(_)) => {
+                    // 空结果 — 不重试
+                    tracing::warn!("搜索返回空结果: engine={}", engine.name());
+                    return None;
+                }
+                Ok(Err(e)) => {
+                    last_error = Some(e);
+                    tracing::warn!(
+                        "搜索失败: engine={}, attempt={}, error={:?}",
+                        engine.name(),
+                        attempt + 1,
+                        last_error.as_ref().unwrap()
+                    );
+                    // 临时性错误才重试
+                    if attempt == 0 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "搜索超时: engine={}, attempt={}",
+                        engine.name(),
+                        attempt + 1
+                    );
+                    // 超时后直接重试（不 sleep，因为已经等了 timeout 秒）
+                }
+            }
+        }
+
+        if let Some(e) = last_error {
+            tracing::warn!("搜索彻底失败: engine={}, error={}", engine.name(), e);
+        }
+        None
     }
 }
 

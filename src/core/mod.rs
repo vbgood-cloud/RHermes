@@ -14,6 +14,7 @@ pub use config::MemoryConfig;
 pub use config::ProviderConfig;
 pub use config::ProviderPoolConfig;
 pub use config::RequestConfig;
+pub use config::SearchConfig;
 pub use config::WeChatConfig;
 pub use config::WeComConfig;
 pub use context::Context;

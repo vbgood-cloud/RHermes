@@ -78,6 +78,9 @@ pub struct Config {
     /// MCP 客户端配置
     #[serde(default)]
     pub mcp: McpConfig,
+    /// 搜索引擎配置
+    #[serde(default)]
+    pub search: SearchConfig,
 }
 
 /// 消息通道配置
@@ -235,6 +238,42 @@ impl Default for McpConfig {
             servers: std::collections::HashMap::new(),
             sampling_enabled: false,
             sampling_max_tokens: default_sampling_max_tokens(),
+        }
+    }
+}
+
+/// 搜索引擎配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchConfig {
+    /// Serper API Key（仅从 .env 读取）
+    #[serde(default, skip)]
+    pub serper_api_key: String,
+    /// 搜索超时（秒）
+    #[serde(default = "default_search_timeout")]
+    pub timeout_secs: u64,
+    /// 搜索结果缓存大小
+    #[serde(default = "default_search_cache_size")]
+    pub cache_size: usize,
+    /// 缓存 TTL（秒）
+    #[serde(default = "default_search_cache_ttl")]
+    pub cache_ttl_secs: u64,
+    /// HTTP 代理地址（可选）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
+}
+
+fn default_search_timeout() -> u64 { 15 }
+fn default_search_cache_size() -> usize { 100 }
+fn default_search_cache_ttl() -> u64 { 600 }
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            serper_api_key: String::new(),
+            timeout_secs: default_search_timeout(),
+            cache_size: default_search_cache_size(),
+            cache_ttl_secs: default_search_cache_ttl(),
+            proxy: None,
         }
     }
 }
@@ -516,6 +555,7 @@ impl Default for Config {
             channels: ChannelsConfig::default(),
             gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
+            search: SearchConfig::default(),
         }
     }
 }
@@ -564,8 +604,16 @@ impl Config {
                         if !rest.is_empty() {
                             let provider_name = rest.to_lowercase();
                             let entry = cfg.providers.entry(provider_name).or_default();
-                            entry.api_key = value;
+                            entry.api_key = value.clone();
                         }
+                    }
+                    // SERPER_API_KEY → search.serper_api_key
+                    if key == "SERPER_API_KEY" {
+                        cfg.search.serper_api_key = value.clone();
+                    }
+                    // SEARCH_PROXY → search.proxy
+                    if key == "SEARCH_PROXY" {
+                        cfg.search.proxy = Some(value.clone());
                     }
                 }
             }
@@ -846,6 +894,7 @@ mod tests {
             channels: ChannelsConfig::default(),
             gateway: GatewayConfig::default(),
             mcp: McpConfig::default(),
+            search: SearchConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();
