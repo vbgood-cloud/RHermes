@@ -664,13 +664,8 @@ impl App {
                 ApiEvent::ToolCalls(calls) => {
                     let details: String = calls.iter()
                         .map(|c| {
-                            // 提取参数摘要（截断过长参数）
-                            let args_preview: String = c.arguments.chars().take(60).collect();
-                            if args_preview.len() < c.arguments.len() {
-                                format!("{}({}…)", c.name, args_preview)
-                            } else {
-                                format!("{}({})", c.name, args_preview)
-                            }
+                            // 完整展示参数（不截断）
+                            format!("{}({})", c.name, c.arguments)
                         })
                         .collect::<Vec<_>>()
                         .join(", ");

@@ -99,9 +99,12 @@ impl EventSink for ChannelSink {
         if let Ok(mut buf) = self.buffer.lock() { buf.push_str(text); }
     }
     async fn on_tool_calls(&self, calls: &[ToolCallData]) {
-        let names: String = calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ");
+        let details: String = calls.iter()
+            .map(|c| format!("{}({})", c.name, c.arguments))
+            .collect::<Vec<_>>()
+            .join(", ");
         if let Some(ch) = self.channel_mgr.get(&self.channel_name) {
-            let _ = ch.send_message(&self.chat_id, &format!("🔧 正在执行: {}", names)).await;
+            let _ = ch.send_message(&self.chat_id, &format!("🔧 正在执行: {}", details)).await;
         }
     }
     async fn on_tool_result(&self, name: &str, _output: &str, duration_ms: u64, success: bool) {

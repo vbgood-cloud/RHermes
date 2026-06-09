@@ -152,6 +152,10 @@ impl MultiEngineSearcher {
         let cache_key = normalize_query(query);
         if let Some(cached) = self.cache.get(&cache_key).await {
             tracing::debug!("搜索缓存命中: query={}", query);
+            // 如果缓存结果没有引擎标注，补一个
+            if !cached.starts_with("🔍 搜索引擎") {
+                return format!("🔍 搜索引擎: 缓存\n{}", cached);
+            }
             return cached;
         }
 
@@ -170,7 +174,8 @@ impl MultiEngineSearcher {
         // 3. 依次尝试引擎（每个引擎最多重试 2 次）
         for engine in &self.engines {
             if let Some(results) = self.try_engine_with_retry(engine.as_ref(), query, max_results).await {
-                let formatted = format_results(query, &results);
+                let engine_name = engine.name().to_string();
+                let formatted = format!("🔍 搜索引擎: {}\n{}", engine_name, format_results(query, &results));
                 self.cache.put(&cache_key, formatted.clone()).await;
                 tracing::info!(
                     "搜索成功: engine={}, results={}",

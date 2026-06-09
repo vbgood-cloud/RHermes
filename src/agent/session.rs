@@ -263,6 +263,9 @@ impl AgentSession {
             // 5. 工具调用执行
             if !tool_calls.is_empty() {
                 tracing::info!("开始执行 {} 个工具调用", tool_calls.len());
+                for tc in &tool_calls {
+                    tracing::info!("  工具: {}({})", tc.name, tc.arguments);
+                }
                 let calls_to_dispatch: Vec<ToolCall> = tool_calls
                     .iter()
                     .map(|tc| ToolCall {
