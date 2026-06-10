@@ -603,6 +603,12 @@ pub struct AgentConfig {
     /// 安全工作目录 — Agent 文件操作限制在此目录树下（空=不限制）
     #[serde(default)]
     pub workspace: String,
+    /// 允许的命令前缀白名单（如 ["ls", "cat", "git", "cargo"]，空=不限制）
+    #[serde(default)]
+    pub command_allowed_prefixes: Vec<String>,
+    /// 是否要求用户确认非白名单命令（默认 true）
+    #[serde(default = "default_command_require_confirm")]
+    pub command_require_confirm: bool,
 }
 
 impl Default for AgentConfig {
@@ -614,6 +620,8 @@ impl Default for AgentConfig {
             memory_nudge_interval: default_memory_nudge_interval(),
             default_provider: String::new(),
             workspace: String::new(),
+            command_allowed_prefixes: Vec::new(),
+            command_require_confirm: true,
         }
     }
 }
@@ -621,6 +629,7 @@ impl Default for AgentConfig {
 fn default_compression_ratio() -> f64 { 0.8 }
 fn default_creation_nudge_interval() -> u32 { 15 }
 fn default_memory_nudge_interval() -> u32 { 10 }
+fn default_command_require_confirm() -> bool { true }
 
 // ---- 默认值 ----
 
@@ -811,7 +820,19 @@ impl Config {
                 content.push_str(&format!("{env_var}={}\n", provider.api_key));
             }
         }
-        std::fs::write(&env_path, content).map_err(ConfigError::Io)
+        std::fs::write(&env_path, &content).map_err(ConfigError::Io)?;
+
+        // 安全: 设置 .env 文件权限为仅 owner 可读写（Unix）
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o600)) {
+                tracing::warn!("⚠ 无法设置 .env 文件权限: {e}");
+            }
+        }
+        // Windows: 文件 ACL 由 NTFS 管理
+
+        Ok(())
     }
 
     /// 是否已配置（有 API Key）
@@ -927,10 +948,22 @@ impl Config {
         }
         s.push_str("# 安全工作目录（Agent 文件操作限制在此目录下，空=不限制）\n");
         if d.agent.workspace.is_empty() {
-            s.push_str("# workspace = \"\"\n\n");
+            s.push_str("# workspace = \"\"\n");
         } else {
-            s.push_str(&format!("workspace = {:?}\n\n", d.agent.workspace));
+            s.push_str(&format!("workspace = {:?}\n", d.agent.workspace));
         }
+        if d.agent.command_allowed_prefixes.is_empty() {
+            s.push_str("# 命令白名单（如 [\"ls\", \"cat\", \"git\", \"cargo\"]，空=不限制）\n");
+            s.push_str("# command_allowed_prefixes = [\"ls\", \"cat\", \"git\"]\n");
+        } else {
+            let prefixes: String = d.agent.command_allowed_prefixes.iter()
+                .map(|p| format!("\"{}\"", p))
+                .collect::<Vec<_>>()
+                .join(", ");
+            s.push_str(&format!("command_allowed_prefixes = [{}]\n", prefixes));
+        }
+        s.push_str(&format!("command_require_confirm = {}\n", d.agent.command_require_confirm));
+        s.push('\n');
 
         // ── Provider Pool ──
         s.push_str("# ── Provider Pool 配置（熔断器）──\n");
@@ -1348,6 +1381,8 @@ mod tests {
                 memory_nudge_interval: 10,
                 default_provider: String::new(),
                 workspace: String::new(),
+                command_allowed_prefixes: Vec::new(),
+                command_require_confirm: true,
             },
             provider_pool: ProviderPoolConfig::default(),
             channels: ChannelsConfig::default(),

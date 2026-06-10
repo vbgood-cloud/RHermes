@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 
 use crate::core::Config;
+// Re-export ApiMessage from core (single definition)
+pub use crate::core::ApiMessage;
 use crate::provider::Transport;
 
 // ---------------------------------------------------------------------------
@@ -333,13 +335,6 @@ pub fn param_defs_to_json(params: Vec<crate::tools::ParamDef>) -> serde_json::Va
         "properties": properties,
         "required": required,
     })
-}
-
-/// API 消息格式
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiMessage {
-    pub role: String,
-    pub content: String,
 }
 
 /// Chat Completion 响应

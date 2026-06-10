@@ -103,10 +103,8 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
         let _ = crate::tools::set_global_config(config.clone());
     }
     crate::tools::set_display_config(config.display.clone());
-    if !config.agent.workspace.is_empty() {
-        crate::tools::set_workspace(config.agent.workspace.clone());
-        tracing::info!("🔒 工作目录边界: {}", config.agent.workspace);
-    }
+    let actual_workspace = crate::tools::set_workspace(config.agent.workspace.clone());
+    tracing::info!("🔒 工作目录边界: {}", actual_workspace);
     if let Some(ref se) = skill_engine {
         let _ = crate::tools::set_global_skill_engine(Arc::clone(se));
     }

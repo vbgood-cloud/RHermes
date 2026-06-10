@@ -26,27 +26,222 @@ use crate::tools::search::{MultiEngineSearcher, SearchCache};
 // ---------------------------------------------------------------------------
 
 /// 危险命令模式 — 大小写不敏感匹配
+/// 危险命令模式 — 大小写不敏感匹配（增强型黑名单 v2）
 const DANGEROUS_PATTERNS: &[&str] = &[
-    "rm -rf", "rm -r /", "del /s /q c:", "format ",
-    "rmdir /s /q", "mkfs.", "dd if=",
-    "shutdown", "reboot", "halt", "poweroff",
-    "net user", "net localgroup", "passwd",
-    "curl | sh", "curl | bash", "wget | sh",
-    "chmod -r 777 /", "chown -r",
-    "taskkill /f", "kill -9 1",
-    "reg delete", "reg add",
-    "sc delete", "net stop",
+    // ---- 删除与格式化 ----
+    "rm -rf",
+    "rm -r /",
+    "rm -rf /",
+    "rm -rf ~",
+    "del /s /q c:",
+    "del /s /q d:",
+    "del /s /q e:",
+    "del /s /q f:",
+    "del /s /q a:",
+    "del /s /q b:",
+    "rmdir /s /q",
+    "format ",
+    "mkfs.",
+    "dd if=",
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
+    "net user",
+    "net localgroup",
+    "passwd",
+    "chmod -r 777 /",
+    "chown -r",
+    "attrib +h",
+    "icacls /grant",
+    "curl | sh",
+    "curl | bash",
+    "wget | sh",
+    "wget | bash",
+    "powershell -enc",
+    "powershell -encodedcommand",
+    "pwsh -enc",
+    "taskkill /f",
+    "kill -9 1",
+    "reg delete",
+    "reg add",
+    "sc delete",
+    "net stop",
     "crontab -r",
+    "cipher /w",
+    "wbadmin",
+    "diskpart",
+    "bcdedit",
+    "vssadmin",
+    "mklink",
+    "> /etc/passwd",
+    "> /etc/shadow",
+    "> /dev/",
+];
+
+/// 命令链危险子命令模式 — 在管道/分号/链式操作中检测
+const DANGEROUS_CHAIN_PATTERNS: &[&str] = &[
+    "rm -rf",
+    "rm -r ",
+    "del /s /q",
+    "rmdir /s /q",
+    "shutdown",
+    "reboot",
+    "halt",
+    "poweroff",
+    "net user",
+    "net localgroup",
+    "passwd",
+    "chmod 777",
+    "chown -r",
+    "format ",
+    "mkfs.",
+    "dd if=",
+    "powershell -enc",
+    "powershell -encodedcommand",
+    "pwsh -enc",
+    "reg delete",
+    "reg add",
+    "taskkill /f",
+    "kill -9",
+    "cipher /w",
+    "diskpart",
+    "bcdedit",
+    "vssadmin",
 ];
 
 /// 检查命令是否匹配危险模式
+/// 先做空格归一化（多空格 → 单空格）防止绕过
 fn is_dangerous_command(cmd: &str) -> Option<&'static str> {
-    let lower = cmd.to_lowercase();
+    let lower = normalize_spaces(&cmd.to_lowercase());
     for pattern in DANGEROUS_PATTERNS {
         if lower.contains(&pattern.to_lowercase()) {
             return Some(pattern);
         }
     }
+    None
+}
+
+/// 检查子命令是否匹配命令链危险模式（同样做空格归一化）
+fn is_dangerous_command_chain(cmd: &str) -> Option<&'static str> {
+    let lower = normalize_spaces(&cmd.to_lowercase());
+    for pattern in DANGEROUS_CHAIN_PATTERNS {
+        if lower.contains(&pattern.to_lowercase()) {
+            return Some(pattern);
+        }
+    }
+    None
+}
+
+/// 空格归一化：连续的空白字符（空格/tab）折叠为单个空格
+fn normalize_spaces(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut prev_was_space = false;
+    for ch in s.chars() {
+        if ch == ' ' || ch == '\t' {
+            if !prev_was_space {
+                result.push(' ');
+                prev_was_space = true;
+            }
+        } else {
+            result.push(ch);
+            prev_was_space = false;
+        }
+    }
+    result
+}
+
+/// 提取 $(...) 子 Shell 中的命令内容（简单实现，不处理嵌套）
+fn extract_subshell_content(cmd: &str) -> Option<String> {
+    if let Some(start) = cmd.find("$(") {
+        let rest = &cmd[start + 2..];
+        if let Some(end) = rest.find(')') {
+            return Some(rest[..end].to_string());
+        }
+    }
+    None
+}
+
+/// 检测命令链 / Shell 元字符中的危险嵌套
+///
+/// 防止通过管道、分号、&&、||、命令替换等方式绕过黑名单。
+/// 例: `echo hello && rm -rf /` 或 `powershell -enc base64payload`
+/// 不会误杀正常命令如 `echo hello && echo world`。
+fn is_shell_meta_dangerous(cmd: &str) -> Option<&'static str> {
+    let lower = cmd.to_lowercase();
+
+    // 1. 检测命令替换: $(...) —— 提取子命令并递归检查
+    if lower.contains("$(") {
+        if let Some(content) = extract_subshell_content(cmd) {
+            if let Some(pattern) = is_dangerous_command(&content) {
+                return Some(pattern);
+            }
+            if let Some(pattern) = is_dangerous_command_chain(&content) {
+                return Some(pattern);
+            }
+        }
+    }
+
+    // 2. 检测反引号命令替换（简单但有效的启发式）
+    if lower.contains('`') {
+        return Some("反引号命令替换");
+    }
+
+    // 3. 检测管道 (|) 后的危险子命令
+    if let Some(after_pipe) = lower.split('|').nth(1) {
+        let trimmed = after_pipe.trim_start();
+        if let Some(pattern) = is_dangerous_command_chain(trimmed) {
+            return Some(pattern);
+        }
+    }
+
+    // 4. 检测分号 (;) 分割后的危险子命令
+    for part in lower.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() { continue; }
+        if let Some(pattern) = is_dangerous_command_chain(trimmed) {
+            return Some(pattern);
+        }
+    }
+
+    // 5. 检测 && 后的危险子命令
+    for part in lower.split("&&") {
+        let trimmed = part.trim();
+        if trimmed.is_empty() { continue; }
+        if let Some(pattern) = is_dangerous_command_chain(trimmed) {
+            return Some(pattern);
+        }
+    }
+
+    // 6. 检测 || 后的危险子命令
+    for part in lower.split("||") {
+        let trimmed = part.trim();
+        if trimmed.is_empty() { continue; }
+        if let Some(pattern) = is_dangerous_command_chain(trimmed) {
+            return Some(pattern);
+        }
+    }
+
+    // 7. 检测 cmd /c、bash -c、sh -c 包装的危险命令
+    for wrapper in &["cmd /c ", "cmd /c\t", "bash -c ", "sh -c "] {
+        if lower.contains(wrapper) {
+            let idx = lower.find(wrapper).unwrap();
+            let sub_cmd = &lower[idx + wrapper.len()..];
+            let sub_cmd = sub_cmd.trim_start_matches('"').trim_start_matches('\'');
+            if let Some(pattern) = is_dangerous_command(sub_cmd) {
+                return Some(pattern);
+            }
+            if let Some(pattern) = is_dangerous_command_chain(sub_cmd) {
+                return Some(pattern);
+            }
+        }
+    }
+
+    // 8. 检测 base64 解码管道执行
+    if lower.contains("base64") && (lower.contains(" | bash") || lower.contains(" | sh")) {
+        return Some("base64管道执行");
+    }
+
     None
 }
 
@@ -66,23 +261,61 @@ const PROTECTED_FILES: &[&str] = &[
 ];
 
 /// 检查路径是否指向受保护文件
+///
+/// 匹配规则（先归一化正斜杠 + 小写）：
+/// - 以 `/<protected>` 结尾  → 匹配（如 `a/.env` → 匹配 `.env`）
+/// - 以 `/<protected>` 结尾  → 匹配（如 `a/etc/passwd` → 匹配 `/etc/passwd`）
+/// - 整个路径就是 protected → 匹配（如 `.env`）
+///
+/// 不使用 `contains()` 避免误报（如 `config.toml.bak` 被错判为 `config.toml`）。
 fn is_protected_path(path: &str) -> bool {
     let normalized = path.replace('\\', "/").to_lowercase();
     PROTECTED_FILES.iter().any(|p| {
-        normalized.ends_with(&p.to_lowercase()) || normalized.contains(&p.to_lowercase())
+        let p = p.to_lowercase();
+        normalized == p || normalized.ends_with(&format!("/{p}"))
     })
 }
 
 /// 全局工作目录配置，由 main/init 时设置
+///
+/// 入参为空字符串时自动取 `std::env::current_dir()` 作为默认值，
+/// 确保 GLOBAL_WORKSPACE 始终有值，避免边界检查静默跳过。
 pub static GLOBAL_WORKSPACE: OnceLock<String> = OnceLock::new();
 
-pub fn set_workspace(path: String) {
-    let _ = GLOBAL_WORKSPACE.set(path);
+/// 设置全局工作目录（启动时由 main.rs / gateway 调用）
+///
+/// 返回实际使用的工作目录路径（归一化为正斜杠）。
+pub fn set_workspace(path: String) -> String {
+    let ws = if path.is_empty() {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+        tracing::info!("工作目录未配置，默认使用当前目录: {cwd}");
+        cwd
+    } else {
+        path
+    };
+    // 统一 normalize: 正斜杠 + 小写（与各工具中的检查逻辑保持一致）
+    let normalized = ws.replace('\\', "/");
+    let _ = GLOBAL_WORKSPACE.set(normalized.clone());
+    normalized
 }
 
 // ---------------------------------------------------------------------------
 // read_file — 并行安全
 // ---------------------------------------------------------------------------
+
+/// 解析 range 参数，格式 "start-end"（行号从 1 开始）
+/// 返回 Some((start, end)) 或 None（格式无效）
+fn parse_range(range: &str) -> Option<(usize, usize)> {
+    let (s, e) = range.split_once('-')?;
+    let start: usize = s.trim().parse().ok()?;
+    let end: usize = e.trim().parse().ok()?;
+    if start == 0 || end == 0 || start > end {
+        return None;
+    }
+    Some((start, end))
+}
 
 pub struct ReadFile;
 
@@ -107,10 +340,25 @@ impl Tool for ReadFile {
     }
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let path = get_string_arg(&args, "path")?;
+
+        // 安全检查: 工作目录边界（读取也需限制）
+        let ws = GLOBAL_WORKSPACE.get().expect("GLOBAL_WORKSPACE 未初始化");
+        let abs = if Path::new(&path).is_absolute() { path.clone() }
+            else { format!("{}/{}", ws.trim_end_matches('/'), path) };
+        let normalized = abs.replace('\\', "/").to_lowercase();
+        let ws_norm = ws.to_lowercase();
+        if !normalized.starts_with(&ws_norm) {
+            return Err(ToolError::ExecutionFailed(format!("⛔ 路径 '{path}' 超出工作目录 '{ws}'")));
+        }
+        if is_protected_path(&path) {
+            return Err(ToolError::ExecutionFailed(format!("⛔ 路径 '{path}' 是受保护文件，不可 Agent 读取")));
+        }
+
         let content = tokio::fs::read_to_string(&path).await.map_err(ToolError::Io)?;
 
         let head = args.get("head").and_then(|v| v.as_u64());
         let tail = args.get("tail").and_then(|v| v.as_u64());
+        let range = args.get("range").and_then(|v| v.as_str());
 
         let result = if let Some(n) = head {
             content.lines().take(n as usize).collect::<Vec<_>>().join("\n")
@@ -118,6 +366,17 @@ impl Tool for ReadFile {
             let lines: Vec<&str> = content.lines().collect();
             let len = lines.len();
             lines[len.saturating_sub(n as usize)..].join("\n")
+        } else if let Some(range_str) = range {
+            // 解析 range 参数，格式如 "50-100"
+            if let Some((start, end)) = parse_range(range_str) {
+                let lines: Vec<&str> = content.lines().collect();
+                let total = lines.len();
+                let s = start.saturating_sub(1).min(total);
+                let e = end.min(total).max(s);
+                lines[s..e].join("\n")
+            } else {
+                return Err(ToolError::InvalidParam(format!("无效的 range 格式: '{range_str}'，期望如 '50-100'")));
+            }
         } else {
             content
         };
@@ -159,27 +418,26 @@ fn collect_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) -> 
     Ok(())
 }
 
-/// Convert glob pattern to regex string (for use with WalkDir + Regex)
-fn glob_to_regex_str(glob: &str) -> String {
-    let mut re = String::with_capacity(glob.len() + 4);
-    re.push('^');
+/// 将 glob 模式转换为编译后的正则表达式
+fn glob_to_regex(glob: &str) -> Result<Regex, String> {
+    let mut re_str = String::with_capacity(glob.len() + 4);
+    re_str.push('^');
     for ch in glob.chars() {
         match ch {
-            '*' => re.push_str(".*"),
-            '?' => re.push('.'),
-            '.' => re.push_str("\\."),
-            '\\' => re.push_str("\\\\"),
-            '|' => re.push('|'),
-            '/' => re.push('/'),
-            c if c.is_ascii_punctuation() && c != '_' => {
-                re.push('\\');
-                re.push(c);
+            '*' => re_str.push_str(".*"),
+            '?' => re_str.push('.'),
+            '.' => re_str.push_str("\\."),
+            '\\' => re_str.push_str("\\\\"),
+            '/' => re_str.push('/'),
+            c if c.is_ascii_punctuation() && c != '_' && c != '|' => {
+                re_str.push('\\');
+                re_str.push(c);
             }
-            c => re.push(c),
+            c => re_str.push(c),
         }
     }
-    re.push('$');
-    re
+    re_str.push('$');
+    Regex::new(&re_str).map_err(|e| format!("glob 模式无效: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +475,20 @@ impl Tool for SearchContent {
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let pattern = get_string_arg(&args, "pattern")?;
         let search_path = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
+        let ws = GLOBAL_WORKSPACE.get().expect("GLOBAL_WORKSPACE 未初始化");
+        let sp = if Path::new(&search_path).is_absolute() { search_path.clone() }
+            else { format!("{}/{}", ws.trim_end_matches('/'), search_path) };
+        let n = sp.replace('\\', "/").to_lowercase();
+        let wn = ws.to_lowercase();
+        if !n.starts_with(&wn) {
+            return Err(ToolError::ExecutionFailed(format!("⛔ 搜索路径 '{search_path}' 超出工作目录 '{ws}'")));
+        }
         let glob_filter = get_optional_string(&args, "glob");
+        // 预编译 glob 正则（避免遍历时每个文件重复编译）
+        let glob_re = match &glob_filter {
+            Some(g) => Some(glob_to_regex(g).map_err(|e| ToolError::InvalidParam(e))?),
+            None => None,
+        };
         let context_lines = args
             .get("context_lines")
             .and_then(|v| v.as_u64())
@@ -261,9 +532,9 @@ impl Tool for SearchContent {
                 for entry in walk.filter_map(|e: Result<DirEntry, ignore::Error>| e.ok()) {
                     if results.len() >= max_results { break; }
                     let file_path = entry.path().to_path_buf();
-                    if let Some(g) = &glob_filter {
+                    if let Some(ref gre) = glob_re {
                         let name = file_path.to_string_lossy();
-                        if !glob_match(g, &name) { continue; }
+                        if !glob_matches(gre, &name) { continue; }
                     }
                     let _ = searcher.search_path(&matcher, &file_path, UTF8(|lnum, line| {
                         if results.len() >= max_results { return Ok(false); }
@@ -286,18 +557,10 @@ impl Tool for SearchContent {
     }
 }
 
-/// 简单 glob 匹配（用于 grep-searcher Walk 结果过滤）
-fn glob_match(pattern: &str, name: &str) -> bool {
-    let re_str: String = pattern.chars().map(|c| match c {
-        '*' => ".*".to_string(),
-        '?' => ".".to_string(),
-        '.' => "\\.".to_string(),
-        '\\' => "\\\\".to_string(),
-        c if c.is_ascii_punctuation() && c != '_' => format!("\\{}", c),
-        c => c.to_string(),
-    }).collect();
-    let re = regex::Regex::new(&format!("^{}$", re_str)).ok();
-    re.map_or(true, |r| r.is_match(name))
+/// 使用 glob 模式过滤文件路径（用于 search_content 遍历）
+fn glob_matches(glob_re: &Regex, file_rel_path: &str) -> bool {
+    let name = file_rel_path.replace('\\', "/");
+    glob_re.is_match(&name)
 }
 
 // ---------------------------------------------------------------------------
@@ -324,9 +587,7 @@ impl Tool for ReadPdf {
     }
 
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
-        let path = args["path"].as_str()
-            .ok_or_else(|| ToolError::MissingParam("path".into()))?
-            .to_string();
+        let path = get_string_arg(&args, "path")?;
         let start = std::time::Instant::now();
 
         let max_chars = GLOBAL_DISPLAY_CONFIG.get()
@@ -376,11 +637,18 @@ impl Tool for Glob {
     async fn execute(&self, args: Value) -> Result<String, ToolError> {
         let pattern = get_string_arg(&args, "pattern")?;
         let root = get_optional_string(&args, "path").unwrap_or_else(|| ".".into());
+        let ws = GLOBAL_WORKSPACE.get().expect("GLOBAL_WORKSPACE 未初始化");
+        let ar = if Path::new(&root).is_absolute() { root.clone() }
+            else { format!("{}/{}", ws.trim_end_matches('/'), root) };
+        let n = ar.replace('\\', "/").to_lowercase();
+        let wn = ws.to_lowercase();
+        if !n.starts_with(&wn) {
+            return Err(ToolError::ExecutionFailed(format!("⛔ glob 路径 '{root}' 超出工作目录 '{ws}'")));
+        }
 
         // Convert glob pattern to regex
-        let regex_str = glob_to_regex_str(&pattern);
-        let re = regex::Regex::new(&regex_str)
-            .map_err(|e| ToolError::ExecutionFailed(format!("glob pattern invalid: {e}")))?;
+        let re = glob_to_regex(&pattern)
+            .map_err(|e| ToolError::ExecutionFailed(e))?;
 
         const MAX_RESULTS: usize = 500;
 
@@ -459,22 +727,19 @@ impl Tool for WriteFile {
         }
 
         // 安全检查: 工作目录边界
-        if let Some(ws) = GLOBAL_WORKSPACE.get() {
-            if !ws.is_empty() {
-                let abs = if Path::new(&path).is_absolute() {
-                    path.clone()
-                } else {
-                    format!("{}/{}", ws.trim_end_matches('/').trim_end_matches('\\'), path)
-                };
-                let normalized = abs.replace('\\', "/").to_lowercase();
-                let ws_norm = ws.replace('\\', "/").to_lowercase();
-                if !normalized.starts_with(&ws_norm) {
-                    tracing::warn!("⛔ 路径越界: {path} 不在工作目录 {ws} 内");
-                    return Err(ToolError::ExecutionFailed(
-                        format!("⛔ 安全策略: 路径 '{path}' 超出工作目录 '{ws}'。")
-                    ));
-                }
-            }
+        let ws = GLOBAL_WORKSPACE.get().expect("GLOBAL_WORKSPACE 未初始化");
+        let abs = if Path::new(&path).is_absolute() {
+            path.clone()
+        } else {
+            format!("{}/{}", ws.trim_end_matches('/'), path)
+        };
+        let normalized = abs.replace('\\', "/").to_lowercase();
+        let ws_norm = ws.to_lowercase();
+        if !normalized.starts_with(&ws_norm) {
+            tracing::warn!("⛔ 路径越界: {path} 不在工作目录 {ws} 内");
+            return Err(ToolError::ExecutionFailed(
+                format!("⛔ 安全策略: 路径 '{path}' 超出工作目录 '{ws}'。")
+            ));
         }
 
         let content = get_string_arg(&args, "content")?;
@@ -484,9 +749,18 @@ impl Tool for WriteFile {
             tokio::fs::create_dir_all(parent).await.map_err(ToolError::Io)?;
         }
 
-        tokio::fs::write(&path, &content)
+        // 原子写入：先写 tmp 文件再 rename，避免崩溃时产生损坏文件
+        let tmp_path = format!("{path}.write_file.tmp");
+        tokio::fs::write(&tmp_path, &content)
             .await
             .map_err(ToolError::Io)?;
+        tokio::fs::rename(&tmp_path, &path)
+            .await
+            .map_err(|e| {
+                // rename 失败时尽力清理 tmp 文件
+                let _ = std::fs::remove_file(&tmp_path);
+                ToolError::Io(e)
+            })?;
 
         Ok(format!("已写入 {} ({} 字节)", path, content.len()))
     }
@@ -533,6 +807,43 @@ impl Tool for RunCommand {
             return Err(ToolError::ExecutionFailed(
                 format!("⛔ 安全策略: 命令被拦截（匹配危险模式 '{pattern}'）。如确需执行请联系管理员。")
             ));
+        }
+        // 安全检查: 拦截命令链 / Shell 元字符嵌套危险命令
+        if let Some(pattern) = is_shell_meta_dangerous(&command) {
+            tracing::warn!("⛔ 拦截命令链危险: 匹配 '{}': {command}", pattern);
+            return Err(ToolError::ExecutionFailed(
+                format!("⛔ 安全策略: 命令被拦截（检测到命令链/Shell元字符危险嵌套 '{}'）。如确需执行请联系管理员。", pattern)
+            ));
+        }
+
+        // 安全检查: 命令白名单
+        if let Some(cfg) = GLOBAL_CONFIG.get() {
+            if !cfg.agent.command_allowed_prefixes.is_empty() {
+                let first_word = command.split_whitespace().next().unwrap_or("");
+                // 同时检查完整命令和路径的文件名（如 /usr/bin/git → git）
+                let cmd_basename = std::path::Path::new(first_word)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(first_word);
+                let allowed = cfg.agent.command_allowed_prefixes.iter()
+                    .any(|prefix| {
+                        first_word == prefix.as_str()
+                            || first_word.starts_with(prefix.as_str())
+                            || cmd_basename == prefix.as_str()
+                    });
+                if !allowed {
+                    tracing::warn!(
+                        "⛔ 命令不在白名单中: {command} (允许: {:?})",
+                        cfg.agent.command_allowed_prefixes
+                    );
+                    if cfg.agent.command_require_confirm {
+                        return Err(ToolError::ExecutionFailed(
+                            format!("⛔ 命令「{}」不在允许列表中，如需执行请联系管理员添加白名单", command)
+                        ));
+                    }
+                    tracing::warn!("⚠ 命令不在白名单但已放行（command_require_confirm=false）");
+                }
+            }
         }
 
         let timeout = args
@@ -623,8 +934,15 @@ impl Tool for GetCurrentTime {
         vec![]
     }
     async fn execute(&self, _args: Value) -> Result<String, ToolError> {
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S (UTC+8)");
-        Ok(now.to_string())
+        let local = chrono::Local::now();
+        let offset = local.offset();
+        let utc_secs = offset.local_minus_utc();
+        let sign = if utc_secs >= 0 { "+" } else { "-" };
+        let abs = utc_secs.abs();
+        let hours = abs / 3600;
+        let minutes = (abs % 3600) / 60;
+        let dt = local.format("%Y-%m-%d %H:%M:%S");
+        Ok(format!("{dt} (UTC{sign}{hours:02}:{minutes:02})"))
     }
 }
 
@@ -745,6 +1063,28 @@ impl Tool for WebFetch {
             return Err(ToolError::ExecutionFailed(
                 "不支持的 URL 协议，仅支持 http/https".into(),
             ));
+        }
+
+        // 1.5 SSRF 防护：检查目标主机是否为内网/元数据地址
+        {
+            let host = url.split("://").nth(1).unwrap_or("")
+                .split('/').next().unwrap_or("")
+                .split(':').next().unwrap_or("").to_lowercase();
+            let blocked = ["localhost", "127.0.0.1", "0.0.0.0", "[::1]",
+                "169.254.169.254", "metadata.google.internal", "metadata.azure.com"];
+            for b in &blocked {
+                if host == *b { return Err(ToolError::ExecutionFailed(
+                    format!("⛔ SSRF: 不允许访问内网地址 '{host}'"))); }
+            }
+            let parts: Vec<&str> = host.split('.').collect();
+            if parts.len() == 4 {
+                if let (Ok(a), Ok(b)) = (parts[0].parse::<u8>(), parts[1].parse::<u8>()) {
+                    let priv_ip = a == 10 || (a == 172 && b >= 16 && b <= 31)
+                        || (a == 192 && b == 168) || (a == 100 && b >= 64 && b <= 127) || a == 0;
+                    if priv_ip { return Err(ToolError::ExecutionFailed(
+                        format!("⛔ SSRF: 不允许访问私有 IP '{host}'"))); }
+                }
+            }
         }
 
         // 2. 扩展名预检：拒绝已知的二进制格式

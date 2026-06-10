@@ -20,6 +20,7 @@ pub use config::ProxyConfig;
 pub use config::ProxyMode;
 pub use config::WeChatConfig;
 pub use config::WeComConfig;
+pub use context::ApiMessage;
 pub use context::Context;
 pub use context::Message;
 pub use path::PathManager;

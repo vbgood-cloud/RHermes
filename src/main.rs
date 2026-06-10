@@ -467,10 +467,8 @@ async fn run_code(resume: bool) {
 
     // 安全工作目录初始化
     let workspace = config.agent.workspace.clone();
-    if !workspace.is_empty() {
-        crate::tools::set_workspace(workspace.clone());
-        tracing::info!("🔒 工作目录边界: {}", workspace);
-    }
+    let actual_workspace = crate::tools::set_workspace(workspace.clone());
+    tracing::info!("🔒 工作目录边界: {}", actual_workspace);
 
     // ---- Channel 系统初始化 ----
     use crate::tui::channel::TuiChannel;
