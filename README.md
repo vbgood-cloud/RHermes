@@ -1,142 +1,145 @@
 # RHermes
 
-> **终端 AI 编程 Agent · Rust · 17 个内置工具 · 自进化技能系统**
+> **Rust 写的 AI Agent，越用越聪明。** 🦀
 
-基于 DeepSeek 的终端 AI 编程 Agent，融合三段式 Context 缓存优化、并行工具调度、长期记忆与自主技能进化。
+[![Rust 2024](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.4.6-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
+
+不满足于"又一个 AI 助手"。DeepSeek 前缀缓存压到极限、工具并行调度榨干 IO、自进化技能让 Agent 越长越强——用 Rust 写的，就该零妥协。
 
 ---
 
-## 快速开始
+## 能干什么
+
+| 能力 | 怎么做到的 |
+|------|-----------|
+| 🧠 **越用越聪明** | 自动从对话中提炼技能（Markdown Playbook），带使用统计和成功率，会自动淘汰过期技能 |
+| ⚡ **Token 省到极致** | 三段式 Context（Immutable Prefix + Append Log + Scratch），专为 DeepSeek 前缀缓存设计 |
+| 🔧 **20+ 工具随便使** | 文件读写 / ripgrep 搜索 / PDF 解析 / 命令执行 / 子 Agent 委派 / MCP 远程工具 |
+| 🌐 **多渠道接入** | TUI 终端 / 微信个号 / 企业微信 / Telegram，出门也能使唤 |
+| 🦾 **Provider 高可用** | 多 AI Provider 池 + 熔断器 + 加权轮询，挂一个自动切下一个 |
+| 🔒 **安全不是后话** | 命令黑名单 / 白名单 / 工作目录边界 / 配置写保护 / 内网 SSRF 防护 |
+
+---
+
+## 3 秒上手
 
 ```bash
-# 下载后直接运行
-./rhermes init          # 初始化向导（API Key + 模型）
-./rhermes code          # 启动编程 Agent
-./rhermes --version     # 查看版本
-```
+# 安装构建
+git clone https://github.com/vbgood-cloud/RHermes
+cd RHermes
+cargo build --release
 
-> 仅支持**便携式模式**：所有数据保存在 `./home/` 目录，随二进制一起带走。
+# 初始化 — 只需要配个 API Key
+./rhermes init
 
----
-
-## 内置工具（17 个）
-
-| 类别 | 工具 | 说明 | 并行安全 |
-|------|------|------|:--------:|
-| **文件** | `read_file` | 读取文件（head/tail/range） | ✅ |
-| | `write_file` | 写入文件 | ❌ |
-| | `glob` | 按模式列出文件（walkdir） | ✅ |
-| | `search_content` | 搜索文本（ripgrep 库） | ✅ |
-| | `read_pdf` | 读取 PDF 纯文本 | ✅ |
-| **系统** | `run_command` | 执行 shell 命令 | ❌ |
-| | `get_current_time` | 获取当前时间 | ✅ |
-| **网络** | `web_search` | 搜索网络（DuckDuckGo） | ❌ |
-| | `web_fetch` | 获取网页内容 | ❌ |
-| **Agent** | `delegate_task` | 子 Agent 独立执行 | ❌ |
-| | `run_skill` | 执行已安装技能 | ❌ |
-| **技能** | `skill_list` | 列出所有技能 | ✅ |
-| | `skill_search` | 搜索技能 | ✅ |
-| | `skill_create` | 创建新技能 | ❌ |
-| | `skill_patch` / `skill_manage` | 更新/管理技能 | ❌ |
-| **记忆** | `memory` | 读写管理 USER.md / MEMORY.md | ❌ |
-
----
-
-## 命令
-
-| 命令 | 说明 |
-|------|------|
-| `/help` | 显示帮助 |
-| `/version` | 显示版本信息 |
-| `/init` | 初始化向导 |
-| `/config` | 查看配置 |
-| `/compress` | 手动触发上下文压缩 |
-| `/note <内容>` | 记录笔记到 MEMORY.md |
-| `/回忆 <关键词>` | 跨会话检索记忆 |
-| `/归档` | 归档当前会话 |
-| `/clear` | 清空对话 |
-| `/quit` / `/exit` | 退出 |
-| `/skill create/search/delete/edit/optimize` | 技能管理 |
-
----
-
-## 架构
-
-```
-┌─────────────────────────────────────────────────┐
-│                 TUI (ratatui)                     │
-├─────────────────────────────────────────────────┤
-│              Agent Loop（tokio 异步）              │
-│  三段式 Context → API 调用 → 工具调度 → 结果写回   │
-├─────────────────────────────────────────────────┤
-│  记忆系统 (SQLite+FTS5)    │   技能引擎 (Markdown)  │
-├─────────────────────────────────────────────────┤
-│    17 个内置工具 · 并行调度 · 子 Agent 系统        │
-├─────────────────────────────────────────────────┤
-│              DeepSeek API 客户端                   │
-└─────────────────────────────────────────────────┘
+# 开打
+./rhermes code
 ```
 
 ---
 
-## 配置（config.toml）
+## 怎么用
+
+```bash
+# TUI 终端模式
+rhermes code                    # 进入交互式编程
+rhermes code --resume           # 恢复上次会话
+
+# Gateway 后台模式 — 挂微信/Telegram 上
+rhermes gateway start           # 启动守护进程
+rhermes gateway setup           # 配置频道向导
+rhermes gateway status          # 看状态
+rhermes gateway stop            # 停了
+
+# MCP 远程工具
+rhermes mcp setup               # 添加 MCP Server
+rhermes mcp list                # 看看连了哪些
+rhermes mcp import servers.json # 批量导入
+
+# 配置
+rhermes config init             # 生成带注释的配置模板
+rhermes config check            # 检查配置有没有写对
+```
+
+---
+
+## 架构（说人话版）
+
+```
+你发的消息
+    ↓
+[Channel] ← TUI / 微信 / 企业微信 / Telegram（随便哪个渠道都能进）
+    ↓
+[SessionRouter] ← 按人分开对话，互不串台
+    ↓
+[AgentSession] ← 核心大脑：Context管理 → 记忆召回 → 调 AI → 跑工具 → 学技能
+    ↓
+[ProviderPool] ← DeepSeek挂了换 OpenAI，OpenAI 挂了换 Ollama，都挂了骂街
+    ↓  ↓  ↓
+[ToolDispatcher]      [MemorySystem]       [SkillEngine]
+  read_file               SQLite+FTS5          Markdown Playbook
+  write_file              三层记忆              自动进化
+  search_content          跨会话检索            成功率统计
+  run_command             用户画像              过期淘汰
+  web_search ──→ 多引擎降级（DDG→Serper→Bing）
+  delegate_task ──→ 子 Agent 独立跑
+  mcp__*     ──→ 远程 MCP Server 工具
+```
+
+---
+
+## 技术栈（激进版）
+
+| 组件 | 选择 | 为什么 |
+|------|------|--------|
+| 语言 | Rust 2024 | 零成本抽象，不写 unsafe |
+| 异步 | tokio | 工具并发调度，JoinSet 一把梭 |
+| TUI | ratatui + crossterm | 终端下的 UI，不是凑合 |
+| 搜索 | grep-regex + grep-searcher | Andrew Gallant 的 ripgrep 库，不多解释 |
+| 搜索引擎 | scraper | 手撕 DDG/Bing HTML，不用 API Key |
+| MCP 传输 | JSON-RPC stdio/SSE | 协议完整实现，三种传输模式全支持 |
+| 数据库 | rusqlite + FTS5 | 全文检索记忆，嵌在进程里 |
+| HTTP | reqwest | socks 代理、SSE 流、连接复用 |
+| 二维码 | qrcodegen | 微信扫码登录，BMP 手撸 |
+
+---
+
+## 配置（极简版 config.toml）
 
 ```toml
-[api]
-model = "deepseek-v4-flash"
+[providers.deepseek]
 base_url = "https://api.deepseek.com"
-
-[request]
-timeout_secs = 60
-max_retries = 3
-
-[memory]
-max_memory_md_chars = 5000
-
-[display]
-tool_result_max_chars = 15000
-read_pdf_max_chars = 30000
-
-[debug]
-enabled = false
-buffer_size = 500
+models = ["deepseek-v4-flash"]
 
 [agent]
-max_rounds = 50
-compression_ratio = 0.8
+workspace = "/your/projects"     # 文件操作只允许在这个目录下
+command_allowed_prefixes = ["git", "ls", "cat", "cargo", "python"]
+# 不配白名单 = 所有命令都能跑，但不建议
 ```
 
----
+API Key 放 `.env`：
+```
+DEEPSEEK_API_KEY=sk-your-key
+```
 
-## 技术栈
-
-| 模块 | 选型 |
-|------|------|
-| 语言 | Rust 2024 edition |
-| 异步 | tokio |
-| HTTP | reqwest |
-| TUI | ratatui + crossterm |
-| 数据库 | rusqlite + FTS5 |
-| 搜索 | grep-regex + grep-searcher（ripgrep 库） |
-| PDF | pdf-extract |
-| 配置 | TOML + serde |
-| 日志 | tracing + tracing-subscriber |
-| 序列化 | serde + serde_json |
+完整配置模板：`rhermes config init` 一把生成。
 
 ---
 
 ## 项目状态
 
 | 指标 | 值 |
-|------|:---:|
-| 版本 | v0.2.0 |
-| 内置工具 | 17 个 |
-| 单元测试 | 119 个（全部通过） |
-| 源文件 | 18 个 |
-| 部署 | 单文件 < 10MB |
+|------|:---|
+| 版本 | v0.4.6 |
+| 文件数 | 54 .rs |
+| 内置工具 | 17 + MCP 动态扩展 |
+| 支持渠道 | TUI / 微信 / 企业微信 / Telegram |
+| AI Provider | DeepSeek / OpenAI / Zhipu / Qwen / Ollama / ... |
 
 ---
 
 ## License
 
-MIT
+MIT — 随便用，改了记得说一声。
