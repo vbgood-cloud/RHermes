@@ -12,6 +12,7 @@ mod gateway;
 mod init;
 mod mcp;
 mod provider;
+mod scheduler;
 mod tools;
 mod tui;
 

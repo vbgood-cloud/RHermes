@@ -14,6 +14,8 @@ pub use config::MemoryConfig;
 pub use config::ProviderConfig;
 pub use config::ProviderPoolConfig;
 pub use config::RequestConfig;
+pub use config::ScheduledTaskConfig;
+pub use config::SchedulerConfig;
 pub use config::SearchConfig;
 pub use config::TelegramConfig;
 pub use config::ProxyConfig;

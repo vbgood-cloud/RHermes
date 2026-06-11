@@ -79,6 +79,10 @@ pub struct Config {
     #[serde(default)]
     pub gateway: GatewayConfig,
 
+    /// 定时任务调度器配置
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
+
     /// MCP 客户端配置
     #[serde(default)]
     pub mcp: McpConfig,
@@ -319,6 +323,51 @@ impl Default for GatewayConfig {
         }
     }
 }
+
+/// 定时任务调度配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchedulerConfig {
+    /// 是否启用定时任务
+    #[serde(default)]
+    pub enabled: bool,
+    /// 最多同时执行的任务数
+    #[serde(default = "default_scheduler_max_concurrent")]
+    pub max_concurrent_tasks: usize,
+    /// 定时任务列表
+    #[serde(default)]
+    pub tasks: Vec<ScheduledTaskConfig>,
+}
+
+fn default_scheduler_max_concurrent() -> usize { 5 }
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_concurrent_tasks: default_scheduler_max_concurrent(),
+            tasks: Vec::new(),
+        }
+    }
+}
+
+/// 单个定时任务配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduledTaskConfig {
+    /// 任务名称（用于日志标识）
+    pub name: String,
+    /// cron 表达式 "分 时 日 月 周"
+    pub cron: String,
+    /// 发给 Agent 的提示词
+    pub prompt: String,
+    /// 结果推送目标 "channel:chat_id"（空 = 只记日志）
+    #[serde(default)]
+    pub target: String,
+    /// 是否启用
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool { true }
 
 /// MCP 客户端配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -669,6 +718,7 @@ impl Default for Config {
             provider_pool: ProviderPoolConfig::default(),
             channels: ChannelsConfig::default(),
             gateway: GatewayConfig::default(),
+            scheduler: SchedulerConfig::default(),
             mcp: McpConfig::default(),
             search: SearchConfig::default(),
             proxy: ProxyConfig::default(),
@@ -1049,6 +1099,33 @@ impl Config {
         s.push_str(&format!("# PID 文件路径\npid_file = {:?}\n", d.gateway.pid_file));
         s.push_str(&format!("# 日志文件路径\nlog_file = {:?}\n\n", d.gateway.log_file));
 
+        // ── Scheduler ──
+        s.push_str("# ── 定时任务调度器 ──\n[scheduler]\n");
+        s.push_str(&format!("enabled = {}\n", d.scheduler.enabled));
+        s.push_str("# 最多同时执行的任务数\n");
+        s.push_str(&format!("max_concurrent_tasks = {}\n", d.scheduler.max_concurrent_tasks));
+        if d.scheduler.tasks.is_empty() {
+            s.push_str("\n# 定时任务示例：\n");
+            s.push_str("# [[scheduler.tasks]]\n");
+            s.push_str("# name = \"morning_standup\"\n");
+            s.push_str("# cron = \"0 9 * * 1-5\"\n");
+            s.push_str("# prompt = \"梳理昨天的工作，列出今天的待办\"\n");
+            s.push_str("# target = \"\"  # 可选 \"channel:chat_id\"\n");
+            s.push_str("# enabled = true\n\n");
+        } else {
+            for task in &d.scheduler.tasks {
+                s.push_str(&format!("\n[[scheduler.tasks]]\n"));
+                s.push_str(&format!("name = {:?}\n", task.name));
+                s.push_str(&format!("cron = {:?}\n", task.cron));
+                s.push_str(&format!("prompt = {:?}\n", task.prompt));
+                if !task.target.is_empty() {
+                    s.push_str(&format!("target = {:?}\n", task.target));
+                }
+                s.push_str(&format!("enabled = {}\n", task.enabled));
+            }
+            s.push('\n');
+        }
+
         // ── MCP ──
         s.push_str("# ── MCP 客户端配置 ──\n[mcp]\n");
         s.push_str(&format!("enabled = {}\n", d.mcp.enabled));
@@ -1387,6 +1464,7 @@ mod tests {
             provider_pool: ProviderPoolConfig::default(),
             channels: ChannelsConfig::default(),
             gateway: GatewayConfig::default(),
+            scheduler: SchedulerConfig::default(),
             mcp: McpConfig::default(),
             search: SearchConfig::default(),
             proxy: ProxyConfig::default(),

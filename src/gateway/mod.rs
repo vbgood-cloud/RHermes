@@ -241,6 +241,28 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
         let session_config = crate::agent::SessionConfig::from_config(&config);
         let channel_mgr_arc = Arc::new(channel_mgr);
 
+        // ── 定时任务调度器（在 SessionRouter 之前初始化，避免所有权问题）──
+        let _sched_handles = if config.scheduler.enabled && !config.scheduler.tasks.is_empty() {
+            let sched_shared = crate::scheduler::SchedulerShared {
+                dispatcher: dispatcher.clone(),
+                memory: memory.clone(),
+                skill_engine: skill_engine.clone(),
+                transport: transport_ref.clone(),
+                channel_mgr: channel_mgr_arc.clone(),
+                system_prompt: system_prompt.to_string(),
+                session_config: session_config.clone(),
+            };
+            if let Some(scheduler) = crate::scheduler::Scheduler::with_shared(&config, sched_shared) {
+                let handles = scheduler.start();
+                tracing::info!("[Gateway] ⏰ 定时任务调度器已启动");
+                handles
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
         let mut router = crate::agent::SessionRouter::new(
             dispatcher,
             memory,
