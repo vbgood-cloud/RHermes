@@ -5,15 +5,23 @@
 .DS_Store
 Thumbs.db
 
-# 敏感配置（API Key）
+# 敏感配置（API Key / Secret）
 .env
+*.env
 
 # AI 辅助工具目录
 .reasonix/
 .history/
+.codegraph/
+.workbuddy/
+.hermes/
+
+# 便携模式数据目录
+home/
 
 # 日志
 rhermes.log
+*.log
 
 # 会话文件
 session.json
