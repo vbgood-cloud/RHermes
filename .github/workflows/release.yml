@@ -14,14 +14,12 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false  # 一个平台失败不取消其他
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             suffix: linux-x86_64
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            suffix: linux-aarch64
           - os: macos-latest
             target: x86_64-apple-darwin
             suffix: macos-x86_64
@@ -39,12 +37,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install cross-compilation deps (Linux ARM)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}
