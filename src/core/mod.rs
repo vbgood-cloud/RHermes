@@ -20,6 +20,7 @@ pub use config::SearchConfig;
 pub use config::TelegramConfig;
 pub use config::ProxyConfig;
 pub use config::ProxyMode;
+pub use config::WasmPluginConfig;
 pub use config::WeChatConfig;
 pub use config::WeComConfig;
 pub use context::ApiMessage;

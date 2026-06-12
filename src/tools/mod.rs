@@ -6,9 +6,8 @@ pub use registry::*;
 pub use builtin::*;
 pub use dispatcher::*;
 
-pub use registry::*;
-pub use builtin::*;
-pub use dispatcher::*;
+/// WASM 插件系统
+pub mod wasm_plugin;
 
 mod registry;
 mod builtin;

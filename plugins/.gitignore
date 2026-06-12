@@ -1,0 +1,8 @@
+# WASM 二进制（构建产物，不提交）
+*.wasm
+
+# 插件构建产物
+**/target/
+
+# Rust
+**/Cargo.lock

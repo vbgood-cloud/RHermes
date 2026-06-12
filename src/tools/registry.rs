@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 
 use serde_json::Value;
 
@@ -16,7 +18,7 @@ use serde_json::Value;
 // 参数类型
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ParamType {
     String,
     Integer,
@@ -43,7 +45,7 @@ impl std::fmt::Display for ParamType {
 // 参数定义
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParamDef {
     pub name: String,
     pub param_type: ParamType,

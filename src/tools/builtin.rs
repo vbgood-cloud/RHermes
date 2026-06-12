@@ -2013,6 +2013,17 @@ pub async fn full_registry(mcp_config: &crate::core::McpConfig) -> (ToolRegistry
         });
     }
 
+    // ── WASM 插件注册 ──
+    if config.wasm.enabled {
+        let wasm_tools = crate::tools::wasm_plugin::load_plugins(
+            &config.wasm.plugins_dir,
+            &config.wasm,
+        );
+        if !wasm_tools.is_empty() {
+            registry = registry.register_all(wasm_tools);
+        }
+    }
+
     // 保存最终注册表到全局，供 all_tool_defs() 动态生成 ToolDef
     let _ = GLOBAL_REGISTRY.set(registry.clone());
     (registry, report)

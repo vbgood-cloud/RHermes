@@ -83,6 +83,10 @@ pub struct Config {
     #[serde(default)]
     pub scheduler: SchedulerConfig,
 
+    /// WASM 插件配置
+    #[serde(default)]
+    pub wasm: WasmPluginConfig,
+
     /// MCP 客户端配置
     #[serde(default)]
     pub mcp: McpConfig,
@@ -368,6 +372,38 @@ pub struct ScheduledTaskConfig {
 }
 
 fn default_true() -> bool { true }
+
+/// WASM 插件配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmPluginConfig {
+    /// 是否启用 WASM 插件
+    #[serde(default)]
+    pub enabled: bool,
+    /// 插件目录（相对于 RHermes 运行目录）
+    #[serde(default = "default_wasm_plugins_dir")]
+    pub plugins_dir: String,
+    /// 单个插件执行超时（毫秒）
+    #[serde(default = "default_wasm_timeout_ms")]
+    pub timeout_ms: u64,
+    /// 允许的最大内存（字节），默认 32MB
+    #[serde(default = "default_wasm_max_memory")]
+    pub max_memory: u64,
+}
+
+fn default_wasm_plugins_dir() -> String { "plugins".into() }
+fn default_wasm_timeout_ms() -> u64 { 30_000 }
+fn default_wasm_max_memory() -> u64 { 32 * 1024 * 1024 }
+
+impl Default for WasmPluginConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            plugins_dir: default_wasm_plugins_dir(),
+            timeout_ms: default_wasm_timeout_ms(),
+            max_memory: default_wasm_max_memory(),
+        }
+    }
+}
 
 /// MCP 客户端配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -719,6 +755,7 @@ impl Default for Config {
             channels: ChannelsConfig::default(),
             gateway: GatewayConfig::default(),
             scheduler: SchedulerConfig::default(),
+            wasm: WasmPluginConfig::default(),
             mcp: McpConfig::default(),
             search: SearchConfig::default(),
             proxy: ProxyConfig::default(),
@@ -1126,6 +1163,15 @@ impl Config {
             s.push('\n');
         }
 
+        // ── WASM ──
+        s.push_str("# ── WASM 插件配置 ──\n[wasm]\n");
+        s.push_str(&format!("enabled = {}\n", d.wasm.enabled));
+        s.push_str(&format!("# 插件目录\nplugins_dir = {:?}\n", d.wasm.plugins_dir));
+        s.push_str("# 单个插件执行超时（毫秒）\n");
+        s.push_str(&format!("timeout_ms = {}\n", d.wasm.timeout_ms));
+        s.push_str("# 允许的最大内存（字节）\n");
+        s.push_str(&format!("max_memory = {}\n\n", d.wasm.max_memory));
+
         // ── MCP ──
         s.push_str("# ── MCP 客户端配置 ──\n[mcp]\n");
         s.push_str(&format!("enabled = {}\n", d.mcp.enabled));
@@ -1465,6 +1511,7 @@ mod tests {
             channels: ChannelsConfig::default(),
             gateway: GatewayConfig::default(),
             scheduler: SchedulerConfig::default(),
+            wasm: WasmPluginConfig::default(),
             mcp: McpConfig::default(),
             search: SearchConfig::default(),
             proxy: ProxyConfig::default(),
