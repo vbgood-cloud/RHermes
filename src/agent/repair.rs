@@ -1,6 +1,7 @@
 //! RHermes Tool-Call Repair Pipeline
 //!
 //! 四道工序修复 DeepSeek 模型在 tool-call 上的常见问题：
+#![allow(dead_code)]
 //!
 //! 1. **Flatten** — 参数嵌套过深时转 dot-notation，dispatch 时还原
 //! 2. **Scavenge** — 从 reasoning_content 捞取模型忘记发出的 tool-call

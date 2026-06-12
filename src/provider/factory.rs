@@ -4,8 +4,7 @@
 
 use std::sync::Arc;
 
-use crate::api::{ApiError, ChatRequest, ChatResponse};
-use crate::core::{Config, ProviderConfig};
+use crate::core::Config;
 use crate::provider::{DeepSeekTransport, ProviderPool, Transport};
 
 /// 默认的 API base URL 映射

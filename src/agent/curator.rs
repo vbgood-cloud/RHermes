@@ -166,7 +166,7 @@ impl Curator {
 
     /// 扫描所有技能的生命周期状态
     fn scan_skill_states(&self) -> Vec<(String, PathBuf, SkillStatus)> {
-        let now = Utc::now();
+        let _now = Utc::now();
         let mut results = Vec::new();
 
         // 递归扫描技能文件
@@ -220,7 +220,7 @@ impl Curator {
     }
 
     /// 标记技能为过期（在 frontmatter 中添加 status: stale）
-    fn mark_stale(&self, name: &str, path: &Path) -> Result<(), String> {
+    fn mark_stale(&self, _name: &str, path: &Path) -> Result<(), String> {
         let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
 
         if content.contains("status: stale") || content.contains("status: archived") {

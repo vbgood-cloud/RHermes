@@ -358,7 +358,7 @@ impl McpTransportWrapper {
         match self {
             Self::Stdio(t) => t.take_notification_rx(),
             Self::Sse(t) => t.take_notification_rx(),
-            Self::Direct(t) => None,
+            Self::Direct(_t) => None,
         }
     }
     pub async fn send_notification(&mut self, method: &str, params: Value) -> Result<(), McpError> {

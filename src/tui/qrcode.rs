@@ -24,7 +24,7 @@ pub fn render_ascii_qr(text: &str) -> Vec<Line<'static>> {
     let module_count = size + 2; // +2 边距
 
     let dark_style = Style::default().fg(Color::White).bg(Color::Black);
-    let light_style = Style::default().fg(Color::Black).bg(Color::White);
+    let _light_style = Style::default().fg(Color::Black).bg(Color::White);
     let border_style = Style::default().fg(Color::DarkGray);
 
     let mut lines = Vec::new();

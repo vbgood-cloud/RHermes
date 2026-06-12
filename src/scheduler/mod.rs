@@ -109,7 +109,7 @@ impl Scheduler {
             let schedule = task.schedule;
 
             // 计算首次触发时间用于日志
-            let now = chrono::Utc::now();
+            let _now = chrono::Utc::now();
             let next = schedule.upcoming(chrono::Utc).next();
             if let Some(next_time) = next {
                 let local = next_time.with_timezone(&chrono::Local);

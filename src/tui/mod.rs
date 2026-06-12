@@ -33,12 +33,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::api::{ApiEvent, ApiMessage, ToolCallData, Usage};
+use crate::api::{ApiEvent, Usage};
 use crate::channel::InboundMessage;
 use crate::core::Config;
 use crate::core::Context;
 use crate::agent::MemorySystem;
-use crate::tools::ToolCall;
 use crate::tools::ToolDispatcher;
 use crate::tui::markdown::render_markdown;
 use serde::{Deserialize, Serialize};
@@ -1047,7 +1046,7 @@ impl App {
                         if query.is_empty() {
                             self.messages.push(Message::system("用法: /回忆 <关键词>"));
                         } else if let Some(ref mem) = self.memory {
-                            if let Ok(mut mem_lock) = mem.lock() {
+                            if let Ok(mem_lock) = mem.lock() {
                                 match mem_lock.search(query, 10) {
                                     Ok(results) if results.is_empty() => {
                                         self.messages.push(Message::system(
@@ -1777,7 +1776,7 @@ impl App {
     /// 将会话归档到长期记忆
     fn export_debug(&self) {
         if let Some(ref d) = self.debug {
-            if let Ok(mut dbg) = d.lock() {
+            if let Ok(dbg) = d.lock() {
                 let debug_dir = self.memories_dir.parent()
                     .unwrap_or(std::path::Path::new("."))
                     .join("debug");

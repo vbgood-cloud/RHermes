@@ -13,7 +13,4 @@ pub mod transport;
 
 pub use adapter::McpAdapter;
 pub use adapter::McpAdapterManager;
-pub use config::McpConfig;
-pub use import::{import_from_file, import_interactive};
-pub use setup::run_mcp_setup;
 pub use tool_wrapper::McpRemoteTool;

@@ -7,10 +7,7 @@ mod factory;
 mod pool;
 mod transport;
 
-pub use factory::{
-    create_main_transport, create_transport, default_provider_base_url,
-    infer_provider_from_model,
-};
+pub use factory::create_main_transport;
 pub use pool::ProviderPool;
 pub use transport::DeepSeekTransport;
 pub use transport::Transport;

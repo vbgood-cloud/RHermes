@@ -220,7 +220,7 @@ impl Channel for WeComChannel {
                 return;
             }
 
-            let poll_interval = Duration::from_secs(self.config.channels.wecom.poll_interval_secs);
+            let _poll_interval = Duration::from_secs(self.config.channels.wecom.poll_interval_secs);
             let mut token: Option<String> = None;
             let mut token_expires = std::time::Instant::now();
 

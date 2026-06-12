@@ -1,6 +1,7 @@
 //! RHermes MemoryManager — 记忆系统编排层
 //!
 //! ## 架构
+#![allow(dead_code)]
 //!
 //! ```text
 //! Agent Loop: prefetch → inject → intercept → sync → flush
@@ -19,7 +20,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::agent::memory::{MemoryEntry, MemoryError, MemorySystem, MemoryType, StoreMemory, UserProfile};
+use crate::agent::memory::{MemoryEntry, MemorySystem};
 
 // ---------------------------------------------------------------------------
 // Provider trait

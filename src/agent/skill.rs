@@ -345,7 +345,7 @@ impl SkillEngine {
     }
 
     /// 列出并记录查看
-    pub fn list_and_record(&mut self, viewer: &str) -> Vec<&Skill> {
+    pub fn list_and_record(&mut self, _viewer: &str) -> Vec<&Skill> {
         let names: Vec<String> = self.skills.keys().cloned().collect();
         for name in &names {
             self.record_view(name);

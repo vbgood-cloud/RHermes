@@ -19,8 +19,8 @@ pub trait EventSink: Send + Sync {
     async fn on_tool_result(&self, name: &str, output: &str, duration_ms: u64, success: bool);
     async fn on_done(&self);
     async fn on_error(&self, error: &str);
-    async fn on_usage(&self, usage: &Usage) {}
-    async fn on_balance(&self, balance: f64) {}
+    async fn on_usage(&self, _usage: &Usage) {}
+    async fn on_balance(&self, _balance: f64) {}
 }
 
 // ---------------------------------------------------------------------------

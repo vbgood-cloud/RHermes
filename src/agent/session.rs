@@ -188,7 +188,7 @@ impl AgentSession {
 
             // 2c. 记忆召回
             if let Some(ref mem) = self.memory {
-                if let Ok(mut mem_lock) = mem.lock() {
+                if let Ok(mem_lock) = mem.lock() {
                     if let Ok(results) = mem_lock.search(user_msg, 5) {
                         if !results.is_empty() {
                             let recall: String = results.iter()
@@ -378,7 +378,7 @@ impl AgentSession {
                 tool_call_counter = 0;
                 let nudge_msg = user_msg.to_string();
                 let nudge_text = final_text.clone();
-                let se = self.skill_engine.clone();
+                let _se = self.skill_engine.clone();
                 let refine_transport = self.transport.clone();
                 let config = crate::tools::get_global_config();
                 tokio::spawn(async move {

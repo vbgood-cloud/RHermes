@@ -6,7 +6,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use extism::{Manifest, Plugin, Wasm};
 use serde_json::Value;
 

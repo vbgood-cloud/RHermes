@@ -8,7 +8,6 @@ mod setup;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use crate::channel::{Channel, ChannelManager};
 use crate::core::Config;

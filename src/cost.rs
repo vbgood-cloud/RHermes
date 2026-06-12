@@ -1,6 +1,7 @@
 //! RHermes 成本控制体系
 //!
 //! 五个互补机制控制 Token 花费：
+#![allow(dead_code)]
 //!
 //! 1. **Flash-First 分级** — auto / flash / pro 三级 preset
 //! 2. **NEEDS_PRO 自动升级** — 模型自报告，flash 自动切 pro

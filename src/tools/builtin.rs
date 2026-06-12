@@ -446,7 +446,6 @@ fn glob_to_regex(glob: &str) -> Result<Regex, String> {
 
 use grep_regex::RegexMatcher;
 use grep_searcher::sinks::UTF8;
-use grep_searcher::Searcher;
 use grep_searcher::SearcherBuilder;
 use ignore::WalkBuilder;
 
@@ -1946,7 +1945,7 @@ pub async fn full_registry(mcp_config: &crate::core::McpConfig) -> (ToolRegistry
     // 手动逐一连接每个 Server，收集成功/失败结果
     for (name, config) in &mcp_config.servers {
         match crate::mcp::McpAdapter::connect(name.clone(), config).await {
-            Ok(mut adapter) => {
+            Ok(adapter) => {
                 let tool_count = adapter.tools().len();
                 mcp_tool_count += tool_count;
                 report.connected_servers.push(format!("{} ({} 工具)", name, tool_count));
