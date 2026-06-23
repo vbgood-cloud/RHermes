@@ -1,10 +1,12 @@
 # RHermes
 
+> **RHermes** = **R**easonix + **Hermes**，也是 Rust 版 Hermes。
+
 > **Rust 写的 AI Agent，越用越聪明。** 🦀
 
 [![Rust 2024](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.4.6-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
+[![Version](https://img.shields.io/badge/version-0.6.0-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
 
 不满足于"又一个 AI 助手"。DeepSeek 前缀缓存压到极限、工具并行调度榨干 IO、自进化技能让 Agent 越长越强——用 Rust 写的，就该零妥协。
 
