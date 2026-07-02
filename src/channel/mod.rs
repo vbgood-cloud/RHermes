@@ -45,6 +45,14 @@ pub trait Channel: Send + Sync {
     /// 通道名称
     fn name(&self) -> &'static str;
 
+    /// 向指定会话发送格式化消息（Markdown 等）
+    ///
+    /// 默认实现回退为纯文本 send_message。
+    /// 支持格式的通道（如 Telegram）应重写此方法以使用 MarkdownV2 等。
+    async fn send_formatted(&self, chat_id: &str, text: &str) -> Result<(), String> {
+        self.send_message(chat_id, text).await
+    }
+
     /// 可选：返回登录二维码（二维码文本, PNG 字节）
     /// 返回 None 表示该通道不需要扫码登录
     async fn login_qrcode(&self) -> Option<(String, Vec<u8>)> {

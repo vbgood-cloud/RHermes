@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::channel::{Channel, ChannelManager};
+use crate::channel::ChannelManager;
 use crate::core::Config;
 use crate::core::PathManager;
 use crate::{GatewayCommand, GatewayChannelCommand};
@@ -271,6 +271,7 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
             &session_config,
             system_prompt.to_string(),
             session_debug,
+            config_path.to_path_buf(),
         );
 
         // 轮询 inbound 消息

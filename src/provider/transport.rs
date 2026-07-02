@@ -36,7 +36,10 @@ pub trait Transport: Send + Sync {
     async fn get_balance(&self) -> Result<f64, ApiError>;
 
     /// 获取当前使用的模型名称
-    fn model_name(&self) -> &str;
+    fn model_name(&self) -> String;
+
+    /// 热切换模型（默认空实现，向后兼容）
+    fn set_model(&self, _model: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -47,6 +50,8 @@ pub trait Transport: Send + Sync {
 pub struct DeepSeekTransport {
     http: reqwest::Client,
     config: Arc<Config>,
+    /// 模型热切换 override；为 None 时 fallback 到 config.api.model
+    model_override: Arc<std::sync::RwLock<Option<String>>>,
 }
 
 impl DeepSeekTransport {
@@ -59,6 +64,7 @@ impl DeepSeekTransport {
         Self {
             http,
             config: Arc::new(config.clone()),
+            model_override: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 
@@ -230,7 +236,19 @@ impl Transport for DeepSeekTransport {
         Ok(0.0)
     }
 
-    fn model_name(&self) -> &str {
-        &self.config.api.model
+    fn model_name(&self) -> String {
+        if let Ok(g) = self.model_override.read() {
+            if let Some(m) = g.as_ref() {
+                return m.clone();
+            }
+        }
+        self.config.api.model.clone()
+    }
+
+    fn set_model(&self, model: &str) {
+        if let Ok(mut g) = self.model_override.write() {
+            *g = Some(model.to_string());
+            tracing::info!("[Transport] 模型热切换: {model}");
+        }
     }
 }

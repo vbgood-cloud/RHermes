@@ -28,7 +28,7 @@
 ├──────────────────────────────────────────────────────────┤
 │          core/ (核心基础设施)                              │
 │   config.rs(TOML配置) · context.rs(三段式Context)          │
-│   path.rs(便携/传统两种部署模式)                           │
+│   path.rs(可移动部署模式)                                   │
 ├──────────────────────────────────────────────────────────┤
 │     cost.rs (成本控制)     │   debug.rs (调试系统)        │
 │     Flash/Pro 分级 · 自动升级 │   会话录制 · 调试报告导出   │
@@ -45,7 +45,9 @@
 |------|------|
 | **config.rs** | TOML 配置 · 含 API、Request、Memory、Display、Debug、Agent 六段 |
 | **context.rs** | **三段式 Context 架构** — 省 Token 的核心设计 |
-| **path.rs** | 路径管理器 · 可移动模式(`home/`) / 传统模式(`~/.config`) 自动检测 |
+| **path.rs** | 路径管理器 · 可移动模式(`home/`) |
+| **prefix_cache.rs** | 前缀缓存管理器 — DeepSeek prefix cache 命中率监控与优化 |
+| **http_client.rs** | 代理感知 HTTP 客户端工厂 — 分层代理（all/off/auto）+ no_proxy 排除 |
 
 #### 三段式 Context 设计（`context.rs`）
 
@@ -298,9 +300,10 @@ SSE 流式解析 — 逐 chunk 处理
 | 配置 | TOML + serde |
 | 序列化 | serde + serde_json |
 | 日志 | tracing + tracing-subscriber |
+| WASM | extism（WASM 插件运行时） |
 | CLI | clap |
 | 测试 | 119 个单元测试（全部通过） |
-| 部署 | 单文件 < 10MB，支持便携式模式 |
+| 部署 | 单文件 < 10MB，可移动模式 |
 
 ---
 
@@ -336,16 +339,8 @@ compression_ratio = 0.8
 ## 六、部署模式
 
 ### 可移动模式（Portable Mode）
-- 当 `<可执行程序目录>/home/` 存在时触发
-- 所有配置/记忆/技能/会话保存在 `home/` 目录
+- 所有配置/记忆/技能/会话保存在可执行文件旁的 `home/` 目录
 - 适用于：U盘、云同步文件夹、Docker volume、CI/CD 挂载点
-
-### 传统模式（Traditional Mode）
-- 无 `home/` 目录时自动降级
-- 使用系统标准配置目录
-  - Linux: `$XDG_CONFIG_HOME/rhermes`
-  - macOS: `~/Library/Application Support/rhermes`
-  - Windows: `%APPDATA%/rhermes`
 
 ---
 

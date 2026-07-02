@@ -277,7 +277,7 @@ impl Transport for ProviderPool {
         entry.transport.get_balance().await
     }
 
-    fn model_name(&self) -> &str {
+    fn model_name(&self) -> String {
         // 返回第一个健康 provider 的模型名
         for p in &self.providers {
             if p.is_healthy() {
@@ -288,6 +288,12 @@ impl Transport for ProviderPool {
         self.providers
             .first()
             .map(|p| p.transport.model_name())
-            .unwrap_or("unknown")
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
+    fn set_model(&self, model: &str) {
+        for p in &self.providers {
+            p.transport.set_model(model);
+        }
     }
 }

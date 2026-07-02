@@ -16,11 +16,10 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("│         RHermes 初始化向导 v{}         │", env!("CARGO_PKG_VERSION"));
     println!("├────────────────────────────────────────────┤");
     println!("│  本向导将引导你完成首次配置：               │");
-    println!("│  1. 选择部署方式                           │");
+    println!("│  1. 创建数据目录                           │");
     println!("│  2. 选择 AI 提供商（DeepSeek/智谱等）       │");
     println!("│  3. 配置 API Key                           │");
     println!("│  4. 选择模型                               │");
-    println!("│  5. 确认保存                               │");
     println!("└────────────────────────────────────────────┘");
     println!();
 
@@ -46,9 +45,9 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         println!();
     }
 
-    // ── 步骤 2: 便携式模式（唯一支持的部署方式） ──
-    println!("【步骤 1/4】部署模式");
-    println!("   📦 便携式模式 — 所有数据保存在 ./home/ 目录");
+    // ── 步骤 2: 创建数据目录 ──
+    println!("【步骤 1/4】数据目录");
+    println!("   📦 所有数据保存在 ./home/ 目录");
     println!();
 
     let cwd = std::env::current_dir()?;
@@ -64,7 +63,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // ── 步骤 3: Provider 选择 ──
-    println!("【步骤 3/5】选择 AI 提供商");
+    println!("【步骤 2/4】选择 AI 提供商");
     println!();
 
     let provider_options = &[
@@ -102,7 +101,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // ── 步骤 4: API Key ──
-    println!("【步骤 4/5】配置 {provider_name} API Key");
+    println!("【步骤 3/4】配置 {provider_name} API Key");
     match provider_name.as_str() {
         "deepseek" => println!("   获取地址: https://platform.deepseek.com/api_keys"),
         "zhipu" => println!("   获取地址: https://open.bigmodel.cn/usercenter/apikeys"),
@@ -168,7 +167,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // ── 步骤 5: 模型选择 ──
-    println!("【步骤 5/5】选择模型");
+    println!("【步骤 4/4】选择模型");
     println!();
 
     let (model_options, default_idx): (&[&str], usize) = match provider_name.as_str() {
@@ -219,7 +218,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // ── 步骤 6: 可选配置 ──
-    println!("【步骤 6/6】可选配置（直接回车使用默认值）");
+    println!("【可选】其他配置（直接回车使用默认值）");
     println!();
 
     let base_url: String = Input::with_theme(&ColorfulTheme::default())
@@ -271,7 +270,6 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("┌────────────────────────────────────────────┐");
     println!("│          ✅ 初始化完成！                    │");
     println!("├────────────────────────────────────────────┤");
-    println!("│  部署方式: 便携式模式 📦");
     println!("│  数据目录: {}", path_mgr.data_root().display());
     println!("│  配置文件: {}", config_path.display());
     println!("│  密钥文件: {}", env_path.display());

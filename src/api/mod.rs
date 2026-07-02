@@ -727,8 +727,8 @@ impl Transport for DeepSeekClient {
         self.get_balance().await
     }
 
-    fn model_name(&self) -> &str {
-        self.model()
+    fn model_name(&self) -> String {
+        self.model().to_string()
     }
 }
 

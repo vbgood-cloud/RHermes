@@ -50,7 +50,7 @@ pub fn run_gateway_setup(config_path: &Path) -> Result<(), String> {
         .default(0)
         .interact().map_err(|e| e.to_string())?;
 
-    let _enable_wechat = selections == 0 || selections == 0; // 单选的 index
+    let _enable_wechat = selections == 0;
     let _enable_wecom = selections == 1;
 
     // 支持多选：由于 dialoguer Select 是单选，这里简化成每个通道单独确认

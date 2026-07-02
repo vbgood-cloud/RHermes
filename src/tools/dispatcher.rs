@@ -182,7 +182,23 @@ mod tests {
     use super::*;
     use crate::core::Config;
     use crate::tools::builtin_registry;
+    use crate::tools::builtin::GLOBAL_WORKSPACE;
     use serde_json::json;
+
+    /// 确保 GLOBAL_WORKSPACE 已初始化。get_or_init 是线程安全的，多次调用无副作用。
+    fn ensure_workspace() {
+        GLOBAL_WORKSPACE.get_or_init(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| ".".to_string())
+        });
+    }
+
+    /// 创建位于 workspace 下的临时目录，避免路径边界检查失败
+    fn tempdir_in_workspace() -> tempfile::TempDir {
+        ensure_workspace();
+        tempfile::tempdir_in(std::env::current_dir().unwrap()).expect("创建临时目录失败")
+    }
 
     fn make_call(name: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {
@@ -215,7 +231,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_parallel_read_files() {
         // 创建临时文件用于测试
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir_in_workspace();
         let f1 = tmp.path().join("a.txt");
         let f2 = tmp.path().join("b.txt");
         tokio::fs::write(&f1, "hello").await.unwrap();
@@ -239,7 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_serial_write_then_read() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir_in_workspace();
         let file_path = tmp.path().join("test.txt").to_str().unwrap().to_string();
 
         let reg = builtin_registry(&Config::default());
@@ -260,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_mixed_parallel_and_serial() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir_in_workspace();
         let f1 = tmp.path().join("a.txt").to_str().unwrap().to_string();
         let f2 = tmp.path().join("b.txt").to_str().unwrap().to_string();
         let f3 = tmp.path().join("c.txt").to_str().unwrap().to_string();
@@ -290,7 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dispatch_concurrency_limit() {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempdir_in_workspace();
         let reg = builtin_registry(&Config::default());
         let dispatcher = ToolDispatcher::new(reg).with_max_concurrency(2);
 

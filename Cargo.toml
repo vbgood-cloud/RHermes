@@ -1,6 +1,6 @@
 [package]
 name = "rhermes"
-version = "0.4.4"
+version = "0.6.0"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]
@@ -8,7 +8,6 @@ license = "MIT"
 repository = "https://github.com/rhermes/rhermes"
 
 [dependencies]
-dirs = "6.0"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tracing = "0.1"
@@ -40,6 +39,9 @@ extism = "1.5"
 ratatui = "0.29"
 crossterm = "0.28"
 qrcodegen = "1.8.0"
+
+[build-dependencies]
+winresource = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
