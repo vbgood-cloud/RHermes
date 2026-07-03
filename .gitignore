@@ -26,6 +26,9 @@ rhermes.log
 # 会话文件
 session.json
 
+# 演示文档
+*.pptx
+
 # 临时文件 / 调试输出
 nul
 tmpclaude-*
