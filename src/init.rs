@@ -17,36 +17,41 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("├────────────────────────────────────────────┤");
     println!("│  本向导将引导你完成首次配置：               │");
     println!("│  1. 创建数据目录                           │");
-    println!("│  2. 选择 AI 提供商（DeepSeek/智谱等）       │");
-    println!("│  3. 配置 API Key                           │");
-    println!("│  4. 选择模型                               │");
+    println!("│  2. 选择 AI 提供商                         │");
+    println!("│  3. 确认 API 地址                          │");
+    println!("│  4. 配置 API Key                           │");
+    println!("│  5. 查询并选择模型                         │");
     println!("└────────────────────────────────────────────┘");
     println!();
 
-    // ── 步骤 1: 检测现有配置 ──
+    // ── 检测现有配置 ──
     let existing_config = Config::load(
         PathManager::detect().config_path()
     ).unwrap_or_default();
 
-    if existing_config.is_configured() {
-        println!("⚠ 检测到已有配置:");
-        println!("   API Key: sk-...{}", &existing_config.api_key[existing_config.api_key.len().saturating_sub(4)..]);
-        println!("   模型:    {}", existing_config.api.model);
-        println!();
+    let existing_provider = existing_config.agent.default_provider.clone();
 
-        if !Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("是否覆盖现有配置?")
-            .default(false)
-            .interact()?
-        {
-            println!("🛑 初始化已取消，现有配置保持不变。");
-            return Ok(());
+    // 显示已有配置概况（遍历 providers，而非顶层字段）
+    if existing_config.is_configured() {
+        println!("ℹ 检测到已有配置:");
+        for (name, p) in &existing_config.providers {
+            if p.api_key.is_empty() && name != "ollama" { continue; }
+            let key_hint = if p.api_key.is_empty() {
+                "(无 Key)".to_string()
+            } else {
+                format!("{}...{}",
+                    &p.api_key[..3.min(p.api_key.len())],
+                    &p.api_key[p.api_key.len().saturating_sub(4)..])
+            };
+            let model = p.model.as_deref().unwrap_or("-");
+            let url = p.base_url.as_deref().unwrap_or("-");
+            println!("   [{name}] Key: {key_hint}  模型: {model}  地址: {url}");
         }
         println!();
     }
 
-    // ── 步骤 2: 创建数据目录 ──
-    println!("【步骤 1/4】数据目录");
+    // ── 步骤 1: 创建数据目录 ──
+    println!("【步骤 1/5】数据目录");
     println!("   📦 所有数据保存在 ./home/ 目录");
     println!();
 
@@ -62,8 +67,8 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
-    // ── 步骤 3: Provider 选择 ──
-    println!("【步骤 2/4】选择 AI 提供商");
+    // ── 步骤 2: Provider 选择 ──
+    println!("【步骤 2/5】选择 AI 提供商");
     println!();
 
     let provider_options = &[
@@ -74,34 +79,73 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         "其他 (自定义)",
     ];
 
+    let default_provider_idx = match existing_provider.as_str() {
+        "deepseek" => 0,
+        "zhipu" => 1,
+        "openai" => 2,
+        "siliconflow" => 3,
+        _ => 0,
+    };
+
     let provider_idx = dialoguer::Select::with_theme(&ColorfulTheme::default())
         .with_prompt("请选择 AI 提供商")
         .items(provider_options)
-        .default(0)
+        .default(default_provider_idx)
         .interact()?;
 
-    let (provider_name, provider_base_url) = match provider_idx {
-        0 => ("deepseek".to_string(), "https://api.deepseek.com".to_string()),
-        1 => ("zhipu".to_string(), "https://open.bigmodel.cn/api/paas/v4".to_string()),
-        2 => ("openai".to_string(), "https://api.openai.com/v1".to_string()),
-        3 => ("siliconflow".to_string(), "https://api.siliconflow.cn/v1".to_string()),
+    let (provider_name, default_base_url) = match provider_idx {
+        0 => ("deepseek".to_string(), "https://api.deepseek.com"),
+        1 => ("zhipu".to_string(), "https://open.bigmodel.cn/api/paas/v4"),
+        2 => ("openai".to_string(), "https://api.openai.com/v1"),
+        3 => ("siliconflow".to_string(), "https://api.siliconflow.cn/v1"),
         _ => {
-            let name: String = Input::with_theme(&ColorfulTheme::default())
+            let theme = ColorfulTheme::default();
+            let name: String = Input::with_theme(&theme)
                 .with_prompt("输入提供商名称（如 moonshot、groq）")
                 .default("custom".into())
                 .interact_text()?;
-            let url: String = Input::with_theme(&ColorfulTheme::default())
-                .with_prompt("输入 API 地址")
-                .default("https://api.openai.com/v1".into())
-                .interact_text()?;
-            (name, url)
+            (name, "https://api.openai.com/v1")
         }
     };
 
     println!();
 
+    // 从已有配置中提取当前选中 provider 的配置
+    // （只读 providers[provider_name]，不碰其他 provider 的数据）
+    let existing_p = existing_config.providers.get(&provider_name);
+    let existing_api_key = existing_p
+        .map(|p| p.api_key.clone())
+        .unwrap_or_default();
+    let existing_model = existing_p
+        .and_then(|p| p.model.clone())
+        .unwrap_or_else(|| existing_config.api.model.clone());
+    let existing_base_url = existing_p
+        .and_then(|p| p.base_url.clone())
+        .unwrap_or_else(|| existing_config.api.base_url.clone());
+
+    // ── 步骤 3: 确认 Base URL ──
+    println!("【步骤 3/5】确认 API 地址");
+    println!();
+
+    // 已有 base_url 优先使用（来自当前 provider 的配置）
+    let url_default = if !existing_base_url.is_empty() {
+        existing_base_url.clone()
+    } else {
+        default_base_url.to_string()
+    };
+
+    let base_url: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt("API 地址")
+        .default(url_default)
+        .interact_text()?;
+
+    // 规范化：去掉末尾斜杠
+    let base_url = base_url.trim_end_matches('/').to_string();
+
+    println!();
+
     // ── 步骤 4: API Key ──
-    println!("【步骤 3/4】配置 {provider_name} API Key");
+    println!("【步骤 4/5】配置 {provider_name} API Key");
     match provider_name.as_str() {
         "deepseek" => println!("   获取地址: https://platform.deepseek.com/api_keys"),
         "zhipu" => println!("   获取地址: https://open.bigmodel.cn/usercenter/apikeys"),
@@ -111,21 +155,40 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
+    // 是否有已有 Key 可保留（从当前 provider 的 providers 条目中读取）
+    let has_existing_key = !existing_api_key.is_empty();
+
+    // 构建提示文字（把掩码放到 prompt 中，不用 initial_text 预填）
+    let key_hint = if has_existing_key {
+        format!(
+            "（当前: {}...{}，直接回车保留原值）",
+            &existing_api_key[..3.min(existing_api_key.len())],
+            &existing_api_key[existing_api_key.len().saturating_sub(4)..]
+        )
+    } else {
+        String::new()
+    };
+
     let api_key: String = loop {
         let prompt_text = if provider_name == "deepseek" {
-            "请输入你的 DeepSeek API Key".to_string()
+            format!("请输入你的 DeepSeek API Key{key_hint}")
         } else {
-            format!("请输入你的 {} API Key", provider_name)
+            format!("请输入你的 {provider_name} API Key{key_hint}")
         };
-        let input: String = Input::with_theme(&ColorfulTheme::default())
+        let theme = ColorfulTheme::default();
+        // 有原值时允许空输入（=保留），否则必须输入
+        let input: String = Input::with_theme(&theme)
             .with_prompt(&prompt_text)
-            .allow_empty(false)
+            .allow_empty(has_existing_key)
             .interact_text()?;
 
         let trimmed = input.trim().to_string();
+        // 空输入 + 有原值 → 保留原值
+        if trimmed.is_empty() && has_existing_key {
+            break existing_api_key.clone();
+        }
 
         if provider_name == "deepseek" {
-            // DeepSeek Key 以 sk- 开头
             if trimmed.starts_with("sk-") && trimmed.len() >= 10 {
                 break trimmed;
             } else if trimmed.starts_with("sk-") {
@@ -148,7 +211,6 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         } else {
-            // 其他 Provider 只要非空即可
             if trimmed.len() >= 8 {
                 break trimmed;
             } else {
@@ -166,70 +228,17 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
-    // ── 步骤 5: 模型选择 ──
-    println!("【步骤 4/4】选择模型");
+    // ── 步骤 5: 查询并选择模型 ──
+    println!("【步骤 5/5】选择模型");
     println!();
 
-    let (model_options, default_idx): (&[&str], usize) = match provider_name.as_str() {
-        "zhipu" => (&[
-            "glm-4-flash     — 轻量快速，适合日常",
-            "glm-4-plus      — 更强能力，复杂任务",
-            "glm-5           — 最新旗舰模型",
-            "自定义模型名称",
-        ], 0),
-        "openai" => (&[
-            "gpt-4o          — 最强多模态 (推荐)",
-            "gpt-4o-mini     — 轻量低成本",
-            "o3-mini         — 推理模型",
-            "自定义模型名称",
-        ], 0),
-        "siliconflow" => (&[
-            "deepseek-v4-flash — 通过硅基流动调用",
-            "Qwen/Qwen2.5-Coder-32B-Instruct",
-            "Pro/deepseek-ai/DeepSeek-V3",
-            "自定义模型名称",
-        ], 0),
-        _ => (&[
-            "deepseek-v4-flash  — 日常开发，成本最低 (推荐)",
-            "deepseek-v4-pro    — 复杂任务，更强推理能力",
-            "自定义模型名称",
-        ], 0),
-    };
-
-    let model_idx = dialoguer::Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("请选择默认模型")
-        .items(model_options)
-        .default(default_idx)
-        .interact()?;
-
-    let model = match model_idx {
-        x if x == model_options.len() - 1 => {
-            // 自定义
-            Input::with_theme(&ColorfulTheme::default())
-                .with_prompt("输入模型名称")
-                .default(model_options[0].split_once(' ').map(|(n, _)| n.to_string()).unwrap_or_else(|| "deepseek-v4-flash".into()))
-                .interact_text()?
-        }
-        _ => {
-            model_options[model_idx].split_once(' ').map(|(n, _)| n.to_string()).unwrap_or_else(|| "deepseek-v4-flash".into())
-        }
-    };
-
-    println!();
-
-    // ── 步骤 6: 可选配置 ──
-    println!("【可选】其他配置（直接回车使用默认值）");
-    println!();
-
-    let base_url: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("API 地址")
-        .default(provider_base_url.clone())
-        .interact_text()?;
+    let model = select_model(&base_url, &api_key, &existing_model, &provider_name)?;
 
     println!();
 
     // ── 保存配置 ──
-    let mut providers = std::collections::HashMap::new();
+    // 以已有 providers 为基础，保留其他 provider 的配置（如先配了 zhipu 再配 deepseek）
+    let mut providers = existing_config.providers.clone();
     providers.insert(provider_name.clone(), crate::core::ProviderConfig {
         api_key: api_key.clone(),
         base_url: Some(base_url.clone()),
@@ -238,7 +247,13 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let config = Config {
-        api_key: api_key.clone(),
+        // api_key 字段仅在 deepseek 时同步，保持向后兼容
+        // （save_api_key 已不再依赖此字段，但 load 时旧逻辑会读它）
+        api_key: if provider_name == "deepseek" {
+            api_key.clone()
+        } else {
+            existing_config.api_key.clone()
+        },
         api: crate::core::ApiConfig {
             model: model.clone(),
             base_url: base_url.clone(),
@@ -246,20 +261,18 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         providers,
         agent: crate::core::AgentConfig {
             default_provider: provider_name.clone(),
-            ..Default::default()
+            ..existing_config.agent
         },
-        ..Default::default()
+        ..existing_config
     };
 
     let config_path = path_mgr.config_path();
 
-    // 保存非敏感配置到 config.toml
     if let Err(e) = config.save(&config_path) {
         eprintln!("❌ 配置保存失败: {e}");
         return Err(e.into());
     }
 
-    // 保存 API Key 到 .env
     if let Err(e) = config.save_api_key(&config_path) {
         eprintln!("❌ API Key 保存失败: {e}");
         return Err(e.into());
@@ -274,6 +287,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("│  配置文件: {}", config_path.display());
     println!("│  密钥文件: {}", env_path.display());
     println!("│  提供商:   {}", provider_name);
+    println!("│  API 地址: {}", base_url);
     println!("│  模型:     {}", config.api.model);
     println!("│  API Key:  {}...{}", &api_key[..5.min(api_key.len())], &api_key[api_key.len().saturating_sub(4)..]);
     println!("├────────────────────────────────────────────┤");
@@ -282,4 +296,253 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("└────────────────────────────────────────────┘");
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 模型查询与选择
+// ---------------------------------------------------------------------------
+
+/// 调用 OpenAI 兼容的 GET /v1/models 端点获取可用模型列表
+async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTP 客户端创建失败: {e}"))?;
+
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .send()
+        .await
+        .map_err(|e| format!("请求失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("API 返回 {status}: {body}"));
+    }
+
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("解析 JSON 失败: {e}"))?;
+
+    // OpenAI 标准格式: { "data": [ { "id": "model-name", ... }, ... ] }
+    let models = json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| m.get("id").and_then(|id| id.as_str()).map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if models.is_empty() {
+        return Err("API 返回的模型列表为空".into());
+    }
+
+    // 按字母排序
+    let mut models = models;
+    models.sort();
+    Ok(models)
+}
+
+/// 选择模型：先尝试在线查询，失败则 fallback 到硬编码列表 + 自定义输入
+fn select_model(
+    base_url: &str,
+    api_key: &str,
+    existing_model: &str,
+    provider_name: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    // 尝试在线查询模型列表
+    // 使用 block_in_place + Handle::current() 在已有 tokio 运行时中安全地 block_on，
+    // 避免 "Cannot start a runtime from within a runtime" panic
+    println!("   ⏳ 正在查询可用模型列表...");
+    let online_models = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(fetch_models(base_url, api_key))
+    });
+
+    let model = match online_models {
+        Ok(models) => {
+            println!("   ✅ 查询到 {} 个可用模型", models.len());
+            println!();
+
+            // 构建选项列表：已有的模型优先选中
+            let mut options: Vec<String> = models.clone();
+            options.push("✏ 自定义输入模型名称".to_string());
+
+            // 找到已有模型的索引
+            let default_idx = options
+                .iter()
+                .position(|m| m == existing_model)
+                .unwrap_or(0);
+
+            let theme = ColorfulTheme::default();
+            let max_display = if options.len() > 20 {
+                println!("   （模型较多，使用 ↑↓ 键浏览）");
+                20
+            } else {
+                options.len()
+            };
+
+            // 如果模型太多，分页提示
+            let idx = if options.len() <= 20 {
+                dialoguer::Select::with_theme(&theme)
+                    .with_prompt("请选择默认模型")
+                    .items(&options)
+                    .default(default_idx)
+                    .interact()?
+            } else {
+                // 模型很多时，先显示前 19 个 + 自定义
+                let mut display: Vec<String> = options[..options.len() - 1] // 去掉自定义
+                    .iter()
+                    .take(19)
+                    .cloned()
+                    .collect();
+                display.push(format!("...（共 {} 个模型，输入序号或名称）", options.len() - 1));
+                display.push("✏ 自定义输入模型名称".to_string());
+
+                let idx = dialoguer::Select::with_theme(&theme)
+                    .with_prompt("请选择默认模型")
+                    .items(&display)
+                    .default(0)
+                    .interact()?;
+
+                if idx == display.len() - 1 {
+                    // 自定义
+                    options.len() - 1
+                } else if idx == display.len() - 2 {
+                    // 输入序号或名称
+                    let theme2 = ColorfulTheme::default();
+                    let input: String = Input::with_theme(&theme2)
+                        .with_prompt("输入模型名称或序号")
+                        .interact_text()?;
+                    // 尝试解析为序号
+                    if let Ok(n) = input.trim().parse::<usize>() {
+                        if n > 0 && n <= models.len() {
+                            return Ok(models[n - 1].clone());
+                        }
+                    }
+                    // 当作模型名称
+                    return Ok(input.trim().to_string());
+                } else {
+                    idx
+                }
+            };
+
+            // 检查是否选了"自定义"
+            if idx >= models.len() {
+                // 自定义输入
+                let theme = ColorfulTheme::default();
+                let default_name = if !existing_model.is_empty() {
+                    existing_model.to_string()
+                } else {
+                    "deepseek-v4-flash".to_string()
+                };
+                Input::with_theme(&theme)
+                    .with_prompt("输入模型名称")
+                    .default(default_name)
+                    .interact_text()?
+            } else {
+                models[idx].clone()
+            }
+        }
+        Err(e) => {
+            println!("   ⚠ 在线查询失败: {e}");
+            println!("   ↩ 回退到预设模型列表");
+            println!();
+            select_model_fallback(provider_name, existing_model)?
+        }
+    };
+
+    Ok(model)
+}
+
+/// Fallback：使用硬编码的预设模型列表
+fn select_model_fallback(
+    provider_name: &str,
+    existing_model: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let find_model_idx = |options: &[&str]| -> usize {
+        for (i, opt) in options.iter().enumerate() {
+            if let Some(name) = opt.split_once(' ').map(|(n, _)| n) {
+                if name == existing_model {
+                    return i;
+                }
+            }
+        }
+        0
+    };
+
+    let (model_options, default_idx): (Vec<&str>, usize) = match provider_name {
+        "zhipu" => {
+            let opts = vec![
+                "glm-4-flash     — 轻量快速，适合日常",
+                "glm-4-plus      — 更强能力，复杂任务",
+                "glm-5           — 最新旗舰模型",
+                "✏ 自定义模型名称",
+            ];
+            let idx = find_model_idx(&opts);
+            (opts, idx)
+        }
+        "openai" => {
+            let opts = vec![
+                "gpt-4o          — 最强多模态 (推荐)",
+                "gpt-4o-mini     — 轻量低成本",
+                "o3-mini         — 推理模型",
+                "✏ 自定义模型名称",
+            ];
+            let idx = find_model_idx(&opts);
+            (opts, idx)
+        }
+        "siliconflow" => {
+            let opts = vec![
+                "deepseek-v4-flash — 通过硅基流动调用",
+                "Qwen/Qwen2.5-Coder-32B-Instruct",
+                "Pro/deepseek-ai/DeepSeek-V3",
+                "✏ 自定义模型名称",
+            ];
+            let idx = find_model_idx(&opts);
+            (opts, idx)
+        }
+        _ => {
+            let opts = vec![
+                "deepseek-v4-flash  — 日常开发，成本最低 (推荐)",
+                "deepseek-v4-pro    — 复杂任务，更强推理能力",
+                "✏ 自定义模型名称",
+            ];
+            let idx = find_model_idx(&opts);
+            (opts, idx)
+        }
+    };
+
+    let theme = ColorfulTheme::default();
+    let model_idx = dialoguer::Select::with_theme(&theme)
+        .with_prompt("请选择默认模型")
+        .items(&model_options)
+        .default(default_idx)
+        .interact()?;
+
+    let model = if model_idx == model_options.len() - 1 {
+        let default_name = if !existing_model.is_empty() {
+            existing_model.to_string()
+        } else {
+            "deepseek-v4-flash".to_string()
+        };
+        Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("输入模型名称")
+            .default(default_name)
+            .interact_text()?
+    } else {
+        model_options[model_idx]
+            .split_once(' ')
+            .map(|(n, _)| n.to_string())
+            .unwrap_or_else(|| "deepseek-v4-flash".into())
+    };
+
+    Ok(model)
 }

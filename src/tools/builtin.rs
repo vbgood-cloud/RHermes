@@ -1891,6 +1891,11 @@ pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
         .register(ReadPdf)
         .register(SkillManage)
         .register(Memory)
+        .register(crate::tools::office::ReadExcel)
+        .register(crate::tools::office::WriteExcel)
+        .register(crate::tools::office::ReadDocx)
+        .register(crate::tools::office::WriteDocx)
+        .register(crate::tools::office::ReadPptx)
 }
 
 // ---------------------------------------------------------------------------
@@ -2076,13 +2081,18 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry(&crate::core::Config::default());
-        assert_eq!(reg.len(), 17);
+        assert_eq!(reg.len(), 22);
         assert!(reg.get("read_pdf").is_some());
         assert!(reg.get("skill_manage").is_some());
         assert!(reg.get("memory").is_some());
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("write_file").is_some());
         assert!(reg.get("run_command").is_some());
+        assert!(reg.get("read_excel").is_some());
+        assert!(reg.get("write_excel").is_some());
+        assert!(reg.get("read_docx").is_some());
+        assert!(reg.get("write_docx").is_some());
+        assert!(reg.get("read_pptx").is_some());
         assert!(reg.get("search_content").is_some());
         assert!(reg.get("glob").is_some());
         assert!(reg.get("get_current_time").is_some());

@@ -896,11 +896,8 @@ impl Config {
         let env_path = config_dir.join(ENV_FILE_NAME);
         let mut content = String::new();
         content.push_str("# RHermes Provider API Keys\n");
-        // 兼容旧版：deepseek api key
-        if !self.api_key.is_empty() {
-            content.push_str(&format!("{}={}\n", ENV_KEY_NAME, self.api_key));
-        }
-        // 新版：每个 provider 一条
+        // 遍历所有 provider 写出对应的 {PROVIDER}_API_KEY
+        // （不再单独写顶层 api_key 到 DEEPSEEK_API_KEY，避免重复和错位）
         for (name, provider) in &self.providers {
             if !provider.api_key.is_empty() {
                 let env_var = format!("{}_API_KEY", name.to_uppercase());
