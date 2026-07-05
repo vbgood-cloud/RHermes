@@ -1,6 +1,6 @@
 [package]
 name = "rhermes"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]

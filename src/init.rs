@@ -118,10 +118,10 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
     let existing_model = existing_p
         .and_then(|p| p.model.clone())
-        .unwrap_or_else(|| existing_config.api.model.clone());
+        .unwrap_or_default();
     let existing_base_url = existing_p
         .and_then(|p| p.base_url.clone())
-        .unwrap_or_else(|| existing_config.api.base_url.clone());
+        .unwrap_or_default();
 
     // ── 步骤 3: 确认 Base URL ──
     println!("【步骤 3/5】确认 API 地址");
@@ -150,7 +150,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         "deepseek" => println!("   获取地址: https://platform.deepseek.com/api_keys"),
         "zhipu" => println!("   获取地址: https://open.bigmodel.cn/usercenter/apikeys"),
         "openai" => println!("   获取地址: https://platform.openai.com/api-keys"),
-        "siliconflow" => println!("   获取地址: https://cloud.siliconflow.cn/"),
+        "siliconflow" => println!("   获取地址: https://cloud.siliconflow.cn/account/ak"),
         _ => {}
     }
     println!();
@@ -303,8 +303,16 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
 // ---------------------------------------------------------------------------
 
 /// 调用 OpenAI 兼容的 GET /v1/models 端点获取可用模型列表
-async fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
-    let url = format!("{}/models", base_url.trim_end_matches('/'));
+///
+/// 对于支持 type/sub_type 查询参数的 Provider（如 SiliconFlow），
+/// 会自动添加过滤参数只返回聊天模型。
+async fn fetch_models(base_url: &str, api_key: &str, provider_name: &str) -> Result<Vec<String>, String> {
+    // SiliconFlow 支持 ?type=text&sub_type=chat 过滤聊天模型
+    let query = match provider_name {
+        "siliconflow" => "?type=text&sub_type=chat",
+        _ => "",
+    };
+    let url = format!("{}/models{query}", base_url.trim_end_matches('/'));
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -363,7 +371,7 @@ fn select_model(
     // 避免 "Cannot start a runtime from within a runtime" panic
     println!("   ⏳ 正在查询可用模型列表...");
     let online_models = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(fetch_models(base_url, api_key))
+        tokio::runtime::Handle::current().block_on(fetch_models(base_url, api_key, provider_name))
     });
 
     let model = match online_models {
@@ -371,79 +379,34 @@ fn select_model(
             println!("   ✅ 查询到 {} 个可用模型", models.len());
             println!();
 
-            // 构建选项列表：已有的模型优先选中
-            let mut options: Vec<String> = models.clone();
-            options.push("✏ 自定义输入模型名称".to_string());
-
-            // 找到已有模型的索引
-            let default_idx = options
+            // 已有模型在列表中则默认选中
+            let default_idx = models
                 .iter()
                 .position(|m| m == existing_model)
                 .unwrap_or(0);
 
             let theme = ColorfulTheme::default();
-            let max_display = if options.len() > 20 {
-                println!("   （模型较多，使用 ↑↓ 键浏览）");
-                20
-            } else {
-                options.len()
-            };
 
-            // 如果模型太多，分页提示
-            let idx = if options.len() <= 20 {
-                dialoguer::Select::with_theme(&theme)
-                    .with_prompt("请选择默认模型")
-                    .items(&options)
-                    .default(default_idx)
-                    .interact()?
-            } else {
-                // 模型很多时，先显示前 19 个 + 自定义
-                let mut display: Vec<String> = options[..options.len() - 1] // 去掉自定义
-                    .iter()
-                    .take(19)
-                    .cloned()
-                    .collect();
-                display.push(format!("...（共 {} 个模型，输入序号或名称）", options.len() - 1));
-                display.push("✏ 自定义输入模型名称".to_string());
+            // 构建选项：全部模型 + 自定义输入
+            let mut options: Vec<String> = models.clone();
+            options.push("✏ 自定义输入模型名称".to_string());
 
-                let idx = dialoguer::Select::with_theme(&theme)
-                    .with_prompt("请选择默认模型")
-                    .items(&display)
-                    .default(0)
-                    .interact()?;
+            let custom_idx = options.len() - 1;
 
-                if idx == display.len() - 1 {
-                    // 自定义
-                    options.len() - 1
-                } else if idx == display.len() - 2 {
-                    // 输入序号或名称
-                    let theme2 = ColorfulTheme::default();
-                    let input: String = Input::with_theme(&theme2)
-                        .with_prompt("输入模型名称或序号")
-                        .interact_text()?;
-                    // 尝试解析为序号
-                    if let Ok(n) = input.trim().parse::<usize>() {
-                        if n > 0 && n <= models.len() {
-                            return Ok(models[n - 1].clone());
-                        }
-                    }
-                    // 当作模型名称
-                    return Ok(input.trim().to_string());
-                } else {
-                    idx
-                }
-            };
+            let idx = dialoguer::Select::with_theme(&theme)
+                .with_prompt("请选择默认模型（↑↓ 浏览）")
+                .items(&options)
+                .default(default_idx)
+                .interact()?;
 
-            // 检查是否选了"自定义"
-            if idx >= models.len() {
+            if idx == custom_idx {
                 // 自定义输入
-                let theme = ColorfulTheme::default();
                 let default_name = if !existing_model.is_empty() {
                     existing_model.to_string()
                 } else {
                     "deepseek-v4-flash".to_string()
                 };
-                Input::with_theme(&theme)
+                Input::with_theme(&ColorfulTheme::default())
                     .with_prompt("输入模型名称")
                     .default(default_name)
                     .interact_text()?
@@ -501,9 +464,10 @@ fn select_model_fallback(
         }
         "siliconflow" => {
             let opts = vec![
-                "deepseek-v4-flash — 通过硅基流动调用",
-                "Qwen/Qwen2.5-Coder-32B-Instruct",
-                "Pro/deepseek-ai/DeepSeek-V3",
+                "deepseek-ai/DeepSeek-V3         — DeepSeek V3 (推荐)",
+                "deepseek-ai/DeepSeek-R1         — DeepSeek R1 推理模型",
+                "Qwen/Qwen2.5-Coder-32B-Instruct — Qwen 编程模型",
+                "Pro/zai-org/GLM-4.7             — 智谱 GLM-4.7",
                 "✏ 自定义模型名称",
             ];
             let idx = find_model_idx(&opts);
