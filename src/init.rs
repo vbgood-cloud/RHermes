@@ -62,7 +62,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         println!("   📁 将创建 home/ 目录: {}", home_dir.display());
     }
-    let path_mgr = PathManager::with_root(cwd);
+    let path_mgr = PathManager::with_root(cwd.clone());
     path_mgr.ensure_dirs()?;
 
     println!();
@@ -76,6 +76,9 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         "zhipu       — 智谱 GLM-4/GLM-5",
         "openai      — OpenAI GPT-4o 等",
         "siliconflow — 硅基流动（托管多种模型）",
+        "ollama      — Ollama 本地模型",
+        "lmstudio    — LM Studio 本地模型",
+        "newapi      — New API / One API 代理",
         "其他 (自定义)",
     ];
 
@@ -84,6 +87,9 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         "zhipu" => 1,
         "openai" => 2,
         "siliconflow" => 3,
+        "ollama" => 4,
+        "lmstudio" => 5,
+        "newapi" => 6,
         _ => 0,
     };
 
@@ -98,6 +104,9 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         1 => ("zhipu".to_string(), "https://open.bigmodel.cn/api/paas/v4"),
         2 => ("openai".to_string(), "https://api.openai.com/v1"),
         3 => ("siliconflow".to_string(), "https://api.siliconflow.cn/v1"),
+        4 => ("ollama".to_string(), "http://localhost:11434/v1"),
+        5 => ("lmstudio".to_string(), "http://localhost:1234/v1"),
+        6 => ("newapi".to_string(), "http://localhost:3000/v1"),
         _ => {
             let theme = ColorfulTheme::default();
             let name: String = Input::with_theme(&theme)
@@ -145,82 +154,92 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // ── 步骤 4: API Key ──
-    println!("【步骤 4/5】配置 {provider_name} API Key");
-    match provider_name.as_str() {
-        "deepseek" => println!("   获取地址: https://platform.deepseek.com/api_keys"),
-        "zhipu" => println!("   获取地址: https://open.bigmodel.cn/usercenter/apikeys"),
-        "openai" => println!("   获取地址: https://platform.openai.com/api-keys"),
-        "siliconflow" => println!("   获取地址: https://cloud.siliconflow.cn/account/ak"),
-        _ => {}
-    }
-    println!();
+    // 本地服务（ollama / lmstudio）不需要 API Key，可跳过
+    let is_local_provider = matches!(provider_name.as_str(), "ollama" | "lmstudio");
 
-    // 是否有已有 Key 可保留（从当前 provider 的 providers 条目中读取）
-    let has_existing_key = !existing_api_key.is_empty();
-
-    // 构建提示文字（把掩码放到 prompt 中，不用 initial_text 预填）
-    let key_hint = if has_existing_key {
-        format!(
-            "（当前: {}...{}，直接回车保留原值）",
-            &existing_api_key[..3.min(existing_api_key.len())],
-            &existing_api_key[existing_api_key.len().saturating_sub(4)..]
-        )
-    } else {
-        String::new()
-    };
-
-    let api_key: String = loop {
-        let prompt_text = if provider_name == "deepseek" {
-            format!("请输入你的 DeepSeek API Key{key_hint}")
-        } else {
-            format!("请输入你的 {provider_name} API Key{key_hint}")
-        };
+    let api_key: String = if is_local_provider {
+        println!("【步骤 4/5】API Key（本地服务，可跳过）");
         let theme = ColorfulTheme::default();
-        // 有原值时允许空输入（=保留），否则必须输入
         let input: String = Input::with_theme(&theme)
-            .with_prompt(&prompt_text)
-            .allow_empty(has_existing_key)
+            .with_prompt("API Key（直接回车跳过）")
+            .allow_empty(true)
             .interact_text()?;
-
-        let trimmed = input.trim().to_string();
-        // 空输入 + 有原值 → 保留原值
-        if trimmed.is_empty() && has_existing_key {
-            break existing_api_key.clone();
+        input.trim().to_string()
+    } else {
+        println!("【步骤 4/5】配置 {provider_name} API Key");
+        match provider_name.as_str() {
+            "deepseek" => println!("   获取地址: https://platform.deepseek.com/api_keys"),
+            "zhipu" => println!("   获取地址: https://open.bigmodel.cn/usercenter/apikeys"),
+            "openai" => println!("   获取地址: https://platform.openai.com/api-keys"),
+            "siliconflow" => println!("   获取地址: https://cloud.siliconflow.cn/account/ak"),
+            "newapi" => println!("   在 New API 管理面板创建令牌"),
+            _ => {}
         }
+        println!();
 
-        if provider_name == "deepseek" {
-            if trimmed.starts_with("sk-") && trimmed.len() >= 10 {
-                break trimmed;
-            } else if trimmed.starts_with("sk-") {
-                println!("   ⚠ API Key 格式正确但长度偏短，请确认");
-                if Confirm::with_theme(&ColorfulTheme::default())
-                    .with_prompt("继续使用?")
-                    .default(true)
-                    .interact()?
-                {
-                    break trimmed;
-                }
-            } else {
-                println!("   ⚠ API Key 应以 sk- 开头");
-                if Confirm::with_theme(&ColorfulTheme::default())
-                    .with_prompt("继续使用?")
-                    .default(false)
-                    .interact()?
-                {
-                    break trimmed;
-                }
-            }
+        // 是否有已有 Key 可保留
+        let has_existing_key = !existing_api_key.is_empty();
+        let key_hint = if has_existing_key {
+            format!(
+                "（当前: {}...{}，直接回车保留原值）",
+                &existing_api_key[..3.min(existing_api_key.len())],
+                &existing_api_key[existing_api_key.len().saturating_sub(4)..]
+            )
         } else {
-            if trimmed.len() >= 8 {
-                break trimmed;
+            String::new()
+        };
+
+        loop {
+            let prompt_text = if provider_name == "deepseek" {
+                format!("请输入你的 DeepSeek API Key{key_hint}")
             } else {
-                println!("   ⚠ API Key 长度偏短，请确认");
-                if Confirm::with_theme(&ColorfulTheme::default())
-                    .with_prompt("继续使用?")
-                    .default(true)
-                    .interact()?
-                {
+                format!("请输入你的 {provider_name} API Key{key_hint}")
+            };
+            let theme = ColorfulTheme::default();
+            let input: String = Input::with_theme(&theme)
+                .with_prompt(&prompt_text)
+                .allow_empty(has_existing_key)
+                .interact_text()?;
+
+            let trimmed = input.trim().to_string();
+            if trimmed.is_empty() && has_existing_key {
+                break existing_api_key.clone();
+            }
+
+            if provider_name == "deepseek" {
+                if trimmed.starts_with("sk-") && trimmed.len() >= 10 {
                     break trimmed;
+                } else if trimmed.starts_with("sk-") {
+                    println!("   ⚠ API Key 格式正确但长度偏短，请确认");
+                    if Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt("继续使用?")
+                        .default(true)
+                        .interact()?
+                    {
+                        break trimmed;
+                    }
+                } else {
+                    println!("   ⚠ API Key 应以 sk- 开头");
+                    if Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt("继续使用?")
+                        .default(false)
+                        .interact()?
+                    {
+                        break trimmed;
+                    }
+                }
+            } else {
+                if trimmed.len() >= 8 {
+                    break trimmed;
+                } else {
+                    println!("   ⚠ API Key 长度偏短，请确认");
+                    if Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt("继续使用?")
+                        .default(true)
+                        .interact()?
+                    {
+                        break trimmed;
+                    }
                 }
             }
         }
@@ -236,7 +255,167 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
 
     println!();
 
-    // ── 保存配置 ──
+    // ── 步骤 6: 系统配置（每项可跳过）──
+    println!("【系统配置】以下每项均可跳过，直接回车使用默认值");
+    println!();
+
+    // 以已有配置为基础
+    let config_agent_base = existing_config.agent.clone();
+    let mut agent_config = config_agent_base;
+    let mut proxy_config = existing_config.proxy.clone();
+    let mut telegram_config = existing_config.channels.telegram.clone();
+    let mut wecom_config = existing_config.channels.wecom.clone();
+    let mut wechat_config = existing_config.channels.wechat.clone();
+
+    // ── 大项 A: 工作目录与安全 ──
+    let configure_security = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("配置工作目录与命令安全？（限制 Agent 的文件操作范围）")
+        .default(false)
+        .interact()?;
+
+    if configure_security {
+        let ws_default = if !agent_config.workspace.is_empty() {
+            agent_config.workspace.clone()
+        } else {
+            cwd.to_string_lossy().to_string()
+        };
+        let workspace: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("工作目录（Agent 文件操作限制在此目录，留空=不限制）")
+            .default(ws_default)
+            .allow_empty(true)
+            .interact_text()?;
+        agent_config.workspace = workspace.trim().to_string();
+
+        let cmd_default = agent_config.command_allowed_prefixes.join(", ");
+        let cmd_input: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("允许的命令前缀（逗号分隔，如 git,cargo,ls；留空=不限制）")
+            .default(cmd_default)
+            .allow_empty(true)
+            .interact_text()?;
+        agent_config.command_allowed_prefixes = if cmd_input.trim().is_empty() {
+            Vec::new()
+        } else {
+            cmd_input.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        };
+    }
+    println!();
+
+    // ── 大项 B: 网络代理 ──
+    let configure_proxy = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("配置网络代理？（科学上网/内网穿透等）")
+        .default(false)
+        .interact()?;
+
+    if configure_proxy {
+        let proxy_mode_options = &[
+            "auto — 按功能规则决定是否走代理（推荐）",
+            "all  — 所有请求走代理",
+            "off  — 不使用代理",
+        ];
+        let proxy_idx = dialoguer::Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("代理模式")
+            .items(proxy_mode_options)
+            .default(0)
+            .interact()?;
+
+        proxy_config.mode = match proxy_idx {
+            0 => crate::core::ProxyMode::Auto,
+            1 => crate::core::ProxyMode::All,
+            _ => crate::core::ProxyMode::Off,
+        };
+
+        if matches!(proxy_config.mode, crate::core::ProxyMode::Auto | crate::core::ProxyMode::All) {
+            let url_default = proxy_config.url.clone().unwrap_or_default();
+            let url_input: String = Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("代理地址（如 socks5://127.0.0.1:1080 或 http://127.0.0.1:7890）")
+                .default(url_default)
+                .allow_empty(true)
+                .interact_text()?;
+            proxy_config.url = if url_input.trim().is_empty() { None } else { Some(url_input.trim().to_string()) };
+        }
+    }
+    println!();
+
+    // ── 大项 C: 消息通道（Telegram / 企业微信 / 微信个号）──
+    let channel_options = &[
+        "Telegram Bot    — 通过 Telegram 与 AI 对话",
+        "企业微信 (WeCom) — 企业微信群机器人",
+        "微信个号 (WeChat) — iLink Bot 扫码登录",
+        "跳过（不配置任何通道）",
+    ];
+
+    let configure_channels = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("配置消息通道？（通过 IM 平台与 AI 对话）")
+        .default(false)
+        .interact()?;
+
+    if configure_channels {
+        loop {
+            let ch_idx = dialoguer::Select::with_theme(&ColorfulTheme::default())
+                .with_prompt("选择要配置的通道（可重复配置多个）")
+                .items(channel_options)
+                .default(3)
+                .interact()?;
+
+            match ch_idx {
+                0 => {
+                    // Telegram
+                    telegram_config.enabled = true;
+                    println!("   ℹ Bot Token 请写入 .env 文件: TELEGRAM_BOT_TOKEN=你的token");
+                    let chats_input: String = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt("允许的 chat_id（逗号分隔，留空=允许所有人）")
+                        .default(telegram_config.allowed_chats.join(", "))
+                        .allow_empty(true)
+                        .interact_text()?;
+                    telegram_config.allowed_chats = if chats_input.trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        chats_input.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                    };
+                    println!("   ✅ Telegram 已启用");
+                }
+                1 => {
+                    // 企业微信
+                    wecom_config.enabled = true;
+                    wecom_config.webhook_url = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt("Webhook URL（企业微信群机器人地址）")
+                        .default(wecom_config.webhook_url.clone())
+                        .allow_empty(true)
+                        .interact_text()?;
+                    wecom_config.corp_id = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt("企业 ID（corp_id，接收消息用，可留空）")
+                        .default(wecom_config.corp_id.clone())
+                        .allow_empty(true)
+                        .interact_text()?;
+                    wecom_config.agent_id = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt("应用 Agent ID（可留空）")
+                        .default(wecom_config.agent_id.clone())
+                        .allow_empty(true)
+                        .interact_text()?;
+                    if !wecom_config.corp_id.is_empty() {
+                        println!("   ℹ 应用 Secret 请写入 .env 文件: WECOM_SECRET=你的secret");
+                    }
+                    println!("   ✅ 企业微信已启用");
+                }
+                2 => {
+                    // 微信个号
+                    wechat_config.enabled = true;
+                    println!("   ℹ 启动后需扫码登录 iLink Bot 获取 token");
+                    let poll_input: String = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt("轮询间隔秒数")
+                        .default(wechat_config.poll_interval_secs.to_string())
+                        .interact_text()?;
+                    if let Ok(n) = poll_input.trim().parse::<u64>() {
+                        wechat_config.poll_interval_secs = n;
+                    }
+                    println!("   ✅ 微信个号已启用（启动后扫码登录）");
+                }
+                _ => break, // 跳过/完成
+            }
+            println!();
+        }
+    }
+    println!();
     // 以已有 providers 为基础，保留其他 provider 的配置（如先配了 zhipu 再配 deepseek）
     let mut providers = existing_config.providers.clone();
     providers.insert(provider_name.clone(), crate::core::ProviderConfig {
@@ -261,7 +440,13 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         providers,
         agent: crate::core::AgentConfig {
             default_provider: provider_name.clone(),
-            ..existing_config.agent
+            ..agent_config
+        },
+        proxy: proxy_config,
+        channels: crate::core::ChannelsConfig {
+            telegram: telegram_config,
+            wecom: wecom_config,
+            wechat: wechat_config,
         },
         ..existing_config
     };
@@ -292,7 +477,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
     println!("│  API Key:  {}...{}", &api_key[..5.min(api_key.len())], &api_key[api_key.len().saturating_sub(4)..]);
     println!("├────────────────────────────────────────────┤");
     println!("│  ✅ API Key 已保存到 .env 文件              │");
-    println!("│  运行 rhermes code 开始编程！               │");
+    println!("│  直接运行 rhermes 即可开始编程！           │");
     println!("└────────────────────────────────────────────┘");
 
     Ok(())
@@ -474,13 +659,17 @@ fn select_model_fallback(
             (opts, idx)
         }
         _ => {
-            let opts = vec![
-                "deepseek-v4-flash  — 日常开发，成本最低 (推荐)",
-                "deepseek-v4-pro    — 复杂任务，更强推理能力",
-                "✏ 自定义模型名称",
-            ];
-            let idx = find_model_idx(&opts);
-            (opts, idx)
+            // ollama / lmstudio / newapi / 自定义 provider → 直接输入模型名
+            let default_name = if !existing_model.is_empty() {
+                existing_model.to_string()
+            } else {
+                "llama3.2".to_string()
+            };
+            let model: String = Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("输入模型名称")
+                .default(default_name)
+                .interact_text()?;
+            return Ok(model);
         }
     };
 

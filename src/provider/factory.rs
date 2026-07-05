@@ -15,8 +15,10 @@ pub fn default_provider_base_url(provider_name: &str) -> &'static str {
         "siliconflow" => "https://api.siliconflow.cn/v1",
         "zhipu" => "https://open.bigmodel.cn/api/paas/v4",
         "moonshot" | "kimi" => "https://api.moonshot.cn/v1",
-        "ollama" => "http://localhost:11434",
+        "ollama" => "http://localhost:11434/v1",
         "groq" => "https://api.groq.com/openai/v1",
+        "newapi" => "http://localhost:3000/v1",
+        "lmstudio" => "http://localhost:1234/v1",
         _ => "https://api.openai.com/v1",
     }
 }
@@ -37,7 +39,7 @@ pub fn infer_provider_from_model(model: &str) -> Option<&'static str> {
         Some("gemini")
     } else if model.starts_with("claude-") {
         Some("anthropic")
-    } else if model.starts_with("llama") || model.starts_with("mistral") {
+    } else if model.starts_with("llama") || model.starts_with("mistral") || model.starts_with("qwen2") || model.starts_with("qwen3") {
         Some("ollama")
     } else {
         None
@@ -46,7 +48,7 @@ pub fn infer_provider_from_model(model: &str) -> Option<&'static str> {
 
 /// 查找 fallback provider（第一个有 API Key 的）
 fn fallback_provider_name(config: &Config) -> Option<String> {
-    let priority = ["deepseek", "openai", "siliconflow", "zhipu", "moonshot", "kimi", "ollama"];
+    let priority = ["deepseek", "openai", "siliconflow", "zhipu", "moonshot", "kimi", "newapi", "ollama", "lmstudio"];
     for name in &priority {
         if let Some(p) = config.providers.get(*name) {
             if !p.api_key.is_empty() {
@@ -54,9 +56,11 @@ fn fallback_provider_name(config: &Config) -> Option<String> {
             }
         }
     }
-    // ollama 不需要 api_key
-    if config.providers.contains_key("ollama") {
-        return Some("ollama".into());
+    // 本地服务不需要 api_key
+    for local in &["ollama", "lmstudio"] {
+        if config.providers.contains_key(*local) {
+            return Some((*local).into());
+        }
     }
     None
 }
@@ -102,11 +106,11 @@ pub fn create_transport(
 
     // 构建 Transport
     let transport = match provider_name.as_str() {
-        "ollama" => {
-            // ollama 特殊处理
+        "ollama" | "lmstudio" => {
+            // 本地模型服务（ollama / lmstudio），不需要 API Key
             let base_url = provider_cfg
                 .and_then(|p| p.base_url.clone())
-                .unwrap_or_else(|| default_provider_base_url("ollama").into());
+                .unwrap_or_else(|| default_provider_base_url(&provider_name).into());
             let api_key = provider_cfg.map(|p| p.api_key.clone()).unwrap_or_default();
             let model = provider_cfg
                 .and_then(|p| p.model.clone())

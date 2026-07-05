@@ -139,7 +139,7 @@ impl SessionRouter {
             let cfg = crate::core::Config::load(&self.config_path).unwrap_or_default();
             let mut lines = Vec::new();
             for (name, p) in &cfg.providers {
-                if p.api_key.is_empty() && name != "ollama" { continue; }
+                if p.api_key.is_empty() && !matches!(name.as_str(), "ollama" | "lmstudio") { continue; }
                 let model = p.model.clone().unwrap_or_default();
                 if model.is_empty() {
                     lines.push(format!("  · {name}: (使用默认模型)"));

@@ -1371,6 +1371,14 @@ mod tests {
                 model: "deepseek-v4-pro".into(),
                 ..Default::default()
             },
+            providers: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("deepseek".into(), crate::core::ProviderConfig {
+                    api_key: "sk-test-key-12345".into(),
+                    ..Default::default()
+                });
+                m
+            },
             ..Default::default()
         };
 

@@ -331,7 +331,7 @@ fn export_debug(session_id: Option<String>, output: &str) -> Result<(), debug::D
     let path = PathManager::detect().data_root().join("debug");
     if !path.exists() {
         eprintln!("[RHermes] 未找到调试数据目录: {}", path.display());
-        eprintln!("   请先运行 rhermes code 进行对话");
+        eprintln!("   请先直接运行 rhermes 进行对话");
         std::process::exit(1);
     }
 

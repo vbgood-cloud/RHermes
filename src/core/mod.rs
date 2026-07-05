@@ -4,6 +4,7 @@
 
 pub use config::AgentConfig;
 pub use config::ApiConfig;
+pub use config::ChannelsConfig;
 pub use config::Config;
 pub use config::DisplayConfig;
 pub use config::McpConfig;

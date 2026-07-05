@@ -849,7 +849,7 @@ impl App {
                             let body = if let Some(c) = self.current_config.as_ref() {
                                 let mut lines = Vec::new();
                                 for (name, p) in &c.providers {
-                                    if p.api_key.is_empty() && name != "ollama" { continue; }
+                                    if p.api_key.is_empty() && !matches!(name.as_str(), "ollama" | "lmstudio") { continue; }
                                     let model = p.model.clone().unwrap_or_default();
                                     if model.is_empty() {
                                         lines.push(format!("  · {name}: (使用默认模型)"));
