@@ -177,6 +177,8 @@ pub struct WeChatChannel {
     client: Client,
     /// 最近收到的 context_token（按 chat_id 缓存，用于回复时关联对话）
     context_tokens: Mutex<HashMap<String, String>>,
+    /// 内存缓存的 bot_token（扫码登录后缓存，避免 send_message 每次从文件读）
+    bot_token: Mutex<Option<String>>,
 }
 
 impl WeChatChannel {
@@ -190,6 +192,7 @@ impl WeChatChannel {
             config: Arc::new(config.clone()),
             client,
             context_tokens: Mutex::new(HashMap::new()),
+            bot_token: Mutex::new(None),
         }
     }
 
@@ -394,8 +397,15 @@ impl WeChatChannel {
         Ok(())
     }
 
-    /// 尝试从 token_path 文件读取 bot_token
+    /// 获取 bot_token：优先从内存缓存读，其次从文件读
     fn load_token(&self) -> Option<String> {
+        // 1. 先查内存缓存
+        if let Ok(token) = self.bot_token.lock() {
+            if let Some(t) = token.as_ref() {
+                return Some(t.clone());
+            }
+        }
+        // 2. 再从文件读
         let path = &self.config.channels.wechat.token_path;
         if path.is_empty() {
             return None;
@@ -406,6 +416,10 @@ impl WeChatChannel {
                 if token.is_empty() {
                     None
                 } else {
+                    // 写入内存缓存
+                    if let Ok(mut cache) = self.bot_token.lock() {
+                        *cache = Some(token.clone());
+                    }
                     Some(token)
                 }
             }
@@ -413,19 +427,29 @@ impl WeChatChannel {
         }
     }
 
-    /// 保存 bot_token 到 token_path 文件
+    /// 保存 bot_token 到内存缓存 + token_path 文件
     fn save_token(&self, token: &str) {
+        // 写入内存缓存
+        if let Ok(mut cache) = self.bot_token.lock() {
+            *cache = Some(token.to_string());
+        }
+        // 写入文件
         let path = &self.config.channels.wechat.token_path;
         if path.is_empty() {
             return;
         }
         if let Err(e) = std::fs::write(path, token) {
-            tracing::warn!("WeChat: 保存 token 失败: {e}");
+            tracing::warn!("WeChat: 保存 token 到文件失败: {e}");
         }
     }
 
-    /// 清除保存的 token 文件
+    /// 清除 bot_token（内存缓存 + 文件）
     fn clear_token(&self) {
+        // 清除内存缓存
+        if let Ok(mut cache) = self.bot_token.lock() {
+            *cache = None;
+        }
+        // 清除文件
         let path = &self.config.channels.wechat.token_path;
         if path.is_empty() {
             return;

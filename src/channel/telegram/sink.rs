@@ -50,14 +50,22 @@ impl TelegramSink {
     /// 发送纯文本消息到 Telegram
     async fn send_plain(&self, text: &str) {
         if let Some(ch) = self.channel_mgr.get("telegram") {
-            let _ = ch.send_message(&self.chat_id, text).await;
+            if let Err(e) = ch.send_message(&self.chat_id, text).await {
+                tracing::warn!("Telegram send_plain 失败 (chat_id={}): {}", self.chat_id, e);
+            }
+        } else {
+            tracing::warn!("Telegram 通道未注册，无法发送消息");
         }
     }
 
     /// 发送 MarkdownV2 格式化的消息到 Telegram
     async fn send_formatted(&self, text: &str) {
         if let Some(ch) = self.channel_mgr.get("telegram") {
-            let _ = ch.send_formatted(&self.chat_id, text).await;
+            if let Err(e) = ch.send_formatted(&self.chat_id, text).await {
+                tracing::warn!("Telegram send_formatted 失败 (chat_id={}): {}", self.chat_id, e);
+            }
+        } else {
+            tracing::warn!("Telegram 通道未注册，无法发送消息");
         }
     }
 

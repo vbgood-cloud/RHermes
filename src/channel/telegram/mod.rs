@@ -216,6 +216,37 @@ impl TelegramChannel {
         }
         result
     }
+
+    /// 按指定 parse_mode 分块发送消息（非 trait 方法，供内部调用）
+    pub async fn send_with_parse_mode(
+        &self,
+        chat_id: &str,
+        text: &str,
+        parse_mode: Option<&str>,
+    ) -> Result<(), String> {
+        if text.len() <= 4096 {
+            self.api.send_message(chat_id, text, parse_mode).await
+                .map_err(|e| format!("{e}"))
+        } else {
+            let mut remaining = text;
+            while !remaining.is_empty() {
+                let cut = if remaining.len() > 4000 {
+                    let mut pos = 4000;
+                    while !remaining.is_char_boundary(pos) && pos > 0 {
+                        pos -= 1;
+                    }
+                    pos
+                } else {
+                    remaining.len()
+                };
+                let chunk = &remaining[..cut];
+                self.api.send_message(chat_id, chunk, parse_mode).await
+                    .map_err(|e| format!("{e}"))?;
+                remaining = &remaining[cut..];
+            }
+            Ok(())
+        }
+    }
 }
 
 #[async_trait]
@@ -325,55 +356,32 @@ impl Channel for TelegramChannel {
     }
 
     async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), String> {
-        if text.len() <= 4096 {
-            self.api.send_message(chat_id, text, None).await
-                .map_err(|e| format!("{e}"))
-        } else {
-            let mut remaining = text;
-            while !remaining.is_empty() {
-                let cut = if remaining.len() > 4000 {
-                    let mut pos = 4000;
-                    while !remaining.is_char_boundary(pos) && pos > 0 {
-                        pos -= 1;
-                    }
-                    pos
-                } else {
-                    remaining.len()
-                };
-                let chunk = &remaining[..cut];
-                self.api.send_message(chat_id, chunk, None).await
-                    .map_err(|e| format!("{e}"))?;
-                remaining = &remaining[cut..];
-            }
-            Ok(())
-        }
+        self.send_with_parse_mode(chat_id, text, None).await
     }
 
     /// 发送 MarkdownV2 格式化的消息
+    ///
+    /// 先尝试 MarkdownV2 格式；如果 Telegram 返回解析错误，
+    /// 自动回退到纯文本发送（确保消息不丢失）。
+    /// 对超长消息（>4000 字符）直接用纯文本，避免分块切断 MarkdownV2 转义序列。
     async fn send_formatted(&self, chat_id: &str, text: &str) -> Result<(), String> {
-        let safe_md = Self::to_markdown_v2(text);
-        if safe_md.len() <= 4096 {
-            self.api.send_message(chat_id, &safe_md, Some("MarkdownV2")).await
-                .map_err(|e| format!("{e}"))
-        } else {
-            let mut remaining = safe_md.as_str();
-            while !remaining.is_empty() {
-                let cut = if remaining.len() > 4000 {
-                    let mut pos = 4000;
-                    while !remaining.is_char_boundary(pos) && pos > 0 {
-                        pos -= 1;
-                    }
-                    pos
-                } else {
-                    remaining.len()
-                };
-                let chunk = &remaining[..cut];
-                self.api.send_message(chat_id, chunk, Some("MarkdownV2")).await
-                    .map_err(|e| format!("{e}"))?;
-                remaining = &remaining[cut..];
-            }
-            Ok(())
+        // 超长消息直接用纯文本（避免分块时 MarkdownV2 被截断）
+        if text.len() > 4000 {
+            return self.send_with_parse_mode(chat_id, text, None).await;
         }
+
+        let safe_md = Self::to_markdown_v2(text);
+
+        // 先尝试 MarkdownV2
+        let result = self.send_with_parse_mode(chat_id, &safe_md, Some("MarkdownV2")).await;
+
+        if let Err(e) = &result {
+            // MarkdownV2 解析失败 → 回退纯文本
+            tracing::warn!("Telegram MarkdownV2 发送失败，回退纯文本: {e}");
+            return self.send_with_parse_mode(chat_id, text, None).await
+                .map_err(|e2| format!("{e2}"));
+        }
+        result
     }
 
     fn name(&self) -> &'static str {

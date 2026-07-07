@@ -88,7 +88,11 @@ impl ChannelSink {
             std::mem::take(&mut *buf)
         };
         if let Some(ch) = self.channel_mgr.get(&self.channel_name) {
-            let _ = ch.send_message(&self.chat_id, &text).await;
+            if let Err(e) = ch.send_message(&self.chat_id, &text).await {
+                tracing::warn!("{} flush_buffer 发送失败 (chat_id={}): {}", self.channel_name, self.chat_id, e);
+            }
+        } else {
+            tracing::warn!("通道 {} 未注册，无法发送消息", self.channel_name);
         }
     }
 }
@@ -104,19 +108,25 @@ impl EventSink for ChannelSink {
             .collect::<Vec<_>>()
             .join(", ");
         if let Some(ch) = self.channel_mgr.get(&self.channel_name) {
-            let _ = ch.send_message(&self.chat_id, &format!("🔧 正在执行: {}", details)).await;
+            if let Err(e) = ch.send_message(&self.chat_id, &format!("🔧 正在执行: {}", details)).await {
+                tracing::warn!("{} on_tool_calls 发送失败: {}", self.channel_name, e);
+            }
         }
     }
     async fn on_tool_result(&self, name: &str, _output: &str, duration_ms: u64, success: bool) {
         let icon = if success { "✅" } else { "❌" };
         if let Some(ch) = self.channel_mgr.get(&self.channel_name) {
-            let _ = ch.send_message(&self.chat_id, &format!("  {} {} ({}ms)", icon, name, duration_ms)).await;
+            if let Err(e) = ch.send_message(&self.chat_id, &format!("  {} {} ({}ms)", icon, name, duration_ms)).await {
+                tracing::warn!("{} on_tool_result 发送失败: {}", self.channel_name, e);
+            }
         }
     }
     async fn on_done(&self) { self.flush_buffer().await; }
     async fn on_error(&self, error: &str) {
         if let Some(ch) = self.channel_mgr.get(&self.channel_name) {
-            let _ = ch.send_message(&self.chat_id, &format!("❌ {}", error)).await;
+            if let Err(e) = ch.send_message(&self.chat_id, &format!("❌ {}", error)).await {
+                tracing::warn!("{} on_error 发送失败: {}", self.channel_name, e);
+            }
         }
     }
 }

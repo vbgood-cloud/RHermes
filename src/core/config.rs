@@ -249,11 +249,12 @@ pub struct WeChatConfig {
     #[serde(default = "default_wechat_poll_interval")]
     pub poll_interval_secs: u64,
     /// Token 刷新后自动保存的路径
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default = "default_wechat_token_path")]
     pub token_path: String,
 }
 
 fn default_wechat_poll_interval() -> u64 { 2 }
+fn default_wechat_token_path() -> String { "home/wechat_token.txt".into() }
 
 impl Default for WeChatConfig {
     fn default() -> Self {
@@ -262,7 +263,7 @@ impl Default for WeChatConfig {
             bot_token: String::new(),
             proxy: None,
             poll_interval_secs: default_wechat_poll_interval(),
-            token_path: String::new(),
+            token_path: "home/wechat_token.txt".to_string(),
         }
     }
 }
@@ -1075,7 +1076,7 @@ impl Config {
         s.push_str(&format!("enabled = {}\n", d.channels.wechat.enabled));
         s.push_str("# 代理地址（可选，支持 http:// 和 socks5://）\n# proxy = \"socks5://127.0.0.1:1080\"\n");
         s.push_str(&format!("poll_interval_secs = {}\n", d.channels.wechat.poll_interval_secs));
-        s.push_str("# Token 刷新后自动保存路径\n# token_path = \"\"\n\n");
+        s.push_str("# Token 刷新后自动保存路径\ntoken_path = \"home/wechat_token.txt\"\n\n");
 
         // telegram
         s.push_str("# Telegram Bot 通道\n[channels.telegram]\n");

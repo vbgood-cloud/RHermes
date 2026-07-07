@@ -400,6 +400,10 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
                 2 => {
                     // 微信个号
                     wechat_config.enabled = true;
+                    // 确保 token_path 非空（否则登录后 token 无法保存）
+                    if wechat_config.token_path.is_empty() {
+                        wechat_config.token_path = "home/wechat_token.txt".to_string();
+                    }
                     println!("   ℹ 启动后需扫码登录 iLink Bot 获取 token");
                     let poll_input: String = Input::with_theme(&ColorfulTheme::default())
                         .with_prompt("轮询间隔秒数")
@@ -425,7 +429,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     });
 
-    let config = Config {
+    let mut config = Config {
         // api_key 字段仅在 deepseek 时同步，保持向后兼容
         // （save_api_key 已不再依赖此字段，但 load 时旧逻辑会读它）
         api_key: if provider_name == "deepseek" {
@@ -448,8 +452,32 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
             wecom: wecom_config,
             wechat: wechat_config,
         },
+        gateway: crate::core::GatewayConfig {
+            enabled: true,
+            channels: {
+                // 根据各通道 enabled 状态自动构建 gateway.channels 列表
+                let mut chs = Vec::new();
+                // 复用已构建的 channels（但所有权已移走，重新检查 existing + 新值）
+                // 这里从最终 channels 值重建
+                chs
+            },
+            ..existing_config.gateway
+        },
         ..existing_config
     };
+
+    // 根据最终通道 enabled 状态更新 gateway.channels
+    let mut gw_channels = Vec::new();
+    if config.channels.telegram.enabled {
+        gw_channels.push("telegram".to_string());
+    }
+    if config.channels.wechat.enabled {
+        gw_channels.push("wechat".to_string());
+    }
+    if config.channels.wecom.enabled {
+        gw_channels.push("wecom".to_string());
+    }
+    config.gateway.channels = gw_channels;
 
     let config_path = path_mgr.config_path();
 
