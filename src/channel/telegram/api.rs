@@ -152,6 +152,27 @@ impl TelegramApi {
         }
     }
 
+    /// 发送聊天动作（如 typing 状态）
+    pub async fn send_chat_action(
+        &self,
+        chat_id: &str,
+        action: &str,
+    ) -> Result<(), TgError> {
+        let url = self.api_url("sendChatAction");
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "action": action,
+        });
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        let body: TgResponse<serde_json::Value> = resp.json().await
+            .map_err(|e| TgError::Parse(format!("{e}")))?;
+        if body.ok {
+            Ok(())
+        } else {
+            Err(TgError::Api(body.description.unwrap_or_else(|| "未知错误".into())))
+        }
+    }
+
     /// 发送文档（预留）
     #[allow(dead_code)]
     pub async fn send_document(

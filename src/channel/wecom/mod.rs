@@ -84,6 +84,8 @@ struct WebhookText {
 pub struct WeComChannel {
     config: Arc<Config>,
     client: Client,
+    /// 运行时状态
+    state: crate::channel::ChannelState,
 }
 
 impl WeComChannel {
@@ -95,6 +97,7 @@ impl WeComChannel {
         Self {
             config: Arc::new(config.clone()),
             client,
+            state: crate::channel::ChannelState::new(),
         }
     }
 
@@ -275,6 +278,7 @@ impl Channel for WeComChannel {
                                             &msg.sender,
                                             &content,
                                         );
+                                        self.state.inc_msg();
                                         if inbound_tx.send(inbound).is_err() {
                                             tracing::warn!("WeCom: inbound_tx 已关闭");
                                             break;
@@ -302,6 +306,16 @@ impl Channel for WeComChannel {
 
     fn name(&self) -> &'static str {
         "wecom"
+    }
+
+    fn status(&self) -> crate::channel::ChannelStatus {
+        let wecom = &self.config.channels.wecom;
+        let detail = if wecom.webhook_url.is_empty() {
+            Some("未配置".to_string())
+        } else {
+            Some("已配置".to_string())
+        };
+        self.state.snapshot("wecom", detail)
     }
 }
 

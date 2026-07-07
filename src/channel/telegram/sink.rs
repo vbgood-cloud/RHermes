@@ -153,4 +153,12 @@ impl EventSink for TelegramSink {
         let msg = format!("❌ {}", error);
         self.send_plain(&msg).await;
     }
+
+    async fn on_typing(&self) {
+        if let Some(ch) = self.channel_mgr.get("telegram") {
+            if let Err(e) = ch.send_typing(&self.chat_id).await {
+                tracing::debug!("Telegram send_typing 失败: {}", e);
+            }
+        }
+    }
 }

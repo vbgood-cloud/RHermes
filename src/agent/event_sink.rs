@@ -21,6 +21,8 @@ pub trait EventSink: Send + Sync {
     async fn on_error(&self, error: &str);
     async fn on_usage(&self, _usage: &Usage) {}
     async fn on_balance(&self, _balance: f64) {}
+    /// 通知 sink 发送打字状态（typing indicator）
+    async fn on_typing(&self) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +124,13 @@ impl EventSink for ChannelSink {
         }
     }
     async fn on_done(&self) { self.flush_buffer().await; }
+    async fn on_typing(&self) {
+        if let Some(ch) = self.channel_mgr.get(&self.channel_name) {
+            if let Err(e) = ch.send_typing(&self.chat_id).await {
+                tracing::debug!("{} send_typing 失败: {}", self.channel_name, e);
+            }
+        }
+    }
     async fn on_error(&self, error: &str) {
         if let Some(ch) = self.channel_mgr.get(&self.channel_name) {
             if let Err(e) = ch.send_message(&self.chat_id, &format!("❌ {}", error)).await {

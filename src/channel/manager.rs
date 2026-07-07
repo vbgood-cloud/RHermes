@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 
-use crate::channel::{Channel, InboundMessage};
+use crate::channel::{Channel, ChannelStatus, InboundMessage};
 
 /// 通道管理器
 ///
@@ -94,6 +94,23 @@ impl ChannelManager {
     /// 获取入站消息发送端（供外部注入消息）
     pub fn inbound_tx(&self) -> mpsc::UnboundedSender<InboundMessage> {
         self.inbound_tx.clone()
+    }
+
+    /// 获取所有通道的运行时状态
+    pub fn all_status(&self) -> Vec<ChannelStatus> {
+        self.channels.iter().map(|ch| ch.status()).collect()
+    }
+
+    /// 将所有通道状态写入 JSON 文件（供 gateway status 命令读取）
+    pub fn write_status_file(&self, path: &std::path::Path) {
+        let statuses = self.all_status();
+        let json = serde_json::json!({
+            "channels": statuses,
+            "updated_at": chrono::Utc::now().to_rfc3339(),
+        });
+        if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(&json).unwrap_or_default()) {
+            tracing::warn!("写入通道状态文件失败: {e}");
+        }
     }
 
     /// 已注册的通道数量

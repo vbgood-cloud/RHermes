@@ -179,6 +179,10 @@ pub struct WeChatChannel {
     context_tokens: Mutex<HashMap<String, String>>,
     /// 内存缓存的 bot_token（扫码登录后缓存，避免 send_message 每次从文件读）
     bot_token: Mutex<Option<String>>,
+    /// 运行时状态
+    state: crate::channel::ChannelState,
+    /// typing_ticket（按 chat_id 缓存，从 getconfig 获取）
+    typing_ticket: std::sync::Mutex<Option<(String, String)>>,
 }
 
 impl WeChatChannel {
@@ -193,6 +197,8 @@ impl WeChatChannel {
             client,
             context_tokens: Mutex::new(HashMap::new()),
             bot_token: Mutex::new(None),
+            state: crate::channel::ChannelState::new(),
+            typing_ticket: std::sync::Mutex::new(None),
         }
     }
 
@@ -397,6 +403,114 @@ impl WeChatChannel {
         Ok(())
     }
 
+    /// 获取 bot 配置（含 typing_ticket）
+    async fn get_config_api(&self, chat_id: &str, bot_token: &str, context_token: &str) -> Result<Option<String>, String> {
+        let url = format!("{}/ilink/bot/getconfig", API_BASE);
+        let body = serde_json::json!({
+            "ilink_user_id": chat_id,
+            "context_token": context_token,
+            "base_info": {
+                "channel_version": "1.0.0"
+            }
+        });
+        let resp = self
+            .client
+            .post(&url)
+            .headers(self.build_headers(bot_token))
+            .json(&body)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| format!("getconfig 失败: {e}"))?;
+
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("getconfig 解析失败: {e}"))?;
+
+        // typing_ticket 在响应顶层
+        let ticket = result
+            .get("typing_ticket")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string());
+
+        Ok(ticket)
+    }
+
+    /// 发送“正在输入...”状态到微信
+    ///
+    /// 需要 typing_ticket（从 getconfig 获取）。
+    /// status: 1=开始输入, 2=取消输入
+    async fn send_typing_api(
+        &self,
+        chat_id: &str,
+        typing_ticket: &str,
+        bot_token: &str,
+        status: i32,
+    ) -> Result<(), String> {
+        let url = format!("{}/ilink/bot/sendtyping", API_BASE);
+        let body = serde_json::json!({
+            "ilink_user_id": chat_id,
+            "typing_ticket": typing_ticket,
+            "status": status,
+            "base_info": {
+                "channel_version": "1.0.0"
+            }
+        });
+
+        let resp = self
+            .client
+            .post(&url)
+            .headers(self.build_headers(bot_token))
+            .json(&body)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .map_err(|e| format!("sendtyping 失败: {e}"))?;
+
+        let result: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("sendtyping 解析失败: {e}"))?;
+
+        if let Some(ret) = result.get("ret").and_then(|v| v.as_i64()) {
+            if ret != 0 {
+                return Err(format!("sendtyping 错误: ret={}", ret));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 确保 typing_ticket 已加载（惰性加载，首次调用时获取）
+    async fn ensure_typing_ticket(&self, chat_id: &str, bot_token: &str, context_token: &str) -> Option<String> {
+        // 先查缓存（按 chat_id 缓存）
+        let cache_key = format!("{}", chat_id);
+        if let Ok(cache) = self.typing_ticket.lock() {
+            if let Some((key, ticket)) = cache.as_ref() {
+                if key == &cache_key {
+                    return Some(ticket.clone());
+                }
+            }
+        }
+        // 从 API 获取
+        match self.get_config_api(chat_id, bot_token, context_token).await {
+            Ok(ticket) => {
+                if let Some(ref t) = ticket {
+                    if let Ok(mut cache) = self.typing_ticket.lock() {
+                        *cache = Some((cache_key, t.clone()));
+                    }
+                    tracing::debug!("WeChat: typing_ticket 已获取");
+                }
+                ticket
+            }
+            Err(e) => {
+                tracing::debug!("WeChat: 获取 typing_ticket 失败: {e}");
+                None
+            }
+        }
+    }
+
     /// 获取 bot_token：优先从内存缓存读，其次从文件读
     fn load_token(&self) -> Option<String> {
         // 1. 先查内存缓存
@@ -511,6 +625,8 @@ impl WeChatChannel {
                                     "扫码确认后未返回 bot_token".to_string()
                                 })?;
                                 tracing::info!("WeChat: 扫码登录成功");
+                                self.state.set_connected(true);
+                                self.state.clear_error();
                                 return Ok(token);
                             }
                             Some(s) if s.eq_ignore_ascii_case("Expired") => {
@@ -572,6 +688,7 @@ impl Channel for WeChatChannel {
             let bot_token = match self.load_token() {
                 Some(token) => {
                     tracing::info!("WeChat: 从文件加载 bot_token 成功");
+                    self.state.set_connected(true);
                     token
                 }
                 None => {
@@ -648,6 +765,7 @@ impl Channel for WeChatChannel {
                                             }
                                         }
 
+                                        self.state.inc_msg();
                                         if inbound_tx.send(inbound).is_err() {
                                             tracing::warn!("WeChat: inbound_tx 已关闭");
                                             break;
@@ -670,6 +788,7 @@ impl Channel for WeChatChannel {
                                             current_token = new_token;
                                             sync_buf.clear();
                                             tracing::info!("WeChat: 重新登录成功");
+                                            self.state.set_connected(true);
                                         }
                                         Err(login_err) => {
                                             tracing::error!("WeChat: 重新登录失败: {login_err}");
@@ -713,6 +832,41 @@ impl Channel for WeChatChannel {
 
     fn name(&self) -> &'static str {
         "wechat"
+    }
+
+    fn status(&self) -> crate::channel::ChannelStatus {
+        let logged_in = self.bot_token.lock().ok()
+            .map(|t| t.is_some())
+            .unwrap_or(false);
+        let detail = if logged_in { Some("已登录".to_string()) } else { Some("未登录".to_string()) };
+        self.state.snapshot("wechat", detail)
+    }
+
+    /// 发送“正在输入...”状态到微信
+    async fn send_typing(&self, chat_id: &str) -> Result<(), String> {
+        let bot_token = match self.load_token() {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+
+        // 获取缓存的 context_token
+        let ctx_token = self.context_tokens.lock()
+            .ok()
+            .and_then(|map| map.get(chat_id).cloned())
+            .unwrap_or_default();
+
+        // 惰性获取 typing_ticket（需要 chat_id + context_token）
+        let ticket = match self.ensure_typing_ticket(chat_id, &bot_token, &ctx_token).await {
+            Some(t) => t,
+            None => return Ok(()),
+        };
+
+        // 发送 typing 状态（status=1 正在输入，失败不报错）
+        if let Err(e) = self.send_typing_api(chat_id, &ticket, &bot_token, 1).await {
+            tracing::debug!("WeChat: sendtyping 失败: {e}");
+        }
+
+        Ok(())
     }
 }
 

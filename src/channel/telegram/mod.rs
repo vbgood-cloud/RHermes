@@ -24,6 +24,10 @@ pub struct TelegramChannel {
     api: TelegramApi,
     allowed_chats: Vec<String>,
     poll_timeout: u32,
+    /// 运行时状态
+    state: crate::channel::ChannelState,
+    /// Bot 用户名（getMe 成功后设置）
+    bot_username: std::sync::Mutex<Option<String>>,
 }
 
 impl TelegramChannel {
@@ -47,6 +51,8 @@ impl TelegramChannel {
             api,
             allowed_chats: config.channels.telegram.allowed_chats.clone(),
             poll_timeout,
+            state: crate::channel::ChannelState::new(),
+            bot_username: std::sync::Mutex::new(None),
         })
     }
 
@@ -263,10 +269,16 @@ impl Channel for TelegramChannel {
             let bot_username = match self.api.get_me().await {
                 Ok(bot) => {
                     tracing::info!("Telegram Bot 已连接: {} (@{})", bot.first_name, bot.username);
+                    self.state.set_connected(true);
+                    self.state.clear_error();
+                    if let Ok(mut u) = self.bot_username.lock() {
+                        *u = Some(bot.username.clone());
+                    }
                     bot.username
                 }
                 Err(e) => {
                     tracing::error!("Telegram Bot 验证失败: {e}");
+                    self.state.set_error(format!("Bot 验证失败: {e}"));
                     return;
                 }
             };
@@ -332,6 +344,7 @@ impl Channel for TelegramChannel {
                                         clean_text,
                                     );
 
+                                    self.state.inc_msg();
                                     if inbound_tx.send(inbound).is_err() {
                                         tracing::error!("Telegram inbound_tx 已关闭");
                                         return;
@@ -346,6 +359,7 @@ impl Channel for TelegramChannel {
                     }
                     Err(e) => {
                         tracing::error!("Telegram getUpdates 失败: {e}");
+                        self.state.set_error(format!("getUpdates 失败: {e}"));
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     }
                 }
@@ -386,5 +400,17 @@ impl Channel for TelegramChannel {
 
     fn name(&self) -> &'static str {
         "telegram"
+    }
+
+    fn status(&self) -> crate::channel::ChannelStatus {
+        let detail = self.bot_username.lock().ok()
+            .and_then(|u| u.as_ref().map(|s| format!("@{s}")));
+        self.state.snapshot("telegram", detail)
+    }
+
+    /// 发送 Telegram typing 状态
+    async fn send_typing(&self, chat_id: &str) -> Result<(), String> {
+        self.api.send_chat_action(chat_id, "typing").await
+            .map_err(|e| format!("{e}"))
     }
 }

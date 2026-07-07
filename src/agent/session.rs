@@ -207,7 +207,9 @@ impl AgentSession {
 
             let messages: Vec<ApiMessage> = self.context.get_messages();
 
-            // 3. 调用 API
+            // 3. 调用 API（先发送 typing 状态）
+            self.sink.on_typing().await;
+
             let request = ChatRequest {
                 model: self.transport.model_name().to_string(),
                 messages,

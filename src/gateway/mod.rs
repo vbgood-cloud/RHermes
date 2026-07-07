@@ -209,6 +209,43 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
     // 启动所有 Channel 的后台轮询
     channel_mgr.start_all();
 
+    // 等待通道初始化完成（轮询检查，最多 30 秒）
+    // 判断标准：每个通道已连接、或有错误、或已产生 detail（表示已初始化）
+    for _ in 0..30 {
+        let all_ready = channel_mgr.iter().all(|ch| {
+            let s = ch.status();
+            s.connected || s.last_error.is_some() || s.detail.is_some()
+        });
+        if all_ready {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+
+    tracing::info!("所有通道已启动，打印状态");
+
+    // 打印各通道启动状态
+    println!();
+    println!("┌────────────────────────────────────────────┐");
+    println!("│           通道启动状态                       │");
+    println!("├────────────────────────────────────────────┤");
+    if channel_mgr.channel_count() == 0 {
+        println!("│  ⚠ 没有已启用的通道                          │");
+    } else {
+        for ch in channel_mgr.iter() {
+            let st = ch.status();
+            let icon = if st.connected { "✅" } else { "⏳" };
+            let detail = st.detail.unwrap_or_default();
+            println!("│  {icon} {:<12} {}", st.name, detail);
+            if let Some(e) = &st.last_error {
+                let trunc = if e.len() > 40 { format!("{}...", &e[..40]) } else { e.clone() };
+                println!("│    └ 错误: {}", trunc);
+            }
+        }
+    }
+    println!("└────────────────────────────────────────────┘");
+    println!();
+
     // --- 使用 SessionRouter 替代简陋的单轮 Agent Loop ---
     if let Some(transport_ref) = transport {
         tracing::info!("Gateway Agent Loop 已启动，{} 个通道", channel_count);
@@ -267,18 +304,33 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
             memory,
             skill_engine,
             transport_ref.clone(),
-            channel_mgr_arc,
+            channel_mgr_arc.clone(),
             &session_config,
             system_prompt.to_string(),
             session_debug,
             config_path.to_path_buf(),
         );
 
+        // 定期写通道状态文件
+        let status_path = config_path.parent()
+            .unwrap_or(Path::new("."))
+            .join("home/channel_status.json");
+        let channel_mgr_for_status = channel_mgr_arc.clone();
+        let status_task = tokio::spawn(async move {
+            loop {
+                channel_mgr_for_status.write_status_file(&status_path);
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+
         // 轮询 inbound 消息
         while let Some(inbound) = inbound_rx.recv().await {
             tracing::info!("[Gateway] 收到消息 [{}]: {}", inbound.channel, inbound.content);
             router.dispatch(inbound).await;
         }
+
+        // 停止状态写入任务
+        status_task.abort();
     } else {
         tracing::warn!("Gateway: Transport 未初始化，无法处理消息");
         // 保持进程存活直到 Ctrl+C
@@ -337,46 +389,105 @@ fn gateway_status(config_path: &Path) -> Result<(), String> {
     println!("│        RHermes Gateway 运行状态              │");
     println!("├────────────────────────────────────────────┤");
 
-    if let Ok(pid_str) = std::fs::read_to_string(pid_file) {
+    // 检查进程是否存活
+    let process_running = if let Ok(pid_str) = std::fs::read_to_string(pid_file) {
         let pid = pid_str.trim();
-        let running = std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-            .output()
-            .ok()
-            .and_then(|o| {
-                let out = String::from_utf8_lossy(&o.stdout);
-                Some(out.contains(pid))
-            })
-            .unwrap_or(false);
-
-        if running {
-            println!("│  ▶ 状态:   运行中 (PID: {})", pid);
-        } else {
-            println!("│  ⏹ 状态:   已停止（PID 文件残留）");
+        #[cfg(target_os = "windows")]
+        {
+            let running = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let out = String::from_utf8_lossy(&o.stdout);
+                    Some(out.contains(pid))
+                })
+                .unwrap_or(false);
+            if running {
+                println!("│  ▶ 进程:   运行中 (PID: {})", pid);
+            } else {
+                println!("│  ⏹ 进程:   已停止（PID 文件残留）");
+            }
+            running
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let running = std::path::Path::new(&format!("/proc/{}", pid)).exists();
+            if running {
+                println!("│  ▶ 进程:   运行中 (PID: {})", pid);
+            } else {
+                println!("│  ⏹ 进程:   已停止（PID 文件残留）");
+            }
+            running
         }
     } else {
-        println!("│  ⏹ 状态:   未运行");
-    }
+        println!("│  ⏹ 进程:   未运行");
+        false
+    };
 
     println!("│  📁 PID 文件: {}", pid_file);
     println!("│  📁 日志文件: {}", log_file);
-    println!("│  🔌 已启用的通道:");
-    for ch in &config.gateway.channels {
-        let enabled = match ch.as_str() {
-            "wechat" => config.channels.wechat.enabled,
-            "wecom" => config.channels.wecom.enabled,
-            "telegram" => config.channels.telegram.enabled,
-            _ => false,
-        };
-        if enabled {
-            println!("│     ✅ {} (已启用)", ch);
+
+    // 读取通道状态文件（实时）
+    let status_path = config_path.parent()
+        .unwrap_or(Path::new("."))
+        .join("home/channel_status.json");
+
+    println!("│  🔌 通道状态:");
+
+    if process_running {
+        if let Ok(content) = std::fs::read_to_string(&status_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(updated_at) = json.get("updated_at").and_then(|v| v.as_str()) {
+                    println!("│     更新时间: {}", updated_at);
+                }
+                if let Some(channels) = json.get("channels").and_then(|v| v.as_array()) {
+                    for ch in channels {
+                        let name = ch.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let connected = ch.get("connected").and_then(|v| v.as_bool()).unwrap_or(false);
+                        let detail = ch.get("detail").and_then(|v| v.as_str());
+                        let msg_count = ch.get("msg_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let last_error = ch.get("last_error").and_then(|v| v.as_str());
+
+                        let icon = if connected { "✅" } else { "❌" };
+                        let mut line = format!("│     {icon} {name:<12}", );
+                        if let Some(d) = detail {
+                            line.push_str(&format!(" {d}"));
+                        }
+                        line.push_str(&format!("  ({msg_count} 条消息)"));
+                        println!("{line}");
+                        if let Some(e) = last_error {
+                            println!("│       └ 最后错误: {e}");
+                        }
+                    }
+                }
+            } else {
+                println!("│     ⚠ 状态文件解析失败");
+            }
         } else {
-            println!("│     ⏹ {} (已禁用)", ch);
+            println!("│     ℹ 状态文件未生成（等待首次写入）");
+        }
+    } else {
+        // 进程不在运行，显示配置中的通道
+        for ch in &config.gateway.channels {
+            let enabled = match ch.as_str() {
+                "wechat" => config.channels.wechat.enabled,
+                "wecom" => config.channels.wecom.enabled,
+                "telegram" => config.channels.telegram.enabled,
+                _ => false,
+            };
+            if enabled {
+                println!("│     ⏹ {} (配置已启用，进程未运行)", ch);
+            } else {
+                println!("│     ⏹ {} (已禁用)", ch);
+            }
         }
     }
+
     println!("├────────────────────────────────────────────┤");
-    println!("│  rhermes gateway channel list — 查看所有    │");
-    println!("│  rhermes gateway setup     — 重新配置       │");
+    println!("│  rhermes gateway start  — 启动              │");
+    println!("│  rhermes gateway stop   — 停止              │");
+    println!("│  rhermes gateway setup  — 重新配置          │");
     println!("└────────────────────────────────────────────┘");
 
     Ok(())
