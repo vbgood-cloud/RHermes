@@ -542,7 +542,7 @@ impl WeChatChannel {
     }
 
     /// 保存 bot_token 到内存缓存 + token_path 文件
-    fn save_token(&self, token: &str) {
+    pub fn save_token(&self, token: &str) {
         // 写入内存缓存
         if let Ok(mut cache) = self.bot_token.lock() {
             *cache = Some(token.to_string());
@@ -572,7 +572,7 @@ impl WeChatChannel {
     }
 
     /// 执行扫码登录流程
-    async fn login_flow(&self) -> Result<String, String> {
+    pub async fn login_flow(&self) -> Result<String, String> {
         tracing::info!("WeChat: 正在获取登录二维码...");
 
         loop {

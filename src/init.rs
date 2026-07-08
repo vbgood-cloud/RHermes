@@ -400,11 +400,9 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
                 2 => {
                     // 微信个号
                     wechat_config.enabled = true;
-                    // 确保 token_path 非空（否则登录后 token 无法保存）
                     if wechat_config.token_path.is_empty() {
                         wechat_config.token_path = "home/wechat_token.txt".to_string();
                     }
-                    println!("   ℹ 启动后需扫码登录 iLink Bot 获取 token");
                     let poll_input: String = Input::with_theme(&ColorfulTheme::default())
                         .with_prompt("轮询间隔秒数")
                         .default(wechat_config.poll_interval_secs.to_string())
@@ -412,7 +410,40 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
                     if let Ok(n) = poll_input.trim().parse::<u64>() {
                         wechat_config.poll_interval_secs = n;
                     }
-                    println!("   ✅ 微信个号已启用（启动后扫码登录）");
+
+                    // 直接在 init 中扫码登录
+                    let do_login = Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt("现在扫码登录微信？")
+                        .default(true)
+                        .interact()?;
+
+                    if do_login {
+                        println!("   ⏳ 正在获取二维码...");
+                        let temp_config = Config {
+                            channels: crate::core::ChannelsConfig {
+                                wechat: wechat_config.clone(),
+                                ..Default::default()
+                            },
+                            proxy: existing_config.proxy.clone(),
+                            ..Default::default()
+                        };
+                        let ch = crate::channel::wechat::WeChatChannel::new(&temp_config);
+                        match tokio::task::block_in_place(|| {
+                            tokio::runtime::Handle::current().block_on(ch.login_flow())
+                        }) {
+                            Ok(token) => {
+                                ch.save_token(&token);
+                                println!("   ✅ 微信扫码登录成功！");
+                            }
+                            Err(e) => {
+                                println!("   ⚠ 扫码登录失败: {e}");
+                                println!("   ℹ 可稍后通过 gateway start 时扫码登录");
+                            }
+                        }
+                    } else {
+                        println!("   ℹ 跳过扫码，启动 gateway 时会自动弹出二维码");
+                    }
+                    println!("   ✅ 微信个号已配置");
                 }
                 _ => break, // 跳过/完成
             }

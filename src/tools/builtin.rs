@@ -955,29 +955,87 @@ static GLOBAL_SEARCHER: OnceLock<MultiEngineSearcher> = OnceLock::new();
 fn get_searcher() -> &'static MultiEngineSearcher {
     GLOBAL_SEARCHER.get_or_init(|| {
         let config = GLOBAL_CONFIG.get().map(|c| &c.search);
-        let proxy = config.and_then(|s| s.proxy.as_deref());
+        let global_proxy = config.and_then(|s| s.proxy.as_deref());
         let timeout = config.map(|s| std::time::Duration::from_secs(s.timeout_secs))
             .unwrap_or_else(|| std::time::Duration::from_secs(10));
         let cache_size = config.map(|s| s.cache_size).unwrap_or(100);
         let cache_ttl = config.map(|s| std::time::Duration::from_secs(s.cache_ttl_secs))
             .unwrap_or_else(|| std::time::Duration::from_secs(600));
 
+        // 引擎优先级列表（从配置读取，默认: serper, duckduckgo, bing, baidu）
+        let engine_order: Vec<String> = config
+            .map(|s| s.engines.clone())
+            .unwrap_or_else(|| {
+                vec!["serper".into(), "duckduckgo".into(), "bing".into(), "baidu".into()]
+            });
+
+        // 需要走代理的引擎列表
+        let engine_proxy: Vec<String> = config
+            .map(|s| s.engine_proxy.clone())
+            .unwrap_or_default();
+
+        let serper_key = config.and_then(|s| {
+            if s.serper_api_key.is_empty() { None } else { Some(s.serper_api_key.clone()) }
+        });
+        let searxng_url = config.and_then(|s| s.searxng_url.clone());
+
         let mut engines: Vec<Box<dyn crate::tools::search::SearchEngine>> = Vec::new();
 
-        // Serper（付费，最可靠，有 API Key 时优先）
-        if let Some(api_key) = config.and_then(|s| {
-            if s.serper_api_key.is_empty() { None } else { Some(s.serper_api_key.as_str()) }
-        }) {
-            engines.push(Box::new(crate::tools::search::serper::SerperEngine::new(
-                api_key.to_string(), proxy,
-            )));
+        for name in &engine_order {
+            // 按引擎名决定是否走代理
+            let use_proxy = engine_proxy.iter().any(|p| p == name);
+            let proxy_url = if use_proxy {
+                global_proxy.or_else(|| {
+                    // 如果引擎在 proxy 列表中但没有全局 proxy，尝试从全局 config.proxy 读
+                    GLOBAL_CONFIG.get()
+                        .and_then(|c| c.proxy.url.as_deref())
+                })
+            } else {
+                None
+            };
+
+            match name.as_str() {
+                "serper" => {
+                    if let Some(ref key) = serper_key {
+                        engines.push(Box::new(
+                            crate::tools::search::serper::SerperEngine::new(
+                                key.clone(), proxy_url,
+                            )
+                        ));
+                    }
+                }
+                "duckduckgo" | "ddg" => {
+                    engines.push(Box::new(DuckDuckGoEngine::new(proxy_url)));
+                }
+                "bing" => {
+                    engines.push(Box::new(BingEngine::new(proxy_url)));
+                }
+                "baidu" => {
+                    engines.push(Box::new(
+                        crate::tools::search::baidu::BaiduEngine::new(proxy_url)
+                    ));
+                }
+                "searxng" => {
+                    if let Some(ref url) = searxng_url {
+                        engines.push(Box::new(
+                            crate::tools::search::searxng::SearXngEngine::new(
+                                url, proxy_url,
+                            )
+                        ));
+                    }
+                }
+                other => {
+                    tracing::warn!("未知搜索引擎: {}，跳过", other);
+                }
+            }
         }
 
-        // DuckDuckGo（免费 HTML 解析）
-        engines.push(Box::new(DuckDuckGoEngine::new(proxy)));
-
-        // Bing（免费 HTML 解析，DDG 降级）
-        engines.push(Box::new(BingEngine::new(proxy)));
+        // 如果没有任何引擎（配置错误），加默认 DDG + Bing
+        if engines.is_empty() {
+            tracing::warn!("没有可用的搜索引擎，使用默认 DDG + Bing");
+            engines.push(Box::new(DuckDuckGoEngine::new(global_proxy)));
+            engines.push(Box::new(BingEngine::new(global_proxy)));
+        }
 
         let cache = SearchCache::new(cache_size, cache_ttl);
         MultiEngineSearcher::new(engines, cache, timeout)

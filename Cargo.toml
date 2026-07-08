@@ -11,11 +11,12 @@ repository = "https://github.com/rhermes/rhermes"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] }
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json", "stream", "socks", "multipart"] }
 serde_json = "1"
 unicode-width = "0.2"
+time = { version = "0.3", features = ["macros"] }
 futures-util = "0.3"
 async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }

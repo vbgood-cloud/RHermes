@@ -31,6 +31,31 @@ use tools::ToolDispatcher;
 use tui::App;
 
 // ---------------------------------------------------------------------------
+// 多路日志输出（同时写控制台 + 文件）
+// ---------------------------------------------------------------------------
+
+/// 将日志同时写入多个 Write 目标
+struct MultiWriter {
+    writers: Vec<Box<dyn Write + Send>>,
+}
+
+impl Write for MultiWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        for w in &mut self.writers {
+            let _ = w.write(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        for w in &mut self.writers {
+            let _ = w.flush();
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI 入口
 // ---------------------------------------------------------------------------
 
@@ -166,8 +191,9 @@ async fn main() {
 
     // 同时输出到 stderr（控制台）和 rhermes.log
     let make_writer = move || -> Box<dyn Write + Send + 'static> {
+        // 尝试打开日志文件，同时确保也输出到 stderr
         if let Ok(file) = OpenOptions::new().create(true).append(true).open("rhermes.log") {
-            Box::new(file)
+            Box::new(MultiWriter { writers: vec![Box::new(std::io::stderr()), Box::new(file)] })
         } else {
             Box::new(std::io::stderr())
         }
@@ -179,6 +205,10 @@ async fn main() {
         )
         .with_ansi(false)
         .with_writer(make_writer)
+        .with_timer(tracing_subscriber::fmt::time::OffsetTime::new(
+            time::UtcOffset::from_hms(8, 0, 0).unwrap(),
+            time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]"),
+        ))
         .init();
 
     let cli = Cli::parse();

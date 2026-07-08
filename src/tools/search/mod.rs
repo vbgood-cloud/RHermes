@@ -3,7 +3,9 @@
 //! 提供 SearchEngine trait + 搜索缓存 + 多引擎降级
 
 pub mod bing;
+pub mod baidu;
 pub mod duckduckgo;
+pub mod searxng;
 pub mod serper;
 
 use std::num::NonZeroUsize;

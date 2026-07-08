@@ -224,22 +224,27 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
 
     tracing::info!("所有通道已启动，打印状态");
 
-    // 打印各通道启动状态
+    // 打印各通道启动状态（控制台 + 日志）
     println!();
     println!("┌────────────────────────────────────────────┐");
     println!("│           通道启动状态                       │");
     println!("├────────────────────────────────────────────┤");
     if channel_mgr.channel_count() == 0 {
         println!("│  ⚠ 没有已启用的通道                          │");
+        tracing::warn!("没有已启用的通道");
     } else {
         for ch in channel_mgr.iter() {
             let st = ch.status();
             let icon = if st.connected { "✅" } else { "⏳" };
             let detail = st.detail.unwrap_or_default();
             println!("│  {icon} {:<12} {}", st.name, detail);
+            // 同时写入日志（控制台 + rhermes.log）
+            let status_line = format!("{icon} {} {}", st.name, detail);
+            tracing::info!("通道状态: {}", status_line);
             if let Some(e) = &st.last_error {
                 let trunc = if e.len() > 40 { format!("{}...", &e[..40]) } else { e.clone() };
                 println!("│    └ 错误: {}", trunc);
+                tracing::error!("通道 {} 错误: {}", st.name, trunc);
             }
         }
     }

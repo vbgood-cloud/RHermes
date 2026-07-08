@@ -449,14 +449,27 @@ pub struct SearchConfig {
     /// 缓存 TTL（秒）
     #[serde(default = "default_search_cache_ttl")]
     pub cache_ttl_secs: u64,
-    /// HTTP 代理地址（可选）
+    /// HTTP 代理地址（可选，全局搜索代理）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
+    /// 搜索引擎优先级顺序（按列表依次尝试）
+    /// 可选: serper, duckduckgo, bing, baidu, searxng
+    #[serde(default = "default_search_engines")]
+    pub engines: Vec<String>,
+    /// 需要走代理的引擎名称列表
+    #[serde(default)]
+    pub engine_proxy: Vec<String>,
+    /// SearXNG 实例地址（自部署或公共实例）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searxng_url: Option<String>,
 }
 
 fn default_search_timeout() -> u64 { 15 }
 fn default_search_cache_size() -> usize { 100 }
 fn default_search_cache_ttl() -> u64 { 600 }
+fn default_search_engines() -> Vec<String> {
+    vec!["serper".into(), "duckduckgo".into(), "bing".into(), "baidu".into()]
+}
 
 impl Default for SearchConfig {
     fn default() -> Self {
@@ -466,6 +479,9 @@ impl Default for SearchConfig {
             cache_size: default_search_cache_size(),
             cache_ttl_secs: default_search_cache_ttl(),
             proxy: None,
+            engines: default_search_engines(),
+            engine_proxy: Vec::new(),
+            searxng_url: None,
         }
     }
 }
