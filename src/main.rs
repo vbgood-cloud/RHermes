@@ -8,6 +8,7 @@ mod channel;
 mod core;
 mod cost;
 mod debug;
+mod edu;
 mod gateway;
 mod init;
 mod mcp;
@@ -96,6 +97,27 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    /// 🎓 教育模式（学生版/教师版）
+    Edu {
+        #[command(subcommand)]
+        command: EduCommand,
+    },
+}
+
+/// 教育模式子命令
+#[derive(Subcommand)]
+enum EduCommand {
+    /// 🧑‍🎓 启动学生模式
+    Student,
+    /// 👩‍🏫 启动教师模式
+    Teacher,
+    /// 🔗 加入课程（课程码）
+    Join {
+        /// 课程码
+        code: String,
+    },
+    /// 📊 查看学习状态
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -339,6 +361,15 @@ async fn main() {
                     println!("✅ 配置已保存（带完整注释）");
                 }
             }
+        }
+        Some(Commands::Edu { command }) => {
+            let (cmd, args) = match command {
+                EduCommand::Student => ("student", vec![]),
+                EduCommand::Teacher => ("teacher", vec![]),
+                EduCommand::Join { code } => ("join", vec![code.clone()]),
+                EduCommand::Status => ("status", vec![]),
+            };
+            crate::edu::handle_edu(cmd, &args, &config_path).await;
         }
         _ => {
             if needs_init {

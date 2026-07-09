@@ -93,6 +93,9 @@ pub struct Config {
     /// 搜索引擎配置
     #[serde(default)]
     pub search: SearchConfig,
+    /// 教育模式配置
+    #[serde(default)]
+    pub edu: EduConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +779,7 @@ impl Default for Config {
             mcp: McpConfig::default(),
             search: SearchConfig::default(),
             proxy: ProxyConfig::default(),
+            edu: EduConfig::default(),
         }
     }
 }
@@ -1537,6 +1541,7 @@ mod tests {
             mcp: McpConfig::default(),
             search: SearchConfig::default(),
             proxy: ProxyConfig::default(),
+            edu: EduConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();
@@ -1596,5 +1601,86 @@ mod tests {
         let loaded = Config::load(&toml_path).unwrap();
         assert_eq!(loaded.request.timeout_secs, 120);
         assert_eq!(loaded.request.max_retries, 5);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 教育模式配置
+// ---------------------------------------------------------------------------
+
+/// 教育模式配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EduConfig {
+    /// 角色："student" / "teacher" / ""（空=通用模式）
+    #[serde(default)]
+    pub role: String,
+    /// 教师的 iroh NodeID（学生连接教师用）
+    #[serde(default)]
+    pub teacher_node_id: String,
+    /// 学号（学生模式用）
+    #[serde(default)]
+    pub student_no: String,
+    /// 默认学习模式：explore / scaffold / locked
+    #[serde(default = "default_edu_mode")]
+    pub default_mode: String,
+}
+
+fn default_edu_mode() -> String {
+    "explore".to_string()
+}
+
+impl Default for EduConfig {
+    fn default() -> Self {
+        Self {
+            role: String::new(),
+            teacher_node_id: String::new(),
+            student_no: String::new(),
+            default_mode: default_edu_mode(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod edu_tests {
+    use super::*;
+
+    #[test]
+    fn test_edu_config_default() {
+        let cfg = EduConfig::default();
+        assert!(cfg.role.is_empty());
+        assert!(cfg.teacher_node_id.is_empty());
+        assert!(cfg.student_no.is_empty());
+        assert_eq!(cfg.default_mode, "explore");
+    }
+
+    #[test]
+    fn test_edu_config_save_load() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toml_path = tmp.path().join("config.toml");
+
+        let cfg = Config {
+            edu: EduConfig {
+                role: "student".into(),
+                teacher_node_id: "abc123".into(),
+                student_no: "2024001".into(),
+                default_mode: "scaffold".into(),
+            },
+            ..Default::default()
+        };
+
+        cfg.save(&toml_path).unwrap();
+
+        let loaded = Config::load(&toml_path).unwrap();
+        assert_eq!(loaded.edu.role, "student");
+        assert_eq!(loaded.edu.teacher_node_id, "abc123");
+        assert_eq!(loaded.edu.student_no, "2024001");
+        assert_eq!(loaded.edu.default_mode, "scaffold");
+    }
+
+    #[test]
+    fn test_general_mode_edu_empty() {
+        // 通用模式下 edu.role 应为空
+        let cfg = Config::default();
+        assert!(cfg.edu.role.is_empty());
     }
 }

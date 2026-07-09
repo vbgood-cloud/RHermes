@@ -231,13 +231,23 @@ impl WeChatChannel {
     async fn fetch_qrcode(&self) -> Result<(String, Vec<u8>), String> {
         let url = format!("{}/ilink/bot/get_bot_qrcode?bot_type=3", API_BASE);
 
+        // 先用配置的 client 尝试，失败则用裸 client 重试（兼容网络环境差异）
         let resp = self
             .client
             .get(&url)
             .header("X-WECHAT-UIN", &generate_uin())
             .send()
-            .await
-            .map_err(|e| format!("获取二维码失败: {e}"))?;
+            .await;
+
+        let resp = match resp {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!("WeChat: 配置 client 获取二维码失败，尝试裸连接: {e}");
+                reqwest::get(&url)
+                    .await
+                    .map_err(|e2| format!("获取二维码失败（重试也失败）: {e2}"))?
+            }
+        };
 
         let result: QrCodeResponse = resp
             .json()

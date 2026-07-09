@@ -1,6 +1,6 @@
 [package]
 name = "rhermes"
-version = "0.6.5"
+version = "0.6.6"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]
@@ -13,7 +13,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "stream", "socks", "multipart"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "socks", "multipart", "native-tls", "charset", "http2", "macos-system-configuration"] }
 serde_json = "1"
 unicode-width = "0.2"
 time = { version = "0.3", features = ["macros"] }
