@@ -51,6 +51,7 @@ qrcodegen = "1.8.0"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
+iroh = "1.0"
 
 [build-dependencies]
 winresource = "0.1"

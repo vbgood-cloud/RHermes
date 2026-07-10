@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod course;
 pub mod dashboard;
+pub mod p2p;
 pub mod reflection;
 pub mod store;
 pub mod teacher;
