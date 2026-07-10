@@ -108,9 +108,15 @@ enum Commands {
 #[derive(Subcommand)]
 enum EduCommand {
     /// 🧑‍🎓 启动学生模式
-    Student,
-    /// 👩‍🏫 启动教师模式
-    Teacher,
+    Student {
+        /// 子命令（如 auth）
+        args: Vec<String>,
+    },
+    /// 👩‍🏫 教师管理
+    Teacher {
+        /// 教师子命令和参数（如 init, course create CS101 Python）
+        args: Vec<String>,
+    },
     /// 🔗 加入课程（课程码）
     Join {
         /// 课程码
@@ -118,6 +124,11 @@ enum EduCommand {
     },
     /// 📊 查看学习状态
     Status,
+    /// 🔐 认证
+    Auth {
+        /// 子命令（login/verify）
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -364,10 +375,11 @@ async fn main() {
         }
         Some(Commands::Edu { command }) => {
             let (cmd, args) = match command {
-                EduCommand::Student => ("student", vec![]),
-                EduCommand::Teacher => ("teacher", vec![]),
-                EduCommand::Join { code } => ("join", vec![code.clone()]),
+                EduCommand::Student { args: sub_args } => ("student", sub_args),
+                EduCommand::Teacher { args: sub_args } => ("teacher", sub_args),
+                EduCommand::Join { code } => ("join", vec![code]),
                 EduCommand::Status => ("status", vec![]),
+                EduCommand::Auth { args: sub_args } => ("auth", sub_args),
             };
             crate::edu::handle_edu(cmd, &args, &config_path).await;
         }

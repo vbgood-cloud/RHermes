@@ -206,12 +206,7 @@ pub fn handle_teacher_command(args: &[String], db_path: &Path) {
         return;
     }
 
-    let store_path = db_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("home/edu.db");
-
-    let mgr = match TeacherManager::new(&store_path) {
+    let mgr = match TeacherManager::new(db_path) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("❌ 数据库打开失败: {e}");
