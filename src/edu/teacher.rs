@@ -8,7 +8,7 @@ use crate::edu::store::{Class, Course, EduStore, EduError, Lesson, Student};
 
 /// 教师管理器
 pub struct TeacherManager {
-    store: EduStore,
+    pub store: EduStore,
 }
 
 impl TeacherManager {

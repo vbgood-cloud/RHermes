@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod course;
 pub mod dashboard;
+pub mod e2e_tests;
 pub mod p2p;
 pub mod reflection;
 pub mod store;
