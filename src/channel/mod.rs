@@ -16,6 +16,7 @@ pub mod wechat;
 pub mod wecom;
 pub mod telegram;
 pub mod qq;
+pub mod web;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

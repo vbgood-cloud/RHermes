@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod course;
+pub mod dashboard;
 pub mod reflection;
 pub mod store;
 pub mod teacher;
@@ -52,6 +53,15 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
             }
         }
         "teacher" => {
+            // 特殊处理 dashboard 子命令
+            if let Some(sub) = args.first() {
+                if sub == "dashboard" {
+                    println!("📊 启动教师仪表板...");
+                    let dashboard = dashboard::TeacherDashboard::new(8080, &db_path);
+                    dashboard.run().await;
+                    return;
+                }
+            }
             teacher::handle_teacher_command(args, &db_path);
         }
         "join" => {
