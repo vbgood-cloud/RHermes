@@ -29,6 +29,8 @@ pub struct SessionRouter {
     debug: Option<Arc<Mutex<crate::debug::SessionDebug>>>,
     /// 配置文件路径（用于 /model 等斜杠命令）
     config_path: std::path::PathBuf,
+    /// 每个用户的课程上下文（chat_id → course_suffix）
+    course_contexts: std::collections::HashMap<String, String>,
 }
 
 impl SessionRouter {
@@ -54,12 +56,28 @@ impl SessionRouter {
             system_prompt,
             debug,
             config_path,
+            course_contexts: std::collections::HashMap::new(),
         }
     }
 
     /// 路由一条入站消息到对应的 AgentSession
     pub async fn dispatch(&mut self, inbound: InboundMessage) {
-        let key = format!("{}:{}", inbound.channel, inbound.chat_id);
+        // 从 metadata 获取课程上下文
+        let course_suffix = inbound
+            .metadata
+            .get("course_suffix")
+            .cloned()
+            .unwrap_or_default();
+        let key = format!("{}:{}{}", inbound.channel, inbound.chat_id, course_suffix);
+
+        // 拦截 /sw 命令（课程切换）
+        if inbound.content.starts_with("/sw") {
+            let reply = self.handle_sw_command(&inbound.content);
+            if !reply.is_empty() {
+                self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+                return;
+            }
+        }
 
         // 拦截斜杠命令（Gateway 模式）
         if inbound.content.starts_with("/model") {
@@ -102,6 +120,34 @@ impl SessionRouter {
         // 处理消息
         if let Some(session) = self.sessions.get_mut(&key) {
             session.handle_message(&inbound.content).await;
+        }
+    }
+
+    /// 处理 /sw 课程切换命令
+    fn handle_sw_command(&mut self, input: &str) -> String {
+        use crate::edu::course::{parse_sw_command, SwCommand};
+
+        match parse_sw_command(input) {
+            SwCommand::List => {
+                let current = self.course_contexts.values().next();
+                if self.course_contexts.is_empty() {
+                    "📚 当前未选择课程。\n切换: /sw <课程码> 或 /sw <课程码>#<课次>".to_string()
+                } else {
+                    format!("📚 当前课程上下文:\n{}", current.unwrap_or(&String::new()))
+                }
+            }
+            SwCommand::Switch { course_code, lesson_num } => {
+                let suffix = if let Some(ln) = lesson_num {
+                    format!(":{}#{}", course_code, ln)
+                } else {
+                    format!(":{}", course_code)
+                };
+                self.course_contexts.insert(course_code.clone(), suffix.clone());
+                format!("✅ 已切换到课程 {}{}", course_code, lesson_num.map(|n| format!(" 第{}次课", n)).unwrap_or_default())
+            }
+            SwCommand::Invalid(msg) => {
+                format!("⚠️ 无效命令: {msg}")
+            }
         }
     }
 

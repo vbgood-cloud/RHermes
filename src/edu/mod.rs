@@ -6,6 +6,7 @@
 //! 通用模式（不带 edu 子命令）完全不受影响。
 
 pub mod auth;
+pub mod course;
 pub mod store;
 pub mod teacher;
 
