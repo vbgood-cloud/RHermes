@@ -165,6 +165,17 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
                     }
                 }
             }
+            "qq" if config.channels.qq.enabled => {
+                match crate::channel::qq::QqChannel::new(&config) {
+                    Ok(ch) => {
+                        channel_mgr.register(Arc::new(ch));
+                        tracing::info!("QQ 通道已注册");
+                    }
+                    Err(e) => {
+                        tracing::error!("QQ 通道创建失败: {e}");
+                    }
+                }
+            }
             n => {
                 tracing::warn!("未知或未启用的通道: {}", n);
             }
@@ -479,6 +490,7 @@ fn gateway_status(config_path: &Path) -> Result<(), String> {
                 "wechat" => config.channels.wechat.enabled,
                 "wecom" => config.channels.wecom.enabled,
                 "telegram" => config.channels.telegram.enabled,
+                "qq" => config.channels.qq.enabled,
                 _ => false,
             };
             if enabled {
@@ -536,7 +548,8 @@ fn channel_enable_disable(config_path: &Path, name: &str, enable: bool) -> Resul
         "wechat" => config.channels.wechat.enabled = enable,
         "wecom" => config.channels.wecom.enabled = enable,
         "telegram" => config.channels.telegram.enabled = enable,
-        _ => return Err(format!("不支持的通道: {name}，可用: wechat, wecom, telegram")),
+        "qq" => config.channels.qq.enabled = enable,
+        _ => return Err(format!("不支持的通道: {name}，可用: wechat, wecom, telegram, qq")),
     }
 
     config.save(config_path).map_err(|e| format!("保存配置失败: {e}"))?;

@@ -482,6 +482,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
             telegram: telegram_config,
             wecom: wecom_config,
             wechat: wechat_config,
+            qq: existing_config.channels.qq.clone(),
         },
         gateway: crate::core::GatewayConfig {
             enabled: true,

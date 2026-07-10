@@ -178,6 +178,9 @@ pub struct ChannelsConfig {
     /// Telegram Bot 通道配置
     #[serde(default)]
     pub telegram: TelegramConfig,
+    /// QQ Bot 通道配置
+    #[serde(default)]
+    pub qq: QqConfig,
 }
 
 impl Default for ChannelsConfig {
@@ -186,6 +189,7 @@ impl Default for ChannelsConfig {
             wecom: WeComConfig::default(),
             wechat: WeChatConfig::default(),
             telegram: TelegramConfig::default(),
+            qq: QqConfig::default(),
         }
     }
 }
@@ -297,6 +301,44 @@ impl Default for TelegramConfig {
             bot_token: String::new(),
             allowed_chats: Vec::new(),
             poll_timeout_secs: default_telegram_poll_timeout(),
+        }
+    }
+}
+
+/// QQ Bot 通道配置（官方 Bot API）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QqConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// AppID（从 .env QQ_BOT_APP_ID 读取）
+    #[serde(default, skip)]
+    pub app_id: String,
+    /// AppSecret（从 .env QQ_BOT_APP_SECRET 读取）
+    #[serde(default, skip)]
+    pub app_secret: String,
+    /// 允许的群 openiid 列表（空=全部允许）
+    #[serde(default)]
+    pub allowed_groups: Vec<String>,
+    /// 允许私聊（C2C）
+    #[serde(default = "default_qq_allow_private")]
+    pub allow_private_chat: bool,
+    /// 是否使用沙箱环境
+    #[serde(default)]
+    pub sandbox: bool,
+}
+
+fn default_qq_allow_private() -> bool { true }
+
+impl Default for QqConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            app_id: String::new(),
+            app_secret: String::new(),
+            allowed_groups: Vec::new(),
+            allow_private_chat: default_qq_allow_private(),
+            sandbox: false,
         }
     }
 }
@@ -842,6 +884,13 @@ impl Config {
                     // TELEGRAM_BOT_TOKEN → channels.telegram.bot_token
                     if key == "TELEGRAM_BOT_TOKEN" {
                         cfg.channels.telegram.bot_token = value.clone();
+                    }
+                    // QQ_BOT_APP_ID / QQ_BOT_APP_SECRET
+                    if key == "QQ_BOT_APP_ID" {
+                        cfg.channels.qq.app_id = value.clone();
+                    }
+                    if key == "QQ_BOT_APP_SECRET" {
+                        cfg.channels.qq.app_secret = value.clone();
                     }
                 }
             }

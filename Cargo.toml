@@ -48,6 +48,7 @@ extism = "1.5"
 ratatui = "0.29"
 crossterm = "0.28"
 qrcodegen = "1.8.0"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 
 [build-dependencies]
 winresource = "0.1"
