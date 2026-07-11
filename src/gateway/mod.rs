@@ -327,6 +327,9 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
             config_path.to_path_buf(),
         );
 
+        // 设置教育模式角色
+        router.set_edu_role(&config.edu.role);
+
         // 定期写通道状态文件
         let status_path = config_path.parent()
             .unwrap_or(Path::new("."))

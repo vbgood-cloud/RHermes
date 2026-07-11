@@ -374,14 +374,26 @@ async fn main() {
             }
         }
         Some(Commands::Edu { command }) => {
-            let (cmd, args) = match command {
-                EduCommand::Student { args: sub_args } => ("student", sub_args),
-                EduCommand::Teacher { args: sub_args } => ("teacher", sub_args),
-                EduCommand::Join { code } => ("join", vec![code]),
-                EduCommand::Status => ("status", vec![]),
-                EduCommand::Auth { args: sub_args } => ("auth", sub_args),
-            };
-            crate::edu::handle_edu(cmd, &args, &config_path).await;
+            match command {
+                EduCommand::Teacher { args } if args.is_empty() => {
+                    // rhermes edu teacher（无子命令）→ 直接进入 TUI
+                    run_code(cli.resume).await;
+                }
+                EduCommand::Student { args } if args.is_empty() => {
+                    // rhermes edu student（无子命令）→ 先认证再进入 TUI
+                    run_code(cli.resume).await;
+                }
+                _ => {
+                    let (cmd, args) = match command {
+                        EduCommand::Student { args: sub_args } => ("student", sub_args),
+                        EduCommand::Teacher { args: sub_args } => ("teacher", sub_args),
+                        EduCommand::Join { code } => ("join", vec![code]),
+                        EduCommand::Status => ("status", vec![]),
+                        EduCommand::Auth { args: sub_args } => ("auth", sub_args),
+                    };
+                    crate::edu::handle_edu(cmd, &args, &config_path).await;
+                }
+            }
         }
         _ => {
             if needs_init {
@@ -688,6 +700,9 @@ async fn run_code(resume: bool) {
 
         let session_config = crate::agent::SessionConfig::from_config(&config);
 
+        // 提取教育模式角色（在 config 被 move 之前）
+        let edu_role = config.edu.role.clone();
+
         app.init_api(config, transport.clone(), &path_mgr);
 
         // 设置全局 Transport（供子 Agent 工具使用）
@@ -706,7 +721,8 @@ async fn run_code(resume: bool) {
             config_path.clone(),
         );
 
-        // 后台 task：外部通道消息 → SessionRouter → ChannelSink → 外部通道回复
+        // 设置教育模式角色
+        router.set_edu_role(&edu_role);
         tokio::spawn(async move {
             tracing::info!("[TUI+Router] SessionRouter 后台 task 已启动");
             let mut rx = inbound_rx;

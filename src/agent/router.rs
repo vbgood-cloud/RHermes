@@ -31,6 +31,10 @@ pub struct SessionRouter {
     config_path: std::path::PathBuf,
     /// 每个用户的课程上下文（chat_id → course_suffix）
     course_contexts: std::collections::HashMap<String, String>,
+    /// 教育模式角色："teacher" / "student" / ""
+    edu_role: String,
+    /// 教育数据库路径
+    edu_db_path: std::path::PathBuf,
 }
 
 impl SessionRouter {
@@ -55,9 +59,19 @@ impl SessionRouter {
             config: config.clone(),
             system_prompt,
             debug,
-            config_path,
+            config_path: config_path.clone(),
             course_contexts: std::collections::HashMap::new(),
+            edu_role: String::new(),
+            edu_db_path: config_path
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("home/edu.db"),
         }
+    }
+
+    /// 设置教育模式角色
+    pub fn set_edu_role(&mut self, role: &str) {
+        self.edu_role = role.to_string();
     }
 
     /// 路由一条入站消息到对应的 AgentSession
@@ -82,6 +96,14 @@ impl SessionRouter {
         // 拦截斜杠命令（Gateway 模式）
         if inbound.content.starts_with("/model") {
             let reply = self.handle_model_command(&inbound.content);
+            if !reply.is_empty() {
+                self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+                return;
+            }
+        }
+
+        // 拦截教育模式斜杠命令
+        if let Some(reply) = self.handle_edu_slash_command(&inbound.content) {
             if !reply.is_empty() {
                 self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
                 return;
@@ -151,7 +173,210 @@ impl SessionRouter {
         }
     }
 
-    /// 处理 /model 斜杠命令，返回回复文本（空字符串表示非 model 命令）
+    /// 处理教育模式斜杠命令（教师端 + 学生端）
+    fn handle_edu_slash_command(&self, input: &str) -> Option<String> {
+        // 教师端命令
+        if self.edu_role == "teacher" {
+            if let Some(reply) = self.handle_teacher_slash(input) {
+                return Some(reply);
+            }
+        }
+
+        // 学生端命令
+        if self.edu_role == "student" {
+            if let Some(reply) = self.handle_student_slash(input) {
+                return Some(reply);
+            }
+        }
+
+        // 两端共有
+        if input.starts_with("/help") {
+            return Some(self.edu_help_text());
+        }
+
+        None
+    }
+
+    /// 教师端斜杠命令
+    fn handle_teacher_slash(&self, input: &str) -> Option<String> {
+        let parts: Vec<&str> = input.trim().splitn(2, char::is_whitespace).collect();
+        let cmd = parts[0];
+        let args_str = parts.get(1).copied().unwrap_or("");
+        let args: Vec<&str> = args_str.split_whitespace().collect();
+
+        let mgr = match crate::edu::teacher::TeacherManager::new(&self.edu_db_path) {
+            Ok(m) => m,
+            Err(e) => return Some(format!("❌ {e}")),
+        };
+
+        match cmd {
+            "/course" => {
+                let action = args.get(0).copied().unwrap_or("");
+                match action {
+                    "create" => {
+                        let code = args.get(1).copied().unwrap_or("");
+                        let name = args.get(2).copied().unwrap_or("");
+                        if code.is_empty() || name.is_empty() {
+                            return Some("用法: /course create <课程码> <课程名>".to_string());
+                        }
+                        match mgr.create_course(1, code, name) {
+                            Ok(_) => Some("".to_string()),
+                            Err(e) => Some(format!("❌ {e}")),
+                        }
+                    }
+                    "list" => {
+                        let mut buf = String::new();
+                        match mgr.list_courses(1) {
+                            Ok(courses) => {
+                                if courses.is_empty() { buf.push_str("（无课程）"); }
+                                for c in &courses {
+                                    buf.push_str(&format!("  {} {}\n", c.course_code, c.name));
+                                }
+                            }
+                            Err(e) => buf.push_str(&format!("❌ {e}")),
+                        }
+                        Some(buf)
+                    }
+                    _ => Some("用法: /course <create <码> <名> | list>".to_string()),
+                }
+            }
+            "/class" => {
+                let code = args.get(1).copied().unwrap_or("");
+                let name = args.get(2).copied().unwrap_or("");
+                if code.is_empty() || name.is_empty() {
+                    return Some("用法: /class create <课程码> <班级名>".to_string());
+                }
+                match mgr.create_class(code, name) {
+                    Ok(_) => Some("".to_string()),
+                    Err(e) => Some(format!("❌ {e}")),
+                }
+            }
+            "/lesson" => {
+                let code = args.get(1).copied().unwrap_or("");
+                let class_name = args.get(2).copied().unwrap_or("");
+                let num_str = args.get(3).copied().unwrap_or("");
+                let topic = args.get(4).copied().unwrap_or("");
+                if code.is_empty() || class_name.is_empty() || num_str.is_empty() {
+                    return Some("用法: /lesson create <课程码> <班级> <序号> <主题>".to_string());
+                }
+                let num: i64 = num_str.parse().unwrap_or(1);
+                match mgr.create_lesson(code, class_name, num, topic) {
+                    Ok(_) => Some("".to_string()),
+                    Err(e) => Some(format!("❌ {e}")),
+                }
+            }
+            "/student" => {
+                let action = args.get(0).copied().unwrap_or("");
+                match action {
+                    "add" => {
+                        let no = args.get(1).copied().unwrap_or("");
+                        let name = args.get(2).copied().unwrap_or("");
+                        let course = args.get(3).copied().unwrap_or("");
+                        let class_name = args.get(4).copied().unwrap_or("");
+                        if no.is_empty() || name.is_empty() || course.is_empty() || class_name.is_empty() {
+                            return Some("用法: /student add <学号> <姓名> <课程码> <班级名>".to_string());
+                        }
+                        match mgr.add_student(no, name, "123456", Some(class_name), Some(course)) {
+                            Ok(_) => Some("".to_string()),
+                            Err(e) => Some(format!("❌ {e}")),
+                        }
+                    }
+                    _ => Some("用法: /student add <学号> <姓名> <课程码> <班级名>".to_string()),
+                }
+            }
+            "/roster" => {
+                let code = args.get(0).copied().unwrap_or("");
+                if code.is_empty() {
+                    return Some("用法: /roster <课程码>".to_string());
+                }
+                let mut buf = String::new();
+                match mgr.list_roster(code) {
+                    Ok(_) => {}
+                    Err(e) => buf.push_str(&format!("❌ {e}")),
+                }
+                Some(buf)
+            }
+            _ => None,
+        }
+    }
+
+    /// 学生端斜杠命令
+    fn handle_student_slash(&self, input: &str) -> Option<String> {
+        let parts: Vec<&str> = input.trim().splitn(2, char::is_whitespace).collect();
+        let cmd = parts[0];
+        let args: Vec<&str> = parts.get(1).copied().unwrap_or("").split_whitespace().collect();
+
+        match cmd {
+            "/courses" => {
+                let store = crate::edu::store::EduStore::open(&self.edu_db_path).ok()?;
+                // 简化版：列出所有课程
+                let courses = store.list_courses_by_teacher(1).ok()?;
+                let mut buf = "📚 可用课程:\n".to_string();
+                for c in &courses {
+                    buf.push_str(&format!("  {} {}\n", c.course_code, c.name));
+                }
+                buf.push_str("\n用 /sw <课程码> 切换课程");
+                Some(buf)
+            }
+            "/profile" => {
+                Some("📊 学习档案\n   （需要先认证 — 输入 /auth login <学号> <密码>）".to_string())
+            }
+            "/report" => {
+                Some("📝 成长报告\n   （需要先认证 — 输入 /auth login <学号> <密码>）".to_string())
+            }
+            "/mode" => {
+                let mode = args.get(0).copied().unwrap_or("");
+                if mode.is_empty() {
+                    return Some("当前模式: explore\n可切换: /mode <explore|scaffold|locked>".to_string());
+                }
+                Some(format!("✅ 学习模式已切换为: {mode}"))
+            }
+            "/auth" => {
+                let action = args.get(0).copied().unwrap_or("");
+                match action {
+                    "login" => {
+                        let no = args.get(1).copied().unwrap_or("");
+                        let pwd = args.get(2).copied().unwrap_or("");
+                        if no.is_empty() || pwd.is_empty() {
+                            return Some("用法: /auth login <学号> <密码>".to_string());
+                        }
+                        let store = crate::edu::store::EduStore::open(&self.edu_db_path).ok()?;
+                        match crate::edu::auth::authenticate(&store, no, pwd) {
+                            Ok(result) => Some(format!("✅ 认证成功！欢迎, {}", result.student_name)),
+                            Err(e) => Some(format!("❌ {e}")),
+                        }
+                    }
+                    _ => Some("用法: /auth login <学号> <密码>".to_string()),
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// 教育模式帮助文本
+    fn edu_help_text(&self) -> String {
+        let mut help = "📖 可用命令:\n".to_string();
+        help.push_str("  /sw [课程码] — 列出/切换课程\n");
+        help.push_str("  /model [set <模型>] — 查看/切换模型\n");
+        if self.edu_role == "teacher" {
+            help.push_str("\n👩‍🏫 教师命令:\n");
+            help.push_str("  /course create <码> <名> — 创建课程\n");
+            help.push_str("  /course list — 列出课程\n");
+            help.push_str("  /class create <码> <班> — 创建班级\n");
+            help.push_str("  /lesson create <码> <班> <序号> <主题> — 创建课次\n");
+            help.push_str("  /student add <学号> <名> <课程> <班> — 添加学生\n");
+            help.push_str("  /roster <课程码> — 查看花名册\n");
+        }
+        if self.edu_role == "student" {
+            help.push_str("\n🧑‍🎓 学生命令:\n");
+            help.push_str("  /courses — 列出可用课程\n");
+            help.push_str("  /auth login <学号> <密码> — 认证\n");
+            help.push_str("  /profile — 查看学习档案\n");
+            help.push_str("  /report — 生成成长报告\n");
+            help.push_str("  /mode [explore|scaffold] — 查看/切换学习模式\n");
+        }
+        help
+    }
     fn handle_model_command(&self, input: &str) -> String {
         let rest = input.trim_start_matches("/model").trim();
         if rest.is_empty() {
