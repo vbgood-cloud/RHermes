@@ -810,7 +810,7 @@ impl App {
                             "⏳ 压缩指令已发送（下轮请求会自动触发）"));
                     }
                     // 教育模式斜杠命令
-                    cmd if cmd.starts_with("/course") || cmd.starts_with("/class") || cmd.starts_with("/lesson") || cmd.starts_with("/student") || cmd.starts_with("/roster") || cmd.starts_with("/courses") || cmd.starts_with("/profile") || cmd.starts_with("/report") || cmd.starts_with("/mode ") || cmd.starts_with("/auth login") || cmd.starts_with("/assignment") || cmd.starts_with("/assignments") || cmd.starts_with("/submit") || cmd.starts_with("/feedback") => {
+                    cmd if cmd.starts_with("/course") || cmd.starts_with("/class") || cmd.starts_with("/lesson") || cmd.starts_with("/student") || cmd.starts_with("/roster") || cmd.starts_with("/courses") || cmd.starts_with("/profile") || cmd.starts_with("/report") || cmd.starts_with("/mode ") || cmd.starts_with("/auth login") || cmd.starts_with("/assignment") || cmd.starts_with("/assignments") || cmd.starts_with("/submit") || cmd.starts_with("/feedback") || cmd == "/setup" => {
                         let reply = crate::edu::handle_slash_command(cmd, &self.config_path);
                         if !reply.is_empty() {
                             self.messages.push(Message::system(reply));

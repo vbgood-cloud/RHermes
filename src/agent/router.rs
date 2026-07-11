@@ -177,6 +177,10 @@ impl SessionRouter {
     fn handle_edu_slash_command(&self, input: &str) -> Option<String> {
         // 教师端命令
         if self.edu_role == "teacher" {
+            // /setup 在非 TUI 环境返回引导文本
+            if input.trim() == "/setup" {
+                return Some(crate::edu::setup::setup_guide_text());
+            }
             if let Some(reply) = self.handle_teacher_slash(input) {
                 return Some(reply);
             }

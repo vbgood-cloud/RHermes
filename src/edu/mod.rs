@@ -11,6 +11,7 @@ pub mod dashboard;
 pub mod e2e_tests;
 pub mod p2p;
 pub mod reflection;
+pub mod setup;
 pub mod store;
 pub mod teacher;
 
@@ -109,6 +110,11 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
     let args: Vec<&str> = args_str.split_whitespace().collect();
 
     match cmd {
+        // ===== 教师课程创建向导 =====
+        "/setup" if role == "teacher" => {
+            return crate::edu::setup::run_course_setup(&db_path);
+        }
+
         // ===== 教师命令 =====
         "/course" if role == "teacher" => {
             let mgr = match teacher::TeacherManager::new(&db_path) {
