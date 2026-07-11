@@ -206,7 +206,60 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
                         Err(e) => format!("❌ {e}"),
                     }
                 }
-                _ => "用法: /student add <学号> <姓名> <课程码> <班级名>".to_string(),
+                "import" => {
+                    // /student import <课程码> <班级名>
+                    // 支持两种格式：
+                    // 1. /student import <课程码> <班级名> 2024001,张三 2024002,李四 ...
+                    // 2. /student import <课程码> <班级名>（然后逐行输入，通过状态机）
+                    let course = args.get(1).copied().unwrap_or("");
+                    let class_name = args.get(2).copied().unwrap_or("");
+                    if course.is_empty() || class_name.is_empty() {
+                        return "用法: /student import <课程码> <班级名> [学号,姓名 学号,姓名 ...]".to_string();
+                    }
+                    // 检查课程和班级是否存在
+                    let c = mgr.store.get_course(course).ok().flatten();
+                    let Some(c) = c else { return format!("❌ 课程 '{course}' 不存在") };
+                    let classes = mgr.store.get_classes_by_course(c.id).unwrap_or_default();
+                    let cls = classes.iter().find(|cl| cl.name == class_name);
+                    let Some(cls) = cls else { return format!("❌ 班级 '{class_name}' 不存在") };
+
+                    // 尝试解析内联学生数据
+                    let rest_args: Vec<&str> = args[3..].to_vec();
+                    if !rest_args.is_empty() {
+                        // 内联模式：直接解析
+                        let mut count = 0;
+                        let mut errors = Vec::new();
+                        for (i, entry) in rest_args.iter().enumerate() {
+                            let parts: Vec<&str> = entry.split(',').collect();
+                            if parts.len() < 2 {
+                                errors.push(format!("第{}条格式错误", i + 1));
+                                continue;
+                            }
+                            let no = parts[0].trim();
+                            let name = parts[1].trim();
+                            let pwd = parts.get(2).map(|p| p.trim()).unwrap_or("123456");
+                            match mgr.add_student(no, name, pwd, Some(class_name), Some(course)) {
+                                Ok(_) => count += 1,
+                                Err(e) => errors.push(format!("{no}: {e}")),
+                            }
+                        }
+                        let mut buf = format!("✅ 导入完成: {count} 个学生\n");
+                        if !errors.is_empty() {
+                            buf.push_str(&format!("⚠️ {} 个错误:\n", errors.len()));
+                            for e in &errors { buf.push_str(&format!("  - {e}\n")); }
+                        }
+                        buf
+                    } else {
+                        // 无内联数据 → 返回提示引导用户用 /student add 逐个添加
+                        format!(
+                            "📥 批量导入学生到 {course} {class_name}\n\n\
+                             方式 1 — 一次性导入（用空格分隔）：\n  /student import {course} {class_name} 2024001,张三 2024002,李四 2024003,王五\n\n\
+                             方式 2 — 逐个添加：\n  /student add 2024001 张三 {course} {class_name}\n  /student add 2024002 李四 {course} {class_name}\n\n\
+                             格式说明：学号,姓名[,密码]（密码可省略，默认 123456）"
+                        )
+                    }
+                }
+                _ => "用法:\n  /student add <学号> <姓名> <课程码> <班级名>\n  /student import <课程码> <班级名> [学号,姓名 ...]".to_string(),
             }
         }
         "/roster" if role == "teacher" => {
