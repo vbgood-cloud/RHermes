@@ -1660,7 +1660,10 @@ mod tests {
 /// 教育模式配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EduConfig {
-    /// 角色："student" / "teacher" / ""（空=通用模式）
+    /// 是否启用教育模式（默认 false = 通用模式）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 角色："student" / "teacher" / ""（空=未设置）
     #[serde(default)]
     pub role: String,
     /// 教师的 iroh NodeID（学生连接教师用）
@@ -1672,6 +1675,9 @@ pub struct EduConfig {
     /// 默认学习模式：explore / scaffold / locked
     #[serde(default = "default_edu_mode")]
     pub default_mode: String,
+    /// 学生认证 token（认证后自动保存）
+    #[serde(default)]
+    pub auth_token: String,
 }
 
 fn default_edu_mode() -> String {
@@ -1681,10 +1687,12 @@ fn default_edu_mode() -> String {
 impl Default for EduConfig {
     fn default() -> Self {
         Self {
+            enabled: false,
             role: String::new(),
             teacher_node_id: String::new(),
             student_no: String::new(),
             default_mode: default_edu_mode(),
+            auth_token: String::new(),
         }
     }
 }
@@ -1709,10 +1717,12 @@ mod edu_tests {
 
         let cfg = Config {
             edu: EduConfig {
+                enabled: true,
                 role: "student".into(),
                 teacher_node_id: "abc123".into(),
                 student_no: "2024001".into(),
                 default_mode: "scaffold".into(),
+                auth_token: String::new(),
             },
             ..Default::default()
         };

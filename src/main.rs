@@ -97,38 +97,6 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommand,
     },
-    /// 🎓 教育模式（学生版/教师版）
-    Edu {
-        #[command(subcommand)]
-        command: EduCommand,
-    },
-}
-
-/// 教育模式子命令
-#[derive(Subcommand)]
-enum EduCommand {
-    /// 🧑‍🎓 启动学生模式
-    Student {
-        /// 子命令（如 auth）
-        args: Vec<String>,
-    },
-    /// 👩‍🏫 教师管理
-    Teacher {
-        /// 教师子命令和参数（如 init, course create CS101 Python）
-        args: Vec<String>,
-    },
-    /// 🔗 加入课程（课程码）
-    Join {
-        /// 课程码
-        code: String,
-    },
-    /// 📊 查看学习状态
-    Status,
-    /// 🔐 认证
-    Auth {
-        /// 子命令（login/verify）
-        args: Vec<String>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -373,34 +341,20 @@ async fn main() {
                 }
             }
         }
-        Some(Commands::Edu { command }) => {
-            match command {
-                EduCommand::Teacher { args } if args.is_empty() => {
-                    // rhermes edu teacher（无子命令）→ 直接进入 TUI
-                    run_code(cli.resume).await;
-                }
-                EduCommand::Student { args } if args.is_empty() => {
-                    // rhermes edu student（无子命令）→ 先认证再进入 TUI
-                    run_code(cli.resume).await;
-                }
-                _ => {
-                    let (cmd, args) = match command {
-                        EduCommand::Student { args: sub_args } => ("student", sub_args),
-                        EduCommand::Teacher { args: sub_args } => ("teacher", sub_args),
-                        EduCommand::Join { code } => ("join", vec![code]),
-                        EduCommand::Status => ("status", vec![]),
-                        EduCommand::Auth { args: sub_args } => ("auth", sub_args),
-                    };
-                    crate::edu::handle_edu(cmd, &args, &config_path).await;
-                }
-            }
-        }
         _ => {
             if needs_init {
                 println!("📋 未检测到配置文件，正在启动初始化向导...");
                 if let Err(e) = init::run_init() {
                     eprintln!("[RHermes] 初始化失败: {e}");
                     std::process::exit(1);
+                }
+            }
+            // 检查是否启用教育模式
+            let config = Config::load(&config_path).unwrap_or_default();
+            if config.edu.enabled {
+                let role = config.edu.role.as_str();
+                if !role.is_empty() {
+                    println!("🎓 教育模式 ({role})");
                 }
             }
             run_code(cli.resume).await;
