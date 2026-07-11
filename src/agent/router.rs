@@ -31,6 +31,8 @@ pub struct SessionRouter {
     config_path: std::path::PathBuf,
     /// 每个用户的课程上下文（chat_id → course_suffix）
     course_contexts: std::collections::HashMap<String, String>,
+    /// 每个用户的向导状态（chat_id → SetupState）
+    setup_states: std::collections::HashMap<String, crate::edu::setup::SetupState>,
     /// 教育模式角色："teacher" / "student" / ""
     edu_role: String,
     /// 教育数据库路径
@@ -61,6 +63,7 @@ impl SessionRouter {
             debug,
             config_path: config_path.clone(),
             course_contexts: std::collections::HashMap::new(),
+            setup_states: std::collections::HashMap::new(),
             edu_role: String::new(),
             edu_db_path: config_path
                 .parent()
@@ -103,7 +106,7 @@ impl SessionRouter {
         }
 
         // 拦截教育模式斜杠命令
-        if let Some(reply) = self.handle_edu_slash_command(&inbound.content) {
+        if let Some(reply) = self.handle_edu_slash_command(&inbound.content, &inbound.chat_id) {
             if !reply.is_empty() {
                 self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
                 return;
@@ -174,12 +177,33 @@ impl SessionRouter {
     }
 
     /// 处理教育模式斜杠命令（教师端 + 学生端）
-    fn handle_edu_slash_command(&self, input: &str) -> Option<String> {
+    fn handle_edu_slash_command(&mut self, input: &str, chat_id: &str) -> Option<String> {
         // 教师端命令
         if self.edu_role == "teacher" {
-            // /setup 在非 TUI 环境返回引导文本
+            // /setup 启动交互式向导（步骤状态机）
             if input.trim() == "/setup" {
-                return Some(crate::edu::setup::setup_guide_text());
+                let state = crate::edu::setup::SetupState::new();
+                let reply = crate::edu::setup::step_prompt(&state);
+                self.setup_states.insert(chat_id.to_string(), state);
+                return Some(reply);
+            }
+            // 如果用户正在向导流程中，处理回复
+            if let Some(mut state) = self.setup_states.get(chat_id).cloned() {
+                if state.step != crate::edu::setup::SetupStep::Done {
+                    let db_path = self.edu_db_path.clone();
+                    let reply = crate::edu::setup::handle_step_reply(&mut state, input.trim(), &db_path);
+                    if state.step == crate::edu::setup::SetupStep::Done {
+                        self.setup_states.remove(chat_id);
+                    } else {
+                        self.setup_states.insert(chat_id.to_string(), state);
+                    }
+                    return Some(reply);
+                }
+            }
+            // /setup cancel 取消向导
+            if input.trim() == "/setup cancel" {
+                self.setup_states.remove(chat_id);
+                return Some("向导已取消。".to_string());
             }
             if let Some(reply) = self.handle_teacher_slash(input) {
                 return Some(reply);
