@@ -80,6 +80,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         "lmstudio    — LM Studio 本地模型",
         "newapi      — New API / One API 代理",
         "其他 (自定义)",
+        "跳过（保留已有配置或稍后设置）",
     ];
 
     let default_provider_idx = match existing_provider.as_str() {
@@ -107,6 +108,12 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
         4 => ("ollama".to_string(), "http://localhost:11434/v1"),
         5 => ("lmstudio".to_string(), "http://localhost:1234/v1"),
         6 => ("newapi".to_string(), "http://localhost:3000/v1"),
+        8 => {
+            // 跳过 — 保留已有配置
+            println!("   ⏭️ 跳过 AI 提供商配置");
+            // 直接跳到系统配置步骤
+            return run_init_skip_provider(&existing_config, &path_mgr);
+        }
         _ => {
             let theme = ColorfulTheme::default();
             let name: String = Input::with_theme(&theme)
@@ -758,4 +765,112 @@ fn select_model_fallback(
     };
 
     Ok(model)
+}
+
+/// 跳过 AI 提供商配置，直接进入系统配置（保留已有 Provider 配置）
+fn run_init_skip_provider(
+    existing_config: &Config,
+    path_mgr: &PathManager,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use dialoguer::{Confirm, Input, theme::ColorfulTheme};
+
+    println!();
+    println!("【系统配置】以下每项均可跳过，直接回车使用默认值");
+    println!();
+
+    let mut agent_config = existing_config.agent.clone();
+    let mut proxy_config = existing_config.proxy.clone();
+    let mut edu_config = existing_config.edu.clone();
+
+    // 大项 A: 工作目录与安全
+    let configure_security = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("配置工作目录与命令安全？")
+        .default(false)
+        .interact()?;
+    if configure_security {
+        let ws_default = if !agent_config.workspace.is_empty() {
+            agent_config.workspace.clone()
+        } else {
+            std::env::current_dir()?.to_string_lossy().to_string()
+        };
+        let workspace: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("工作目录（留空=不限制）")
+            .default(ws_default)
+            .allow_empty(true)
+            .interact_text()?;
+        agent_config.workspace = workspace.trim().to_string();
+    }
+    println!();
+
+    // 大项 B: 网络代理
+    let configure_proxy = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("配置网络代理？")
+        .default(false)
+        .interact()?;
+    if configure_proxy {
+        let url_default = proxy_config.url.clone().unwrap_or_default();
+        let url_input: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("代理地址")
+            .default(url_default)
+            .allow_empty(true)
+            .interact_text()?;
+        proxy_config.url = if url_input.trim().is_empty() { None } else { Some(url_input.trim().to_string()) };
+    }
+    println!();
+
+    // 大项 C: 教育模式
+    let configure_edu = Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("启用教育模式？")
+        .default(false)
+        .interact()?;
+    if configure_edu {
+        edu_config.enabled = true;
+        let role_options = &["教师 (teacher)", "学生 (student)"];
+        let role_idx = dialoguer::Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("选择角色")
+            .items(role_options)
+            .default(0)
+            .interact()?;
+        edu_config.role = if role_idx == 0 { "teacher".into() } else { "student".into() };
+        if role_idx == 1 {
+            let student_no: String = Input::with_theme(&ColorfulTheme::default())
+                .with_prompt("学号")
+                .allow_empty(true)
+                .interact_text()?;
+            edu_config.student_no = student_no;
+        }
+        println!("   ✅ 教育模式已启用 ({})", edu_config.role);
+    }
+    println!();
+
+    // 保存配置
+    let config = Config {
+        agent: crate::core::AgentConfig {
+            default_provider: existing_config.agent.default_provider.clone(),
+            ..agent_config
+        },
+        proxy: proxy_config,
+        edu: edu_config,
+        ..existing_config.clone()
+    };
+
+    let config_path = path_mgr.config_path();
+    if let Err(e) = config.save(&config_path) {
+        eprintln!("❌ 配置保存失败: {e}");
+        return Err(e.into());
+    }
+
+    let env_path = config_path.parent().unwrap_or(Path::new(".")).join(".env");
+    println!("┌────────────────────────────────────────────┐");
+    println!("│          ✅ 配置完成！                      │");
+    println!("├────────────────────────────────────────────┤");
+    println!("│  配置文件: {}", config_path.display());
+    println!("│  AI 提供商: 已保留原有配置");
+    if config.edu.enabled {
+        println!("│  教育模式: ✅ 已启用 ({})", config.edu.role);
+    }
+    println!("│  直接运行 rhermes 即可开始！              │");
+    println!("└────────────────────────────────────────────┘");
+
+    Ok(())
 }

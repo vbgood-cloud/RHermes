@@ -809,6 +809,13 @@ impl App {
                         self.messages.push(Message::system(
                             "⏳ 压缩指令已发送（下轮请求会自动触发）"));
                     }
+                    // 教育模式斜杠命令
+                    cmd if cmd.starts_with("/course") || cmd.starts_with("/class") || cmd.starts_with("/lesson") || cmd.starts_with("/student") || cmd.starts_with("/roster") || cmd.starts_with("/courses") || cmd.starts_with("/profile") || cmd.starts_with("/report") || cmd.starts_with("/mode ") || cmd.starts_with("/auth login") || cmd.starts_with("/assignment") || cmd.starts_with("/assignments") || cmd.starts_with("/submit") || cmd.starts_with("/feedback") => {
+                        let reply = crate::edu::handle_slash_command(cmd, &self.config_path);
+                        if !reply.is_empty() {
+                            self.messages.push(Message::system(reply));
+                        }
+                    }
                     cmd if cmd == "/model" || cmd.starts_with("/model ") => {
                         let rest = cmd.trim_start_matches("/model ").trim();
                         if rest.is_empty() || rest == "/model" {

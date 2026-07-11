@@ -125,6 +125,50 @@ pub struct SessionInfo {
 }
 
 // ---------------------------------------------------------------------------
+// 新增数据模型
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Assignment {
+    pub id: i64,
+    pub course_id: i64,
+    pub title: String,
+    pub description: String,
+    pub lesson_num: Option<i64>,
+    pub due_date: String,
+    pub allowed_mode: String,
+    pub max_attempts: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassPublish {
+    pub id: i64,
+    pub class_id: i64,
+    pub course_id: i64,
+    pub content_type: String,  // "lesson" / "assignment"
+    pub content_id: i64,
+    pub published_at: String,
+    pub published_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Submission {
+    pub id: i64,
+    pub assignment_id: i64,
+    pub student_id: i64,
+    pub content: String,
+    pub file_path: String,
+    pub submitted_at: String,
+    pub ai_score: f64,
+    pub ai_feedback: String,
+    pub teacher_score: f64,
+    pub teacher_feedback: String,
+    pub evaluated_at: String,
+    pub status: String,
+}
+
+// ---------------------------------------------------------------------------
 // EduStore
 // ---------------------------------------------------------------------------
 
@@ -172,6 +216,59 @@ impl EduStore {
                 mode_override TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 UNIQUE(course_id, class_id, lesson_num)
+            );
+            
+            -- 课次表（课程级共享资源，不再绑定班级）
+            CREATE TABLE IF NOT EXISTS edu_lessons_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_id INTEGER NOT NULL REFERENCES edu_courses(id),
+                lesson_num INTEGER NOT NULL,
+                topic TEXT DEFAULT '',
+                mode_override TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                UNIQUE(course_id, lesson_num)
+            );
+            
+            -- 作业表
+            CREATE TABLE IF NOT EXISTS edu_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                course_id INTEGER NOT NULL REFERENCES edu_courses(id),
+                title TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                lesson_num INTEGER,
+                due_date TEXT DEFAULT '',
+                allowed_mode TEXT DEFAULT 'explore',
+                max_attempts INTEGER DEFAULT 3,
+                created_at TEXT NOT NULL
+            );
+            
+            -- 班级发布状态表
+            CREATE TABLE IF NOT EXISTS edu_class_publish (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                class_id INTEGER NOT NULL REFERENCES edu_classes(id),
+                course_id INTEGER NOT NULL REFERENCES edu_courses(id),
+                content_type TEXT NOT NULL,
+                content_id INTEGER NOT NULL,
+                published_at TEXT NOT NULL,
+                published_by TEXT DEFAULT 'manual',
+                UNIQUE(class_id, content_type, content_id)
+            );
+            
+            -- 作业提交表
+            CREATE TABLE IF NOT EXISTS edu_submissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assignment_id INTEGER NOT NULL REFERENCES edu_assignments(id),
+                student_id INTEGER NOT NULL REFERENCES edu_students(id),
+                content TEXT DEFAULT '',
+                file_path TEXT DEFAULT '',
+                submitted_at TEXT NOT NULL,
+                ai_score REAL DEFAULT 0,
+                ai_feedback TEXT DEFAULT '',
+                teacher_score REAL DEFAULT -1,
+                teacher_feedback TEXT DEFAULT '',
+                evaluated_at TEXT DEFAULT '',
+                status TEXT DEFAULT 'submitted',
+                UNIQUE(assignment_id, student_id)
             );
             CREATE TABLE IF NOT EXISTS edu_students (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -715,9 +812,217 @@ impl EduStore {
         )?;
         Ok(())
     }
-}
 
-/// 生成随机 32 字节 hex token
+    // =====================================================================
+    // 课次 v2（课程级共享资源）
+    // =====================================================================
+
+    /// 创建课次（课程级，无班级绑定）
+    pub fn create_lesson_v2(&self, course_id: i64, lesson_num: i64, topic: &str) -> Result<i64, EduError> {
+        let now = Self::now();
+        self.db.execute(
+            "INSERT INTO edu_lessons_v2 (course_id, lesson_num, topic, mode_override, created_at)
+             VALUES (?1, ?2, ?3, '', ?4)",
+            params![course_id, lesson_num, topic, now],
+        )?;
+        Ok(self.db.last_insert_rowid())
+    }
+
+    /// 获取课程的所有课次
+    pub fn get_lessons_v2(&self, course_id: i64) -> Result<Vec<Lesson>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, course_id, 0 as class_id, lesson_num, topic, mode_override, created_at
+             FROM edu_lessons_v2 WHERE course_id = ?1 ORDER BY lesson_num",
+        )?;
+        let lessons = stmt
+            .query_map(params![course_id], |row| {
+                Ok(Lesson {
+                    id: row.get(0)?,
+                    course_id: row.get(1)?,
+                    class_id: row.get(2)?,
+                    lesson_num: row.get(3)?,
+                    topic: row.get(4)?,
+                    mode_override: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(lessons)
+    }
+
+    /// 修改课次主题（所有班级自动同步）
+    pub fn update_lesson_topic(&self, course_id: i64, lesson_num: i64, new_topic: &str) -> Result<(), EduError> {
+        self.db.execute(
+            "UPDATE edu_lessons_v2 SET topic = ?1 WHERE course_id = ?2 AND lesson_num = ?3",
+            params![new_topic, course_id, lesson_num],
+        )?;
+        Ok(())
+    }
+
+    /// 删除课次
+    pub fn delete_lesson_v2(&self, course_id: i64, lesson_num: i64) -> Result<bool, EduError> {
+        let rows = self.db.execute(
+            "DELETE FROM edu_lessons_v2 WHERE course_id = ?1 AND lesson_num = ?2",
+            params![course_id, lesson_num],
+        )?;
+        Ok(rows > 0)
+    }
+
+    // =====================================================================
+    // 作业
+    // =====================================================================
+
+    pub fn create_assignment(&self, course_id: i64, title: &str, description: &str) -> Result<i64, EduError> {
+        let now = Self::now();
+        self.db.execute(
+            "INSERT INTO edu_assignments (course_id, title, description, lesson_num, due_date, allowed_mode, max_attempts, created_at)
+             VALUES (?1, ?2, ?3, NULL, '', 'explore', 3, ?4)",
+            params![course_id, title, description, now],
+        )?;
+        Ok(self.db.last_insert_rowid())
+    }
+
+    pub fn get_assignments(&self, course_id: i64) -> Result<Vec<Assignment>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, course_id, title, description, lesson_num, due_date, allowed_mode, max_attempts, created_at
+             FROM edu_assignments WHERE course_id = ?1 ORDER BY created_at",
+        )?;
+        let assignments = stmt
+            .query_map(params![course_id], |row| {
+                Ok(Assignment {
+                    id: row.get(0)?,
+                    course_id: row.get(1)?,
+                    title: row.get(2)?,
+                    description: row.get(3)?,
+                    lesson_num: row.get(4)?,
+                    due_date: row.get(5)?,
+                    allowed_mode: row.get(6)?,
+                    max_attempts: row.get(7)?,
+                    created_at: row.get(8)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(assignments)
+    }
+
+    pub fn update_assignment(&self, id: i64, title: Option<&str>, description: Option<&str>, due_date: Option<&str>) -> Result<(), EduError> {
+        if let Some(t) = title {
+            self.db.execute("UPDATE edu_assignments SET title = ?1 WHERE id = ?2", params![t, id])?;
+        }
+        if let Some(d) = description {
+            self.db.execute("UPDATE edu_assignments SET description = ?1 WHERE id = ?2", params![d, id])?;
+        }
+        if let Some(dd) = due_date {
+            self.db.execute("UPDATE edu_assignments SET due_date = ?1 WHERE id = ?2", params![dd, id])?;
+        }
+        Ok(())
+    }
+
+    // =====================================================================
+    // 班级发布
+    // =====================================================================
+
+    pub fn publish_to_class(&self, class_id: i64, course_id: i64, content_type: &str, content_id: i64) -> Result<(), EduError> {
+        let now = Self::now();
+        self.db.execute(
+            "INSERT OR IGNORE INTO edu_class_publish (class_id, course_id, content_type, content_id, published_at, published_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'manual')",
+            params![class_id, course_id, content_type, content_id, now],
+        )?;
+        Ok(())
+    }
+
+    pub fn unpublish_from_class(&self, class_id: i64, content_type: &str, content_id: i64) -> Result<bool, EduError> {
+        let rows = self.db.execute(
+            "DELETE FROM edu_class_publish WHERE class_id = ?1 AND content_type = ?2 AND content_id = ?3",
+            params![class_id, content_type, content_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    pub fn is_published(&self, class_id: i64, content_type: &str, content_id: i64) -> Result<bool, EduError> {
+        let count: i64 = self.db.query_row(
+            "SELECT COUNT(*) FROM edu_class_publish WHERE class_id = ?1 AND content_type = ?2 AND content_id = ?3",
+            params![class_id, content_type, content_id],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn get_published_lessons(&self, class_id: i64, course_id: i64) -> Result<Vec<i64>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT content_id FROM edu_class_publish WHERE class_id = ?1 AND course_id = ?2 AND content_type = 'lesson'",
+        )?;
+        let ids = stmt.query_map(params![class_id, course_id], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
+    pub fn get_published_assignments(&self, class_id: i64, course_id: i64) -> Result<Vec<i64>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT content_id FROM edu_class_publish WHERE class_id = ?1 AND course_id = ?2 AND content_type = 'assignment'",
+        )?;
+        let ids = stmt.query_map(params![class_id, course_id], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
+    }
+
+    // =====================================================================
+    // 作业提交
+    // =====================================================================
+
+    pub fn submit_assignment(&self, assignment_id: i64, student_id: i64, content: &str, file_path: &str) -> Result<i64, EduError> {
+        let now = Self::now();
+        // 覆盖提交（INSERT OR REPLACE）
+        self.db.execute(
+            "INSERT OR REPLACE INTO edu_submissions (assignment_id, student_id, content, file_path, submitted_at, ai_score, ai_feedback, teacher_score, teacher_feedback, evaluated_at, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, '', -1, '', '', 'submitted')",
+            params![assignment_id, student_id, content, file_path, now],
+        )?;
+        Ok(self.db.last_insert_rowid())
+    }
+
+    pub fn get_submission(&self, assignment_id: i64, student_id: i64) -> Result<Option<Submission>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, assignment_id, student_id, content, file_path, submitted_at, ai_score, ai_feedback, teacher_score, teacher_feedback, evaluated_at, status
+             FROM edu_submissions WHERE assignment_id = ?1 AND student_id = ?2",
+        )?;
+        let result = stmt
+            .query_row(params![assignment_id, student_id], |row| {
+                Ok(Submission {
+                    id: row.get(0)?,
+                    assignment_id: row.get(1)?,
+                    student_id: row.get(2)?,
+                    content: row.get(3)?,
+                    file_path: row.get(4)?,
+                    submitted_at: row.get(5)?,
+                    ai_score: row.get(6)?,
+                    ai_feedback: row.get(7)?,
+                    teacher_score: row.get(8)?,
+                    teacher_feedback: row.get(9)?,
+                    evaluated_at: row.get(10)?,
+                    status: row.get(11)?,
+                })
+            })
+            .ok();
+        Ok(result)
+    }
+
+    pub fn update_submission_score(&self, submission_id: i64, ai_score: Option<f64>, ai_feedback: Option<&str>, teacher_score: Option<f64>, teacher_feedback: Option<&str>) -> Result<(), EduError> {
+        let now = Self::now();
+        if let Some(s) = ai_score {
+            self.db.execute("UPDATE edu_submissions SET ai_score = ?1, ai_feedback = ?2, evaluated_at = ?3, status = 'ai_evaluated' WHERE id = ?4", params![s, ai_feedback.unwrap_or(""), now, submission_id])?;
+        }
+        if let Some(s) = teacher_score {
+            self.db.execute("UPDATE edu_submissions SET teacher_score = ?1, teacher_feedback = ?2, evaluated_at = ?3, status = 'teacher_evaluated' WHERE id = ?4", params![s, teacher_feedback.unwrap_or(""), now, submission_id])?;
+        }
+        Ok(())
+    }
+}
 fn generate_token() -> String {
     use rand::RngCore;
     let mut buf = [0u8; 32];
@@ -728,6 +1033,137 @@ fn generate_token() -> String {
 // ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod teaching_tests {
+    use super::*;
+
+    fn setup() -> (tempfile::TempDir, EduStore) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = EduStore::open(tmp.path().join("edu.db")).unwrap();
+        // 创建基础数据
+        store.create_teacher("老师", "p").unwrap();
+        store.create_course("TS101", "测试课程", 1).unwrap();
+        store.create_class("测试班", 1).unwrap();
+        (tmp, store)
+    }
+
+    #[test]
+    fn test_lesson_v2_crud() {
+        let (_tmp, store) = setup();
+        // 创建
+        let id = store.create_lesson_v2(1, 1, "第一讲").unwrap();
+        assert!(id > 0);
+        store.create_lesson_v2(1, 2, "第二讲").unwrap();
+
+        // 查询
+        let lessons = store.get_lessons_v2(1).unwrap();
+        assert_eq!(lessons.len(), 2);
+
+        // 修改
+        store.update_lesson_topic(1, 1, "修改后的第一讲").unwrap();
+        let lessons = store.get_lessons_v2(1).unwrap();
+        assert_eq!(lessons[0].topic, "修改后的第一讲");
+
+        // 删除
+        assert!(store.delete_lesson_v2(1, 2).unwrap());
+        let lessons = store.get_lessons_v2(1).unwrap();
+        assert_eq!(lessons.len(), 1);
+    }
+
+    #[test]
+    fn test_assignment_crud() {
+        let (_tmp, store) = setup();
+        let id = store.create_assignment(1, "作业1", "完成计算器").unwrap();
+        assert!(id > 0);
+
+        let assignments = store.get_assignments(1).unwrap();
+        assert_eq!(assignments.len(), 1);
+        assert_eq!(assignments[0].title, "作业1");
+
+        store.update_assignment(id, Some("修改作业"), Some("新描述"), Some("2026-12-31")).unwrap();
+        let assignments = store.get_assignments(1).unwrap();
+        assert_eq!(assignments[0].title, "修改作业");
+        assert_eq!(assignments[0].description, "新描述");
+    }
+
+    #[test]
+    fn test_publish_to_class() {
+        let (_tmp, store) = setup();
+        let lesson_id = store.create_lesson_v2(1, 1, "第一讲").unwrap();
+        let assignment_id = store.create_assignment(1, "作业1", "描述").unwrap();
+
+        // 发布课次
+        store.publish_to_class(1, 1, "lesson", lesson_id).unwrap();
+        assert!(store.is_published(1, "lesson", lesson_id).unwrap());
+
+        // 发布作业
+        store.publish_to_class(1, 1, "assignment", assignment_id).unwrap();
+        assert!(store.is_published(1, "assignment", assignment_id).unwrap());
+
+        // 查询已发布
+        let published_lessons = store.get_published_lessons(1, 1).unwrap();
+        assert_eq!(published_lessons.len(), 1);
+
+        let published_assignments = store.get_published_assignments(1, 1).unwrap();
+        assert_eq!(published_assignments.len(), 1);
+
+        // 撤回
+        assert!(store.unpublish_from_class(1, "lesson", lesson_id).unwrap());
+        assert!(!store.is_published(1, "lesson", lesson_id).unwrap());
+    }
+
+    #[test]
+    fn test_submission_crud() {
+        let (_tmp, store) = setup();
+        store.create_student("2024001", "张三", "p", Some(1)).unwrap();
+        let assignment_id = store.create_assignment(1, "作业1", "描述").unwrap();
+
+        // 提交
+        store.submit_assignment(assignment_id, 1, "我的答案", "").unwrap();
+
+        // 查询
+        let sub = store.get_submission(assignment_id, 1).unwrap().unwrap();
+        assert_eq!(sub.content, "我的答案");
+        assert_eq!(sub.status, "submitted");
+
+        // AI 评分
+        store.update_submission_score(sub.id, Some(0.75), Some("做得不错"), None, None).unwrap();
+        let sub = store.get_submission(assignment_id, 1).unwrap().unwrap();
+        assert!((sub.ai_score - 0.75).abs() < 0.01);
+        assert_eq!(sub.status, "ai_evaluated");
+
+        // 教师评分
+        store.update_submission_score(sub.id, None, None, Some(0.85), Some("很好")).unwrap();
+        let sub = store.get_submission(assignment_id, 1).unwrap().unwrap();
+        assert!((sub.teacher_score - 0.85).abs() < 0.01);
+        assert_eq!(sub.status, "teacher_evaluated");
+    }
+
+    #[test]
+    fn test_lesson_shared_sync() {
+        let (_tmp, store) = setup();
+        store.create_class("第二个班", 1).unwrap(); // class_id=2
+
+        // 创建课次（共享）
+        let lesson_id = store.create_lesson_v2(1, 1, "变量").unwrap();
+
+        // 两个班都发布
+        store.publish_to_class(1, 1, "lesson", lesson_id).unwrap();
+        store.publish_to_class(2, 1, "lesson", lesson_id).unwrap();
+
+        // 修改课次主题
+        store.update_lesson_topic(1, 1, "变量与类型").unwrap();
+
+        // 两个班看到的都是新主题
+        let lessons = store.get_lessons_v2(1).unwrap();
+        assert_eq!(lessons[0].topic, "变量与类型");
+
+        // 两个班都能看到
+        assert!(store.is_published(1, "lesson", lesson_id).unwrap());
+        assert!(store.is_published(2, "lesson", lesson_id).unwrap());
+    }
+}
 
 #[cfg(test)]
 mod tests {
