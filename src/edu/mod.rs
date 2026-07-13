@@ -551,7 +551,47 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
                     }
                     buf
                 }
-                _ => "用法: /class <publish|status> <课程码> <班级> ...".to_string(),
+                "list" => {
+                    let course = args.get(1).copied().unwrap_or("");
+                    if course.is_empty() {
+                        // 列出所有课程的所有班级
+                        let courses = store.list_courses_by_teacher(1).unwrap_or_default();
+                        if courses.is_empty() {
+                            return "📋 暂无课程".to_string();
+                        }
+                        let mut buf = "📋 所有班级:\n".to_string();
+                        for c in &courses {
+                            let classes = store.get_classes_by_course(c.id).unwrap_or_default();
+                            let lessons = store.get_lessons_v2(c.id).unwrap_or_default();
+                            if classes.is_empty() {
+                                buf.push_str(&format!("\n  {} {} — 无班级\n", c.course_code, c.name));
+                            } else {
+                                buf.push_str(&format!("\n  {} {}:\n", c.course_code, c.name));
+                                for cls in &classes {
+                                    let published = store.get_published_lessons(cls.id, c.id).unwrap_or_default();
+                                    buf.push_str(&format!("    · {} ({}/{} 课次已发布)\n", cls.name, published.len(), lessons.len()));
+                                }
+                            }
+                        }
+                        buf
+                    } else {
+                        // 列出指定课程的班级
+                        let c = store.get_course(course).ok().flatten();
+                        let Some(c) = c else { return format!("❌ 课程 '{course}' 不存在") };
+                        let classes = store.get_classes_by_course(c.id).unwrap_or_default();
+                        let lessons = store.get_lessons_v2(c.id).unwrap_or_default();
+                        if classes.is_empty() {
+                            return format!("📋 {} — 无班级", c.course_code);
+                        }
+                        let mut buf = format!("📋 {} {} — 班级列表:\n", c.course_code, c.name);
+                        for cls in &classes {
+                            let published = store.get_published_lessons(cls.id, c.id).unwrap_or_default();
+                            buf.push_str(&format!("  · {} ({}/{} 课次已发布)\n", cls.name, published.len(), lessons.len()));
+                        }
+                        buf
+                    }
+                }
+                _ => "用法: /class <list|publish|status> <课程码> <班级> ...".to_string(),
             }
         }
 

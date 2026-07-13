@@ -1,7 +1,6 @@
 //! RHermes Tool-Call Repair Pipeline
 //!
 //! 四道工序修复 DeepSeek 模型在 tool-call 上的常见问题：
-#![allow(dead_code)]
 //!
 //! 1. **Flatten** — 参数嵌套过深时转 dot-notation，dispatch 时还原
 //! 2. **Scavenge** — 从 reasoning_content 捞取模型忘记发出的 tool-call
@@ -12,6 +11,8 @@
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+
+use crate::api::ResponseToolCall;
 
 // ---------------------------------------------------------------------------
 // 修复后的结果
@@ -174,7 +175,73 @@ impl ScavengeRepair {
             Self::scan_json_objects(&think_content, &mut found);
         }
 
+        // 模式 4: Mistral 格式 — [TOOL_CALLS] func_name {"key": value}, func2 {"k": v}
+        Self::scavenge_mistral(text, &mut found);
+
         found
+    }
+
+    /// 解析 Mistral [TOOL_CALLS] 格式
+    fn scavenge_mistral(text: &str, found: &mut Vec<RepairedToolCall>) {
+        let marker = "[TOOL_CALLS]";
+        let Some(marker_pos) = text.find(marker) else { return; };
+        let rest = &text[marker_pos + marker.len()..];
+
+        // 简化策略：逐字符扫描，提取 func_name + JSON 对
+        let mut chars = rest.char_indices().peekable();
+        let mut pending_name = String::new();
+
+        while let Some(&(i, ch)) = chars.peek() {
+            if ch.is_whitespace() || ch == ',' {
+                chars.next();
+                continue;
+            }
+            if ch == '{' && !pending_name.is_empty() {
+                // 解析 JSON 对象
+                let json_str = Self::extract_json_object(&rest[i..]);
+                if !json_str.is_empty() {
+                    if let Ok(args) = serde_json::from_str::<Value>(&json_str) {
+                        found.push(RepairedToolCall {
+                            id: format!("scavenged_mistral_{}", found.len()),
+                            name: pending_name.trim().to_string(),
+                            arguments: args,
+                        });
+                    }
+                    // 跳过 JSON 字符
+                    for _ in 0..json_str.chars().count() {
+                        chars.next();
+                    }
+                    pending_name.clear();
+                    continue;
+                }
+            }
+            // 积累函数名
+            pending_name.push(ch);
+            chars.next();
+        }
+    }
+
+    /// 从 { 开始提取完整的 JSON 对象（匹配大括号）
+    fn extract_json_object(text: &str) -> String {
+        if !text.starts_with('{') { return String::new(); }
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (i, ch) in text.char_indices() {
+            match ch {
+                '\\' if in_string => { escaped = !escaped; }
+                '"' if !escaped => { in_string = !in_string; }
+                '{' if !in_string => { depth += 1; }
+                '}' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return text[..=i].to_string();
+                    }
+                }
+                _ => { escaped = false; }
+            }
+        }
+        String::new()
     }
 
     /// 在文本中扫描所有 JSON 对象
@@ -433,19 +500,58 @@ impl RepairPipeline {
         }
     }
 
-    /// 执行完整的修复流程
+    /// 执行完整的修复流程（原有接口，不传 api_tool_calls）
     pub fn repair(&mut self, content: &str) -> RepairedResponse {
+        self.repair_with_api(content, None)
+    }
+
+    /// 执行完整的修复流程（扩展接口，支持 API 返回的原始 tool_calls）
+    ///
+    /// - `content`: 模型返回的文本
+    /// - `api_tool_calls`: API 正常返回的 tool_calls 字段（可选）
+    ///   - Some: 对这些 calls 做参数 JSON 修复 + 与 scavenged 合并
+    ///   - None: 仅从 content 中 scavenge
+    pub fn repair_with_api(
+        &mut self,
+        content: &str,
+        api_tool_calls: Option<&[ResponseToolCall]>,
+    ) -> RepairedResponse {
         let mut actions = Vec::new();
 
-        // ---- 工序 1: Flatten — 参数还原 ----
-        // Flatten 在发送给模型前做压平，收到响应后还原
-        // （参数还原在 dispatcher 中处理）
+        // ---- 工序 1: 收集 tool_calls 来源 ----
+        let mut all_calls = Vec::new();
 
-        // ---- 工序 2: Scavenge — 从 reasoning 捞取 ----
+        // 来源 A: API 返回的 tool_calls（修复 arguments JSON）
+        if let Some(api_calls) = api_tool_calls {
+            for (i, tc) in api_calls.iter().enumerate() {
+                // 尝试解析 arguments JSON
+                let args_str = &tc.function.arguments;
+                let args: Value = if args_str.is_empty() {
+                    Value::Object(serde_json::Map::new())
+                } else {
+                    match serde_json::from_str(args_str) {
+                        Ok(v) => v,
+                        Err(_) => {
+                            // 截断修复
+                            let repaired = TruncationRepair::repair(args_str);
+                            serde_json::from_str(&repaired).unwrap_or(Value::Object(serde_json::Map::new()))
+                        }
+                    }
+                };
+                all_calls.push(RepairedToolCall {
+                    id: tc.id.clone(),
+                    name: tc.function.name.clone(),
+                    arguments: args,
+                });
+            }
+        }
+
+        // 来源 B: Scavenge — 从文本中捞取
         let scavenged = ScavengeRepair::scavenge(content);
         for call in &scavenged {
             actions.push(RepairAction::Scavenged(call.name.clone()));
         }
+        all_calls.extend(scavenged);
 
         // ---- 工序 3: Truncation — 补全截断 ----
         let repaired_content = TruncationRepair::repair(content);
@@ -454,7 +560,7 @@ impl RepairPipeline {
         }
 
         // ---- 工序 4: Storm — 抑制重复 ----
-        let (filtered_calls, stormed) = self.storm.filter(scavenged);
+        let (filtered_calls, stormed) = self.storm.filter(all_calls);
         let injected_reflection = stormed;
 
         RepairedResponse {
@@ -547,6 +653,27 @@ mod tests {
         let text = "这是一个普通回复，没有工具调用。";
         let calls = ScavengeRepair::scavenge(text);
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_scavenge_mistral_single() {
+        let text = r#"Let me check the weather.
+[TOOL_CALLS] get_weather {"city": "Paris"}"#;
+        let calls = ScavengeRepair::scavenge(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "get_weather");
+        assert_eq!(calls[0].arguments["city"], "Paris");
+    }
+
+    #[test]
+    fn test_scavenge_mistral_multi() {
+        let text = r#"[TOOL_CALLS] func1 {"a": 1}, func2 {"b": 2}"#;
+        let calls = ScavengeRepair::scavenge(text);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "func1");
+        assert_eq!(calls[0].arguments["a"], 1);
+        assert_eq!(calls[1].name, "func2");
+        assert_eq!(calls[1].arguments["b"], 2);
     }
 
     // ---- Truncation ----

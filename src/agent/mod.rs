@@ -13,6 +13,7 @@ pub use task::*;
 
 mod curator;
 mod event_sink;
+pub mod guardrails;
 mod memory;
 mod memory_manager;
 mod repair;

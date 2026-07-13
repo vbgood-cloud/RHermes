@@ -756,6 +756,20 @@ pub struct AgentConfig {
     /// 是否要求用户确认非白名单命令（默认 true）
     #[serde(default = "default_command_require_confirm")]
     pub command_require_confirm: bool,
+
+    /// --- 护栏配置 ---
+    /// 工具调用护栏总开关（默认 true）
+    #[serde(default = "default_guardrails_enabled")]
+    pub guardrails_enabled: bool,
+    /// 验证失败最大重试次数（默认 3）
+    #[serde(default = "default_guardrails_max_retries")]
+    pub guardrails_max_retries: u32,
+    /// 重复调用抑制滑动窗口大小（秒，默认 60）
+    #[serde(default = "default_guardrails_storm_window")]
+    pub guardrails_storm_window_secs: u64,
+    /// 窗口内允许的最大重复次数（默认 3）
+    #[serde(default = "default_guardrails_storm_max_repeats")]
+    pub guardrails_storm_max_repeats: u32,
 }
 
 impl Default for AgentConfig {
@@ -769,6 +783,10 @@ impl Default for AgentConfig {
             workspace: String::new(),
             command_allowed_prefixes: Vec::new(),
             command_require_confirm: true,
+            guardrails_enabled: default_guardrails_enabled(),
+            guardrails_max_retries: default_guardrails_max_retries(),
+            guardrails_storm_window_secs: default_guardrails_storm_window(),
+            guardrails_storm_max_repeats: default_guardrails_storm_max_repeats(),
         }
     }
 }
@@ -777,6 +795,10 @@ fn default_compression_ratio() -> f64 { 0.8 }
 fn default_creation_nudge_interval() -> u32 { 15 }
 fn default_memory_nudge_interval() -> u32 { 10 }
 fn default_command_require_confirm() -> bool { true }
+fn default_guardrails_enabled() -> bool { true }
+fn default_guardrails_max_retries() -> u32 { 3 }
+fn default_guardrails_storm_window() -> u64 { 60 }
+fn default_guardrails_storm_max_repeats() -> u32 { 3 }
 
 // ---- 默认值 ----
 
@@ -1581,6 +1603,10 @@ mod tests {
                 workspace: String::new(),
                 command_allowed_prefixes: Vec::new(),
                 command_require_confirm: true,
+                guardrails_enabled: true,
+                guardrails_max_retries: 3,
+                guardrails_storm_window_secs: 60,
+                guardrails_storm_max_repeats: 3,
             },
             provider_pool: ProviderPoolConfig::default(),
             channels: ChannelsConfig::default(),

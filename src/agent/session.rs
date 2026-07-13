@@ -26,6 +26,10 @@ pub struct SessionConfig {
     pub creation_nudge_interval: u32,
     pub memory_nudge_interval: u32,
     pub tool_result_max_chars: usize,
+    pub guardrails_enabled: bool,
+    pub guardrails_max_retries: u32,
+    pub guardrails_storm_window_secs: u64,
+    pub guardrails_storm_max_repeats: u32,
 }
 
 impl SessionConfig {
@@ -36,6 +40,10 @@ impl SessionConfig {
             creation_nudge_interval: config.agent.creation_nudge_interval,
             memory_nudge_interval: config.agent.memory_nudge_interval,
             tool_result_max_chars: config.display.tool_result_max_chars,
+            guardrails_enabled: config.agent.guardrails_enabled,
+            guardrails_max_retries: config.agent.guardrails_max_retries,
+            guardrails_storm_window_secs: config.agent.guardrails_storm_window_secs,
+            guardrails_storm_max_repeats: config.agent.guardrails_storm_max_repeats,
         }
     }
 }
@@ -53,6 +61,10 @@ pub struct AgentSession {
     sink: Arc<dyn EventSink>,
     config: SessionConfig,
     session_debug: Option<Arc<Mutex<crate::debug::SessionDebug>>>,
+    /// 护栏管线（跨轮次持久，StormSuppression 需要历史）
+    repair_pipeline: Option<crate::agent::repair::RepairPipeline>,
+    /// 护栏重试计数（跨轮累加）
+    guardrail_retry_count: u32,
 }
 
 impl AgentSession {
@@ -69,6 +81,17 @@ impl AgentSession {
         debug: Option<Arc<Mutex<crate::debug::SessionDebug>>>,
     ) -> Self {
         let context = Context::new(system_prompt);
+
+        // 初始化护栏管线
+        let repair_pipeline = if config.guardrails_enabled {
+            Some(crate::agent::repair::RepairPipeline::new(
+                config.guardrails_storm_window_secs,
+                config.guardrails_storm_max_repeats,
+            ))
+        } else {
+            None
+        };
+
         Self {
             session_id,
             context,
@@ -79,6 +102,8 @@ impl AgentSession {
             sink,
             config,
             session_debug: debug,
+            repair_pipeline,
+            guardrail_retry_count: 0,
         }
     }
 
@@ -113,6 +138,7 @@ impl AgentSession {
             }
             let mut final_text = String::new();
             let mut tool_calls: Vec<ToolCallData> = Vec::new();
+            let mut choice_message_tool_calls: Option<Vec<crate::api::ResponseToolCall>> = None;
 
             // 2a. 每 5 轮展示进化建议
             if round % 5 == 0 && round > 0 {
@@ -238,6 +264,7 @@ impl AgentSession {
                             self.sink.on_chunk(&final_text).await;
                         }
                         if let Some(ref calls) = choice.message.tool_calls {
+                            choice_message_tool_calls = Some(calls.clone());
                             tool_calls = calls.iter().map(|tc| ToolCallData {
                                 id: tc.id.clone(),
                                 name: tc.function.name.clone(),
@@ -261,6 +288,59 @@ impl AgentSession {
             }
 
             tracing::debug!("Context 消息数: {}", self.context.scratch_count());
+
+            // 4.5 护栏管线 — 修复 + 校验 tool_calls
+            if !tool_calls.is_empty() && self.repair_pipeline.is_some() {
+                let pipeline = self.repair_pipeline.as_mut().unwrap();
+                let api_calls = choice_message_tool_calls.as_deref();
+                let repaired = pipeline.repair_with_api(&final_text, api_calls);
+
+                // 记录修复动作
+                for action in &repaired.actions {
+                    tracing::debug!("护栏修复: {:?}", action);
+                }
+
+                // 如果有 dispatcher（持有 registry），执行校验
+                if let Some(ref dispatcher) = self.dispatcher {
+                    let registry = dispatcher.registry();
+                    let registry_arc = std::sync::Arc::new(registry.clone());
+                    let validator = crate::agent::guardrails::ResponseValidator::new(registry_arc);
+                    let validation = validator.validate(&repaired.tool_calls);
+
+                    if !validation.is_ok() && self.guardrail_retry_count < self.config.guardrails_max_retries {
+                        // 有校验错误且未达重试上限 → 注入纠正消息
+                        let nudge = crate::agent::guardrails::NudgeBuilder::build(
+                            &validation.errors,
+                            dispatcher.registry(),
+                        );
+                        tracing::warn!("护栏校验失败，注入纠正消息:\n{nudge}");
+                        self.context.push_to_log(Message::new(
+                            crate::tui::Role::System,
+                            &nudge,
+                        ));
+                        self.guardrail_retry_count += 1;
+                        continue; // 重新调用 API
+                    }
+
+                    // 校验通过或达到重试上限 → 用 valid_calls
+                    tool_calls = validation.valid_calls.iter().map(|c| ToolCallData {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        arguments: c.arguments.to_string(),
+                    }).collect();
+                } else {
+                    // 无 dispatcher → 直接用修复后的 calls
+                    tool_calls = repaired.tool_calls.iter().map(|c| ToolCallData {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        arguments: c.arguments.to_string(),
+                    }).collect();
+                }
+
+                if tool_calls.is_empty() && !repaired.tool_calls.is_empty() {
+                    tracing::warn!("护栏：所有工具调用被校验拦截");
+                }
+            }
 
             // 5. 工具调用执行
             if !tool_calls.is_empty() {
