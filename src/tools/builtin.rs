@@ -1954,6 +1954,9 @@ pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
         .register(crate::tools::office::ReadDocx)
         .register(crate::tools::office::WriteDocx)
         .register(crate::tools::office::ReadPptx)
+        .register(crate::tools::liteparse::ParseDocument)
+        .register(crate::tools::liteparse::ScreenshotDocument)
+        .register(crate::tools::liteparse::CheckDocumentComplexity)
 }
 
 // ---------------------------------------------------------------------------
@@ -2139,7 +2142,7 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry(&crate::core::Config::default());
-        assert_eq!(reg.len(), 22);
+        assert_eq!(reg.len(), 25);
         assert!(reg.get("read_pdf").is_some());
         assert!(reg.get("skill_manage").is_some());
         assert!(reg.get("memory").is_some());

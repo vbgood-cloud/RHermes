@@ -65,6 +65,10 @@ pub struct AgentSession {
     repair_pipeline: Option<crate::agent::repair::RepairPipeline>,
     /// 护栏重试计数（跨轮累加）
     guardrail_retry_count: u32,
+    /// edu 学习模式：工具白名单（空 = 全部允许，由 router 在切课时设置）
+    allowed_tools: Option<Vec<String>>,
+    /// edu 学习模式：当前学习模式名（explore / scaffold / locked / None=通用模式）
+    learn_mode: Option<String>,
 }
 
 impl AgentSession {
@@ -104,12 +108,38 @@ impl AgentSession {
             session_debug: debug,
             repair_pipeline,
             guardrail_retry_count: 0,
+            allowed_tools: None,
+            learn_mode: None,
         }
     }
 
     /// 获取 session_id
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// edu 学习模式控制：热更新 system_prompt + 工具白名单 + 模式名
+    ///
+    /// 由 SessionRouter 在 /sw 切课或 /mode 切换时调用。
+    /// - `prompt`: 新的系统提示词（如 scaffold 的苏格拉底式 prompt）
+    /// - `allowed_tools`: 工具白名单（None=不限，Some(空 vec)=全禁，Some(列表)=只允许这些）
+    /// - `mode`: 学习模式名（"explore" / "scaffold" / "locked"）
+    pub fn set_learn_mode(
+        &mut self,
+        prompt: Option<String>,
+        allowed_tools: Option<Vec<String>>,
+        mode: Option<String>,
+    ) {
+        if let Some(p) = prompt {
+            self.context.set_system_prompt(p);
+        }
+        self.allowed_tools = allowed_tools;
+        self.learn_mode = mode;
+    }
+
+    /// 当前学习模式名
+    pub fn learn_mode(&self) -> Option<&str> {
+        self.learn_mode.as_deref()
     }
 
     /// 处理用户消息（完整的 Agent Loop）
@@ -129,6 +159,8 @@ impl AgentSession {
 
         let mut round = 0u32;
         let mut tool_call_counter: u32 = 0;
+        // edu 反思用：收集本次对话使用的所有工具名
+        let mut tools_used_this_turn: Vec<String> = Vec::new();
         loop {
             round += 1;
             if round > max_rounds {
@@ -342,6 +374,36 @@ impl AgentSession {
                 }
             }
 
+            // 4.6 edu 工具白名单拦截（locked 模式等）
+            if !tool_calls.is_empty() {
+                if let Some(ref allow) = self.allowed_tools {
+                    let original_count = tool_calls.len();
+                    let mut rejected: Vec<String> = Vec::new();
+                    tool_calls.retain(|tc| {
+                        let ok = allow.iter().any(|a| a == &tc.name);
+                        if !ok { rejected.push(tc.name.clone()); }
+                        ok
+                    });
+                    if !rejected.is_empty() {
+                        let msg = format!(
+                            "⚠️ 当前学习模式（{}）下以下工具不可用: {}\n请仅使用允许的工具，或改用允许的方式回答。",
+                            self.learn_mode.as_deref().unwrap_or("locked"),
+                            rejected.join(", ")
+                        );
+                        tracing::info!("edu 白名单拦截 {} 个工具: {}", rejected.len(), rejected.join(","));
+                        self.context.push_to_log(Message::new(
+                            crate::tui::Role::System,
+                            &msg,
+                        ));
+                    }
+                    if tool_calls.is_empty() && original_count > 0 {
+                        // 所有工具都被拦截 → 跳过本轮工具执行，让模型重新回答
+                        tracing::warn!("edu 白名单：本轮所有工具调用被拦截");
+                        continue;
+                    }
+                }
+            }
+
             // 5. 工具调用执行
             if !tool_calls.is_empty() {
                 tracing::info!("开始执行 {} 个工具调用", tool_calls.len());
@@ -361,6 +423,13 @@ impl AgentSession {
                     let results = dispatcher.dispatch(calls_to_dispatch).await;
                     tracing::info!("工具执行完成: {} 个结果", results.len());
                     tool_call_counter += results.len() as u32;
+
+                    // edu 反思：收集本轮用过的工具名
+                    for r in &results {
+                        if !tools_used_this_turn.contains(&r.name) {
+                            tools_used_this_turn.push(r.name.clone());
+                        }
+                    }
 
                     // 安全检查: 全局工具调用次数限制
                     const MAX_TOTAL_TOOL_CALLS: u32 = 200;
@@ -487,6 +556,28 @@ impl AgentSession {
                     }
                 });
             }
+            // 6c. edu 反思提示（仅 edu 学习模式）
+            if self.learn_mode.is_some() && !user_msg.is_empty() {
+                let mode = self.learn_mode.clone().unwrap_or_default();
+                let summary = if final_text.len() > 200 {
+                    format!("{}...", &final_text[..200])
+                } else {
+                    final_text.clone()
+                };
+                let prompt = crate::edu::reflection::generate_reflection_prompt(
+                    &summary,
+                    &tools_used_this_turn,
+                    &mode,
+                );
+                // 通过 sink 输出反思提示（追加在回答之后）
+                let reflection_text = format!(
+                    "\n\n---\n🤔 **学习反思**\n{}\n\n_（提示：好的反思分析\"为什么\"，而不只是总结）_",
+                    prompt.question,
+                );
+                self.sink.on_chunk(&reflection_text).await;
+                tracing::info!("edu 反思提示已生成 (模式={}, 工具={:?})", mode, tools_used_this_turn);
+            }
+
             self.sink.on_done().await;
             break;
         }

@@ -96,6 +96,9 @@ pub struct Config {
     /// 教育模式配置
     #[serde(default)]
     pub edu: EduConfig,
+    /// LiteParse 文档解析配置
+    #[serde(default)]
+    pub liteparse: LiteParseSettings,
 }
 
 // ---------------------------------------------------------------------------
@@ -844,6 +847,7 @@ impl Default for Config {
             search: SearchConfig::default(),
             proxy: ProxyConfig::default(),
             edu: EduConfig::default(),
+            liteparse: LiteParseSettings::default(),
         }
     }
 }
@@ -1278,8 +1282,27 @@ impl Config {
         s.push_str("# ── 搜索引擎配置 ──\n[search]\n");
         s.push_str("# Serper API Key 请在 .env 中设置 SERPER_API_KEY\n");
         s.push_str(&format!("# 搜索超时（秒）\ntimeout_secs = {}\n", d.search.timeout_secs));
-        s.push_str(&format!("# 搜索结果缓存大小（条数）\ncache_size = {}\n", d.search.cache_size));
+        s.push_str(&format!("# 搜索缓存大小（条数）\ncache_size = {}\n", d.search.cache_size));
         s.push_str(&format!("# 缓存 TTL（秒）\ncache_ttl_secs = {}\n\n", d.search.cache_ttl_secs));
+
+        // ── LiteParse ──
+        s.push_str("# ── LiteParse 文档解析配置 ──\n[liteparse]\n");
+        s.push_str("# 是否启用文档解析工具（PDF/DOCX/XLSX/PPTX/图片）\n");
+        s.push_str(&format!("enabled = {}\n", d.liteparse.enabled));
+        s.push_str("# OCR 语言（Tesseract 格式: eng / chi_sim / chi_sim+eng）\n");
+        s.push_str(&format!("ocr_language = {:?}\n", d.liteparse.ocr_language));
+        s.push_str("# 默认输出格式: markdown / text / json\n");
+        s.push_str(&format!("default_format = {:?}\n", d.liteparse.default_format));
+        s.push_str("# 最大页数（防止超大文档消耗过多 token）\n");
+        s.push_str(&format!("max_pages = {}\n", d.liteparse.max_pages));
+        s.push_str("# 渲染 DPI（截图和 OCR 用）\n");
+        s.push_str(&format!("dpi = {}\n", d.liteparse.dpi));
+        s.push_str("# 是否启用 OCR（需要 tesseract 或远程 OCR 服务）\n");
+        s.push_str(&format!("ocr_enabled = {}\n", d.liteparse.ocr_enabled));
+        s.push_str("# tessdata 目录路径（可选）\n");
+        s.push_str("tessdata_path = \"\"\n");
+        s.push_str("# 远程 OCR 服务 URL（可选）\n");
+        s.push_str("ocr_server_url = \"\"\n\n");
 
         s
     }
@@ -1617,6 +1640,7 @@ mod tests {
             search: SearchConfig::default(),
             proxy: ProxyConfig::default(),
             edu: EduConfig::default(),
+            liteparse: LiteParseSettings::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();
@@ -1719,6 +1743,63 @@ impl Default for EduConfig {
             student_no: String::new(),
             default_mode: default_edu_mode(),
             auth_token: String::new(),
+        }
+    }
+}
+
+/// LiteParse 文档解析配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiteParseSettings {
+    /// 是否启用文档解析工具（默认 true）
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// OCR 语言（Tesseract 格式，如 "eng" / "chi_sim" / "chi_sim+eng"）
+    #[serde(default = "default_liteparse_ocr_language")]
+    pub ocr_language: String,
+    /// 默认输出格式: markdown / text / json
+    #[serde(default = "default_liteparse_format")]
+    pub default_format: String,
+    /// 最大页数（防止超大文档消耗过多 token）
+    #[serde(default = "default_liteparse_max_pages")]
+    pub max_pages: usize,
+    /// 渲染 DPI（截图和 OCR）
+    #[serde(default = "default_liteparse_dpi")]
+    pub dpi: f32,
+    /// 是否启用 OCR（需要 tesseract 或远程 OCR 服务）
+    #[serde(default)]
+    pub ocr_enabled: bool,
+    /// tessdata 目录路径（可选，默认从环境变量读取）
+    #[serde(default)]
+    pub tessdata_path: Option<String>,
+    /// 远程 OCR 服务 URL（可选，用于替代本地 tesseract）
+    #[serde(default)]
+    pub ocr_server_url: Option<String>,
+}
+
+fn default_liteparse_ocr_language() -> String {
+    "eng".into()
+}
+fn default_liteparse_format() -> String {
+    "markdown".into()
+}
+fn default_liteparse_max_pages() -> usize {
+    50
+}
+fn default_liteparse_dpi() -> f32 {
+    150.0
+}
+
+impl Default for LiteParseSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ocr_language: default_liteparse_ocr_language(),
+            default_format: default_liteparse_format(),
+            max_pages: default_liteparse_max_pages(),
+            dpi: default_liteparse_dpi(),
+            ocr_enabled: false,
+            tessdata_path: None,
+            ocr_server_url: None,
         }
     }
 }

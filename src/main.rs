@@ -432,6 +432,9 @@ async fn run_code(resume: bool) {
         }
     };
 
+    // 初始化 LiteParse 文档解析引擎
+    crate::tools::liteparse::init_liteparse(&config.liteparse);
+
     // 初始化工具系统（含 MCP 远程工具）
     let (registry, mcp_report) = if config.mcp.enabled {
         crate::tools::full_registry(&config.mcp).await

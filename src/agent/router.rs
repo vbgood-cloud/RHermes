@@ -31,6 +31,8 @@ pub struct SessionRouter {
     config_path: std::path::PathBuf,
     /// 每个用户的课程上下文（chat_id → course_suffix）
     course_contexts: std::collections::HashMap<String, String>,
+    /// 每个用户当前激活的 CourseProfile（chat_id → profile）
+    course_profiles: std::collections::HashMap<String, crate::edu::course::CourseProfile>,
     /// 每个用户的向导状态（chat_id → SetupState）
     setup_states: std::collections::HashMap<String, crate::edu::setup::SetupState>,
     /// 教育模式角色："teacher" / "student" / ""
@@ -63,6 +65,7 @@ impl SessionRouter {
             debug,
             config_path: config_path.clone(),
             course_contexts: std::collections::HashMap::new(),
+            course_profiles: std::collections::HashMap::new(),
             setup_states: std::collections::HashMap::new(),
             edu_role: String::new(),
             edu_db_path: config_path
@@ -128,7 +131,7 @@ impl SessionRouter {
                 ))
             };
 
-            let session = AgentSession::new(
+            let mut session = AgentSession::new(
                 key.clone(),
                 self.system_prompt.clone(),
                 self.dispatcher.clone(),
@@ -139,7 +142,48 @@ impl SessionRouter {
                 self.config.clone(),
                 self.debug.clone(),
             );
+
+            // edu：如有激活的 CourseProfile，立即应用学习模式
+            if let Some(profile) = self.course_profiles.values().next() {
+                let prompt = if profile.system_prompt_override.is_some() {
+                    Some(profile.system_prompt(&self.system_prompt))
+                } else {
+                    None
+                };
+                let allowed = if profile.allowed_tools.is_empty() {
+                    None
+                } else {
+                    Some(profile.allowed_tools.clone())
+                };
+                session.set_learn_mode(
+                    prompt,
+                    allowed,
+                    Some(profile.mode.as_str().to_string()),
+                );
+            }
+
             self.sessions.insert(key.clone(), session);
+        } else {
+            // session 已存在但 profile 可能变了（/mode 切换）→ 同步
+            if let Some(profile) = self.course_profiles.values().next() {
+                if let Some(session) = self.sessions.get_mut(&key) {
+                    let prompt = if profile.system_prompt_override.is_some() {
+                        Some(profile.system_prompt(&self.system_prompt))
+                    } else {
+                        None
+                    };
+                    let allowed = if profile.allowed_tools.is_empty() {
+                        None
+                    } else {
+                        Some(profile.allowed_tools.clone())
+                    };
+                    session.set_learn_mode(
+                        prompt,
+                        allowed,
+                        Some(profile.mode.as_str().to_string()),
+                    );
+                }
+            }
         }
 
         // 处理消息
@@ -150,25 +194,34 @@ impl SessionRouter {
 
     /// 处理 /sw 课程切换命令
     fn handle_sw_command(&mut self, input: &str) -> String {
-        use crate::edu::course::{parse_sw_command, SwCommand};
+        use crate::edu::course::{parse_sw_command, CourseProfile, LearnMode, SwCommand};
 
         match parse_sw_command(input) {
             SwCommand::List => {
-                let current = self.course_contexts.values().next();
-                if self.course_contexts.is_empty() {
-                    "📚 当前未选择课程。\n切换: /sw <课程码> 或 /sw <课程码>#<课次>".to_string()
+                if let Some(profile) = self.course_profiles.values().next() {
+                    format!("📚 当前课程:\n{}", profile.status_line())
                 } else {
-                    format!("📚 当前课程上下文:\n{}", current.unwrap_or(&String::new()))
+                    "📚 当前未选择课程。\n切换: /sw <课程码> 或 /sw <课程码>#<课次>".to_string()
                 }
             }
             SwCommand::Switch { course_code, lesson_num } => {
-                let suffix = if let Some(ln) = lesson_num {
-                    format!(":{}#{}", course_code, ln)
-                } else {
-                    format!(":{}", course_code)
+                // 从 DB 读取课程配置，构建 CourseProfile
+                let store = match crate::edu::store::EduStore::open(&self.edu_db_path) {
+                    Ok(s) => s,
+                    Err(e) => return format!("❌ 无法打开教育数据库: {e}"),
                 };
-                self.course_contexts.insert(course_code.clone(), suffix.clone());
-                format!("✅ 已切换到课程 {}{}", course_code, lesson_num.map(|n| format!(" 第{}次课", n)).unwrap_or_default())
+                let course = match store.get_course(&course_code) {
+                    Ok(Some(c)) => c,
+                    Ok(None) => return format!("❌ 课程不存在: {course_code}"),
+                    Err(e) => return format!("❌ {e}"),
+                };
+                // 默认 explore 模式（可由 /mode 切换）
+                let profile = CourseProfile::from_course(&course, LearnMode::Explore, lesson_num);
+                let suffix = profile.session_suffix();
+                let status = profile.status_line();
+                self.course_contexts.insert(course_code.clone(), suffix);
+                self.course_profiles.insert(course_code.clone(), profile);
+                format!("✅ 已切换到课程 {course_code}{}\n📊 模式: {}", lesson_num.map(|n| format!(" 第{}次课", n)).unwrap_or_default(), status)
             }
             SwCommand::Invalid(msg) => {
                 format!("⚠️ 无效命令: {msg}")
@@ -329,7 +382,7 @@ impl SessionRouter {
     }
 
     /// 学生端斜杠命令
-    fn handle_student_slash(&self, input: &str) -> Option<String> {
+    fn handle_student_slash(&mut self, input: &str) -> Option<String> {
         let parts: Vec<&str> = input.trim().splitn(2, char::is_whitespace).collect();
         let cmd = parts[0];
         let args: Vec<&str> = parts.get(1).copied().unwrap_or("").split_whitespace().collect();
@@ -353,11 +406,31 @@ impl SessionRouter {
                 Some("📝 成长报告\n   （需要先认证 — 输入 /auth login <学号> <密码>）".to_string())
             }
             "/mode" => {
-                let mode = args.get(0).copied().unwrap_or("");
-                if mode.is_empty() {
-                    return Some("当前模式: explore\n可切换: /mode <explore|scaffold|locked>".to_string());
+                use crate::edu::course::{CourseProfile, LearnMode};
+                let mode_str = args.get(0).copied().unwrap_or("");
+                if mode_str.is_empty() {
+                    // 显示当前模式
+                    let cur = self.course_profiles.values().next()
+                        .map(|p| format!("{} ({})", p.mode.icon(), p.mode.as_str()))
+                        .unwrap_or_else(|| "未设置".to_string());
+                    return Some(format!("当前模式: {cur}\n可切换: /mode <explore|scaffold|locked>"));
                 }
-                Some(format!("✅ 学习模式已切换为: {mode}"))
+                let new_mode = LearnMode::from_str(mode_str);
+                // 需要从 DB 重新构建 profile（保留课程码，换模式）
+                let store = crate::edu::store::EduStore::open(&self.edu_db_path).ok()?;
+                // 找到当前激活的课程码
+                let cur_code = self.course_profiles.keys().next()?.clone();
+                let course = store.get_course(&cur_code).ok()??;
+                let old_profile = self.course_profiles.get(&cur_code)?;
+                let new_profile = CourseProfile::from_course(
+                    &course,
+                    new_mode,
+                    old_profile.lesson_num,
+                );
+                let status = new_profile.status_line();
+                self.course_profiles.insert(cur_code, new_profile);
+                // 注意：实际应用到 AgentSession 在 dispatch() 的同步逻辑中完成
+                Some(format!("✅ 学习模式已切换为: {status}\n（下一条消息生效）"))
             }
             "/auth" => {
                 let action = args.get(0).copied().unwrap_or("");

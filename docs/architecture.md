@@ -220,6 +220,10 @@ active ──30天未用──→ stale ──90天未用──→ archived
 3. **Truncation** — 检测并补全截断的 JSON
 4. **Storm** — 抑制相同 (tool, args) 的重复调用
 
+#### 护栏系统（`guardrails.rs`）`docs/guardrails.md`
+
+在 RepairPipeline 之后对 tool_calls 进行校验（工具名 + 必填参数），失败时注入纠正消息让模型重试。详见 [护栏系统文档](guardrails.md)。
+
 ---
 
 ### 6. `cost.rs` — 成本控制

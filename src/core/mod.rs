@@ -9,6 +9,7 @@ pub use config::Config;
 pub use config::DisplayConfig;
 pub use config::EduConfig;
 pub use config::GatewayConfig;
+pub use config::LiteParseSettings;
 pub use config::McpConfig;
 pub use config::McpServerConfig;
 pub use config::ProviderConfig;
