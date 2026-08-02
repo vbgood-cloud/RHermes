@@ -658,6 +658,52 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
             }
         }
 
+        // ===== 课程导入到头 + 按头独立修改 =====
+        "/import" if role == "teacher" => {
+            let mgr = match teacher::TeacherManager::new(&db_path) {
+                Ok(m) => m,
+                Err(e) => return format!("❌ {e}"),
+            };
+            let course_code = args.get(0).copied().unwrap_or("");
+            let class_name = args.get(1).copied().unwrap_or("");
+            if course_code.is_empty() || class_name.is_empty() {
+                return "用法: /import <课程码> <班级名>\n  将课程导入到该头，之后该头可独立修改（不影响其他头）".to_string();
+            }
+            match mgr.import_course_to_class(course_code, class_name) {
+                Ok(_) => format!(
+                    "✅ 课程 {course_code} 已导入到「{class_name}」\n\
+                     该头现在可以独立修改课程参数，不影响其他头。\n\
+                     修改: /set {course_code} {class_name} <tools|desc|modes> <值>"
+                ),
+                Err(e) => format!("❌ {e}"),
+            }
+        }
+        "/set" if role == "teacher" => {
+            let mgr = match teacher::TeacherManager::new(&db_path) {
+                Ok(m) => m,
+                Err(e) => return format!("❌ {e}"),
+            };
+            let course_code = args.get(0).copied().unwrap_or("");
+            let class_name = args.get(1).copied().unwrap_or("");
+            let field = args.get(2).copied().unwrap_or("");
+            let value = args.get(3..).map(|v| v.join(" ")).unwrap_or_default();
+            if course_code.is_empty() || class_name.is_empty() || field.is_empty() {
+                return "用法: /set <课程码> <班级名> <字段> <值>\n\
+                         字段:\n  \
+                           tools  — 工具白名单(JSON数组, 如 [\"read_file\",\"glob\"])\n  \
+                           desc   — 课程描述\n  \
+                           modes  — 允许模式(JSON数组, 如 [\"explore\",\"scaffold\"])\n\
+                         示例: /set CS101 信工一班 tools [\"read_file\",\"glob\"]".to_string();
+            }
+            match mgr.update_class_course_override(course_code, class_name, field, &value) {
+                Ok(_) => format!(
+                    "✅ 「{class_name}」的课程 {course_code} 已更新: {field}\n\
+                     （此修改只影响该头，不影响其他头和课程模板）"
+                ),
+                Err(e) => format!("❌ {e}"),
+            }
+        }
+
         // ===== 未知命令 =====
         _ => format!("⚠️ 未知命令: {cmd}\n输入 /help 查看可用命令"),
     }

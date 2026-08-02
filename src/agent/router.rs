@@ -8,13 +8,23 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::agent::event_sink::{ChannelSink, EventSink};
-use crate::agent::session::{AgentSession, SessionConfig};
+use crate::agent::session::{AgentSession, ReflectionRecord, SessionConfig};
 use crate::agent::MemorySystem;
 use crate::agent::SkillEngine;
 use crate::channel::telegram::TelegramSink;
 use crate::channel::{ChannelManager, InboundMessage};
 use crate::provider::Transport;
 use crate::tools::ToolDispatcher;
+
+/// 已认证学生身份（供反思记录落库时确定 student_id）
+#[derive(Clone, Debug)]
+struct StudentIdentity {
+    student_id: i64,
+    student_no: String,
+    name: String,
+    /// 学生所在班级（头）ID，用于读取按头覆盖的课程参数
+    class_id: Option<i64>,
+}
 
 /// 会话路由器 — 按 `channel:chat_id` 管理 AgentSession
 pub struct SessionRouter {
@@ -33,8 +43,12 @@ pub struct SessionRouter {
     course_contexts: std::collections::HashMap<String, String>,
     /// 每个用户当前激活的 CourseProfile（chat_id → profile）
     course_profiles: std::collections::HashMap<String, crate::edu::course::CourseProfile>,
+    /// 每个用户当前激活的课程码（chat_id → course_code），用于精确定位 course_profiles 中的 profile
+    current_course: std::collections::HashMap<String, String>,
     /// 每个用户的向导状态（chat_id → SetupState）
     setup_states: std::collections::HashMap<String, crate::edu::setup::SetupState>,
+    /// 每个用户已认证的学生身份（chat_id → 学生信息，用于反思记录落库）
+    student_ids: std::collections::HashMap<String, StudentIdentity>,
     /// 教育模式角色："teacher" / "student" / ""
     edu_role: String,
     /// 教育数据库路径
@@ -66,7 +80,9 @@ impl SessionRouter {
             config_path: config_path.clone(),
             course_contexts: std::collections::HashMap::new(),
             course_profiles: std::collections::HashMap::new(),
+            current_course: std::collections::HashMap::new(),
             setup_states: std::collections::HashMap::new(),
+            student_ids: std::collections::HashMap::new(),
             edu_role: String::new(),
             edu_db_path: config_path
                 .parent()
@@ -92,7 +108,7 @@ impl SessionRouter {
 
         // 拦截 /sw 命令（课程切换）
         if inbound.content.starts_with("/sw") {
-            let reply = self.handle_sw_command(&inbound.content);
+            let reply = self.handle_sw_command(&inbound.content, &inbound.chat_id);
             if !reply.is_empty() {
                 self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
                 return;
@@ -190,15 +206,90 @@ impl SessionRouter {
         if let Some(session) = self.sessions.get_mut(&key) {
             session.handle_message(&inbound.content).await;
         }
+
+        // edu 反思闭环：消费 session 产出的反思评分记录，落库到 edu_learning_journal
+        //
+        // 流程：session.handle_message 内若触发了反思评分（学生回答了上一轮的反思提示），
+        // 会把 ReflectionRecord 放入 outbox。这里取出并持久化。
+        // 落库前提：该 chat_id 已通过 /auth login 认证（有 student_id）。
+        let reflection = self
+            .sessions
+            .get_mut(&key)
+            .and_then(|s| s.take_reflection_record());
+        if let Some(rec) = reflection {
+            let chat_id = &inbound.chat_id;
+            let student = self.student_ids.get(chat_id).cloned();
+            // 按该用户当前激活的课程码精确取 profile，避免多课程场景下
+            // course_profiles.values().next() 取到错误的课程导致串库
+            let course_profile = self
+                .current_course
+                .get(chat_id)
+                .and_then(|code| self.course_profiles.get(code))
+                .cloned();
+
+            match (student, course_profile) {
+                (Some(stu), Some(profile)) => {
+                    // course_code → course_id（落库需要数字 id）
+                    let journal_id = (|| {
+                        let store = crate::edu::store::EduStore::open(&self.edu_db_path)?;
+                        let course = store.get_course(&profile.course_code)?;
+                        let course = course.ok_or_else(|| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                1,
+                                rusqlite::types::Type::Null,
+                                format!("课程不存在: {}", profile.course_code).into(),
+                            )
+                        })?;
+                        let lesson_num = profile.lesson_num.unwrap_or(0);
+                        store.write_journal(
+                            stu.student_id,
+                            course.id,
+                            lesson_num,
+                            &rec.topic,
+                            &rec.tools_csv,
+                            &rec.reflection_text,
+                            rec.overall_score,
+                            rec.depth,
+                            0,  // token_usage：暂未精确统计
+                            0,  // duration_secs：暂未精确统计
+                        )
+                    })();
+
+                    match journal_id {
+                        Ok(id) => tracing::info!(
+                            "edu 反思已落库 journal_id={id} (student={}, score={:.2})",
+                            stu.student_no,
+                            rec.overall_score
+                        ),
+                        Err(e) => tracing::warn!("edu 反思落库失败: {e}"),
+                    }
+                }
+                _ => {
+                    // 未认证或未选课：反思评分仍在 session 内即时反馈给学生，只是不入库
+                    if self.student_ids.get(chat_id).is_none() {
+                        tracing::debug!("edu 反思未落库：chat_id={chat_id} 未认证");
+                    } else {
+                        tracing::debug!("edu 反思未落库：未选择课程");
+                    }
+                }
+            }
+        }
     }
 
     /// 处理 /sw 课程切换命令
-    fn handle_sw_command(&mut self, input: &str) -> String {
+    fn handle_sw_command(&mut self, input: &str, chat_id: &str) -> String {
         use crate::edu::course::{parse_sw_command, CourseProfile, LearnMode, SwCommand};
 
         match parse_sw_command(input) {
             SwCommand::List => {
-                if let Some(profile) = self.course_profiles.values().next() {
+                // 优先展示该用户当前选中的课程
+                let cur_code = self.current_course.get(chat_id).cloned();
+                let profile = cur_code
+                    .as_deref()
+                    .and_then(|c| self.course_profiles.get(c));
+                if let Some(profile) = profile {
+                    format!("📚 当前课程:\n{}", profile.status_line())
+                } else if let Some(profile) = self.course_profiles.values().next() {
                     format!("📚 当前课程:\n{}", profile.status_line())
                 } else {
                     "📚 当前未选择课程。\n切换: /sw <课程码> 或 /sw <课程码>#<课次>".to_string()
@@ -215,12 +306,28 @@ impl SessionRouter {
                     Ok(None) => return format!("❌ 课程不存在: {course_code}"),
                     Err(e) => return format!("❌ {e}"),
                 };
+                // 若该用户是已认证学生且有所在班级（头），读取「模板 + 头覆盖」合并后的课程参数；
+                // 这样学生看到的是自己所在头的独立配置（如果教师为该头做过 /set 修改）。
+                let course = if let Some(class_id) = self
+                    .student_ids
+                    .get(chat_id)
+                    .and_then(|s| s.class_id)
+                {
+                    match store.resolve_course_for_class(class_id, &course) {
+                        Ok(merged) => merged,
+                        Err(_) => course, // 合并失败时降级为模板值
+                    }
+                } else {
+                    course // 未认证或无班级：用模板值
+                };
                 // 默认 explore 模式（可由 /mode 切换）
                 let profile = CourseProfile::from_course(&course, LearnMode::Explore, lesson_num);
                 let suffix = profile.session_suffix();
                 let status = profile.status_line();
                 self.course_contexts.insert(course_code.clone(), suffix);
                 self.course_profiles.insert(course_code.clone(), profile);
+                // 记录该用户当前激活的课程码，供反思落库精确取 profile
+                self.current_course.insert(chat_id.to_string(), course_code.clone());
                 format!("✅ 已切换到课程 {course_code}{}\n📊 模式: {}", lesson_num.map(|n| format!(" 第{}次课", n)).unwrap_or_default(), status)
             }
             SwCommand::Invalid(msg) => {
@@ -265,7 +372,7 @@ impl SessionRouter {
 
         // 学生端命令
         if self.edu_role == "student" {
-            if let Some(reply) = self.handle_student_slash(input) {
+            if let Some(reply) = self.handle_student_slash(input, chat_id) {
                 return Some(reply);
             }
         }
@@ -377,12 +484,55 @@ impl SessionRouter {
                 }
                 Some(buf)
             }
+            // 导入课程到头（班级）：复制课程模板参数到该头，之后可独立修改
+            "/import" => {
+                let course_code = args.get(0).copied().unwrap_or("");
+                let class_name = args.get(1).copied().unwrap_or("");
+                if course_code.is_empty() || class_name.is_empty() {
+                    return Some(
+                        "用法: /import <课程码> <班级名>\n  将课程导入到该头，之后该头可独立修改（不影响其他头）".into(),
+                    );
+                }
+                match mgr.import_course_to_class(course_code, class_name) {
+                    Ok(_info) => Some(format!(
+                        "✅ 课程 {course_code} 已导入到「{class_name}」\n\
+                         该头现在可以独立修改课程参数，不影响其他头。\n\
+                         修改: /set {course_code} {class_name} <tools|desc|modes> <值>"
+                    )),
+                    Err(e) => Some(format!("❌ {e}")),
+                }
+            }
+            // 修改该头的课程参数（只影响该头，不影响模板和其他头）
+            "/set" => {
+                let course_code = args.get(0).copied().unwrap_or("");
+                let class_name = args.get(1).copied().unwrap_or("");
+                let field = args.get(2).copied().unwrap_or("");
+                // 第4个参数起为值（允许含空格）
+                let value = args.get(3..).map(|v| v.join(" ")).unwrap_or_default();
+                if course_code.is_empty() || class_name.is_empty() || field.is_empty() {
+                    return Some(
+                        "用法: /set <课程码> <班级名> <字段> <值>\n\
+                         字段:\n  \
+                           tools  — 工具白名单(JSON数组, 如 [\"read_file\",\"glob\"])\n  \
+                           desc   — 课程描述\n  \
+                           modes  — 允许模式(JSON数组, 如 [\"explore\",\"scaffold\"])\n\
+                         示例: /set CS101 信工一班 tools [\"read_file\",\"glob\"]".into(),
+                    );
+                }
+                match mgr.update_class_course_override(course_code, class_name, field, &value) {
+                    Ok(_) => Some(format!(
+                        "✅ 「{class_name}」的课程 {course_code} 已更新: {field}\n\
+                         （此修改只影响该头，不影响其他头和课程模板）"
+                    )),
+                    Err(e) => Some(format!("❌ {e}")),
+                }
+            }
             _ => None,
         }
     }
 
     /// 学生端斜杠命令
-    fn handle_student_slash(&mut self, input: &str) -> Option<String> {
+    fn handle_student_slash(&mut self, input: &str, chat_id: &str) -> Option<String> {
         let parts: Vec<&str> = input.trim().splitn(2, char::is_whitespace).collect();
         let cmd = parts[0];
         let args: Vec<&str> = parts.get(1).copied().unwrap_or("").split_whitespace().collect();
@@ -421,6 +571,16 @@ impl SessionRouter {
                 // 找到当前激活的课程码
                 let cur_code = self.course_profiles.keys().next()?.clone();
                 let course = store.get_course(&cur_code).ok()??;
+                // 若学生有所在班级（头），合并头覆盖参数
+                let course = if let Some(class_id) = self
+                    .student_ids
+                    .get(chat_id)
+                    .and_then(|s| s.class_id)
+                {
+                    store.resolve_course_for_class(class_id, &course).unwrap_or(course)
+                } else {
+                    course
+                };
                 let old_profile = self.course_profiles.get(&cur_code)?;
                 let new_profile = CourseProfile::from_course(
                     &course,
@@ -443,7 +603,19 @@ impl SessionRouter {
                         }
                         let store = crate::edu::store::EduStore::open(&self.edu_db_path).ok()?;
                         match crate::edu::auth::authenticate(&store, no, pwd) {
-                            Ok(result) => Some(format!("✅ 认证成功！欢迎, {}", result.student_name)),
+                            Ok(result) => {
+                                // 记录学生身份，供反思记录落库使用
+                                self.student_ids.insert(
+                                    chat_id.to_string(),
+                                    StudentIdentity {
+                                        student_id: result.student_id,
+                                        student_no: no.to_string(),
+                                        name: result.student_name.clone(),
+                                        class_id: result.primary_class_id,
+                                    },
+                                );
+                                Some(format!("✅ 认证成功！欢迎, {}", result.student_name))
+                            }
                             Err(e) => Some(format!("❌ {e}")),
                         }
                     }
@@ -467,6 +639,8 @@ impl SessionRouter {
             help.push_str("  /lesson create <码> <班> <序号> <主题> — 创建课次\n");
             help.push_str("  /student add <学号> <名> <课程> <班> — 添加学生\n");
             help.push_str("  /roster <课程码> — 查看花名册\n");
+            help.push_str("  /import <课程码> <班级名> — 导入课程到该头（之后可独立修改）\n");
+            help.push_str("  /set <课程码> <班级名> <tools|desc|modes> <值> — 修改该头的课程参数\n");
         }
         if self.edu_role == "student" {
             help.push_str("\n🧑‍🎓 学生命令:\n");

@@ -12,6 +12,8 @@ pub struct AuthResult {
     pub token: String,
     pub student_id: i64,
     pub student_name: String,
+    /// 学生所在班级（头）ID
+    pub primary_class_id: Option<i64>,
 }
 
 /// 学生认证
@@ -41,6 +43,7 @@ pub fn authenticate(
         token,
         student_id: student.id,
         student_name: student.name,
+        primary_class_id: student.primary_class_id,
     })
 }
 

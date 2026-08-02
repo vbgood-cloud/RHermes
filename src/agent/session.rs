@@ -69,6 +69,41 @@ pub struct AgentSession {
     allowed_tools: Option<Vec<String>>,
     /// edu 学习模式：当前学习模式名（explore / scaffold / locked / None=通用模式）
     learn_mode: Option<String>,
+    /// edu 反思闭环：上一轮结束时生成的反思提示上下文（等待学生下一轮回答）
+    ///
+    /// 方案 B：handle_message 入口检测此字段。命中则把当前 user_msg 当作反思回答，
+    /// 调用 evaluate_reflection 评分，结果写入 reflection_outbox 供 router 落库。
+    pending_reflection: Option<PendingReflection>,
+    /// edu 反思闭环：本轮产出的反思评分结果（router 在 handle_message 返回后读取并落库）
+    reflection_outbox: Option<ReflectionRecord>,
+}
+
+/// 等待学生回答的反思上下文
+#[derive(Clone, Debug)]
+struct PendingReflection {
+    /// 上一轮对话的摘要（AI 回答前 200 字）
+    conversation_summary: String,
+    /// 上一轮用过的工具名
+    tools_used: Vec<String>,
+    /// 学习模式
+    mode: String,
+    /// 上一轮对话长度（用于 evaluate_reflection 的提问质量评估）
+    conversation_length: usize,
+}
+
+/// 本轮产出的反思评分记录（供 router 落库）
+#[derive(Clone, Debug)]
+pub struct ReflectionRecord {
+    /// 反思原文（学生的回答）
+    pub reflection_text: String,
+    /// 综合评分（0.0-1.0）
+    pub overall_score: f64,
+    /// 反思深度（0.0-1.0）
+    pub depth: f64,
+    /// 上一轮用过的工具（CSV 格式，供 journal.tool_calls 字段）
+    pub tools_csv: String,
+    /// 上一轮对话摘要（供 journal.topic 字段）
+    pub topic: String,
 }
 
 impl AgentSession {
@@ -110,6 +145,8 @@ impl AgentSession {
             guardrail_retry_count: 0,
             allowed_tools: None,
             learn_mode: None,
+            pending_reflection: None,
+            reflection_outbox: None,
         }
     }
 
@@ -135,11 +172,26 @@ impl AgentSession {
         }
         self.allowed_tools = allowed_tools;
         self.learn_mode = mode;
+        // 切换课程/学习模式时清除上一轮遗留的反思上下文，
+        // 避免旧 pending_reflection 污染新课程（下一条消息被误判为对旧课程的反思回答）。
+        self.pending_reflection = None;
     }
 
     /// 当前学习模式名
     pub fn learn_mode(&self) -> Option<&str> {
         self.learn_mode.as_deref()
+    }
+
+    /// 取出本轮产出的反思评分记录（router 在 handle_message 返回后调用）
+    ///
+    /// 取出后清空 outbox，避免重复落库。
+    pub fn take_reflection_record(&mut self) -> Option<ReflectionRecord> {
+        self.reflection_outbox.take()
+    }
+
+    /// 清除待处理的反思（如切换课程/模式时调用，避免旧反思污染新一轮）
+    pub fn clear_pending_reflection(&mut self) {
+        self.pending_reflection = None;
     }
 
     /// 处理用户消息（完整的 Agent Loop）
@@ -150,6 +202,57 @@ impl AgentSession {
         self.context.push_to_log(Message::new(
             crate::tui::Role::User, user_msg,
         ));
+
+        // 1.5 edu 反思闭环（方案 B）：检测上一轮遗留的 pending_reflection
+        //
+        // 若存在且当前消息不是 slash 命令，则把这条消息当作学生对上一轮反思提示的回答，
+        // 调用 evaluate_reflection 评分，输出反馈，存入 outbox 供 router 落库，然后直接返回
+        // （反思是元认知活动，不再触发 AI 回应，避免干扰 + 省 token）。
+        if let Some(pr) = self.pending_reflection.take() {
+            if !user_msg.trim().is_empty() && !user_msg.trim().starts_with('/') {
+                use crate::edu::reflection::evaluate_reflection;
+                let conv_len = pr.conversation_length + user_msg.len();
+                let mut score = evaluate_reflection(user_msg, conv_len);
+                score.calculate_overall();
+
+                // 存入 outbox 供 router 落库
+                self.reflection_outbox = Some(ReflectionRecord {
+                    reflection_text: user_msg.to_string(),
+                    overall_score: score.overall,
+                    depth: score.depth,
+                    tools_csv: pr.tools_used.join(","),
+                    topic: pr.conversation_summary,
+                });
+
+                // 反馈给学生
+                let feedback = format!(
+                    "\n📝 **反思已记录**\n\
+                     综合评分：{:.2}/1.00 ｜ 反思深度：{:.2}\n\n\
+                     _（{}）_\n\n---",
+                    score.overall,
+                    score.depth,
+                    if score.depth > 0.6 {
+                        "深刻的反思！你分析了'为什么'，这是高质量学习的关键"
+                    } else if score.depth > 0.3 {
+                        "不错的开始，下次试着多问自己'为什么这样做'"
+                    } else {
+                        "反思偏简单，试着解释你的思考过程和理由"
+                    }
+                );
+                self.sink.on_chunk(&feedback).await;
+                self.sink.on_done().await;
+                tracing::info!(
+                    "edu 反思已评分 (深度={:.2}, 综合={:.2})",
+                    score.depth,
+                    score.overall
+                );
+                return;
+            }
+            // 是 slash 命令则保留 pending 不消费（放回去）
+            else {
+                self.pending_reflection = Some(pr);
+            }
+        }
 
         let max_rounds = self.config.max_rounds;
         let compress_ratio = self.config.compress_ratio;
@@ -559,8 +662,12 @@ impl AgentSession {
             // 6c. edu 反思提示（仅 edu 学习模式）
             if self.learn_mode.is_some() && !user_msg.is_empty() {
                 let mode = self.learn_mode.clone().unwrap_or_default();
-                let summary = if final_text.len() > 200 {
-                    format!("{}...", &final_text[..200])
+                // 注意：final_text.len() 是字节数，[..200] 按字节切会在中文字符边界 panic。
+                // 改为按字符数截断，保证 UTF-8 安全。
+                let summary = if final_text.chars().count() > 200 {
+                    let mut s: String = final_text.chars().take(200).collect();
+                    s.push_str("...");
+                    s
                 } else {
                     final_text.clone()
                 };
@@ -576,6 +683,14 @@ impl AgentSession {
                 );
                 self.sink.on_chunk(&reflection_text).await;
                 tracing::info!("edu 反思提示已生成 (模式={}, 工具={:?})", mode, tools_used_this_turn);
+
+                // 设置 pending_reflection，下一轮 handle_message 入口会检测并评分
+                self.pending_reflection = Some(PendingReflection {
+                    conversation_summary: summary,
+                    tools_used: tools_used_this_turn.clone(),
+                    mode,
+                    conversation_length: final_text.chars().count() + user_msg.chars().count(),
+                });
             }
 
             self.sink.on_done().await;
