@@ -152,10 +152,9 @@ pub fn create_transport(
         if name == &provider_name {
             continue; // 主 provider 已创建
         }
-        // 跳过没有 API Key 的 provider（除非是本地模型）
-        let is_local = name == "ollama" || name == "lmstudio";
-        if pcfg.api_key.is_empty() && !is_local {
-            tracing::debug!("跳过 provider {} (无 API Key)", name);
+        // 跳过没有显式配置 base_url 的 provider（通常是 Default 预填的占位）
+        if pcfg.base_url.is_none() {
+            tracing::debug!("跳过 provider {} (无显式 base_url)", name);
             continue;
         }
         let base_url = pcfg.base_url.clone()

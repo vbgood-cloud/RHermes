@@ -147,6 +147,8 @@ impl Transport for DeepSeekTransport {
         let mut provider_meta = crate::api::ProviderMeta::default();
 
         let mut buffer = String::new();
+        // P0 fix: 累积流式 tool_calls（SSE 中 name 和 arguments 分多块返回）
+        let mut acc_tool_calls: std::collections::BTreeMap<i32, (String, String, String)> = std::collections::BTreeMap::new();
         let mut stream = response.bytes_stream();
 
         while let Some(chunk_result) = stream.next().await {
@@ -202,25 +204,16 @@ impl Transport for DeepSeekTransport {
                                         if !reasoning.is_empty() {
                                         }
                                     }
+                                    // P0 fix: 累积 tool_calls delta（不直接发送）
                                     if let Some(ref calls) = choice.delta.tool_calls {
-                                        let tool_data: Vec<ToolCallData> = calls
-                                            .iter()
-                                            .map(|tc| ToolCallData {
-                                                id: tc.id.clone().unwrap_or_default(),
-                                                name: tc
-                                                    .function
-                                                    .as_ref()
-                                                    .and_then(|f| f.name.clone())
-                                                    .unwrap_or_default(),
-                                                arguments: tc
-                                                    .function
-                                                    .as_ref()
-                                                    .and_then(|f| f.arguments.clone())
-                                                    .unwrap_or_default(),
-                                            })
-                                            .collect();
-                                        if !tool_data.is_empty() {
-                                            let _ = tx.send(ApiEvent::ToolCalls(tool_data));
+                                        for tc in calls {
+                                            let idx = tc.index;
+                                            let entry = acc_tool_calls.entry(idx).or_insert_with(|| (String::new(), String::new(), String::new()));
+                                            if let Some(ref id) = tc.id { entry.0 = id.clone(); }
+                                            if let Some(ref f) = tc.function {
+                                                if let Some(ref name) = f.name { entry.1 = name.clone(); }
+                                                if let Some(ref args) = f.arguments { entry.2.push_str(args); }
+                                            }
                                         }
                                     }
                                 }
@@ -230,6 +223,19 @@ impl Transport for DeepSeekTransport {
                     }
                 }
             }
+        }
+
+        // P0 fix: 流结束前发送累积的 tool_calls
+        if !acc_tool_calls.is_empty() {
+            let tool_data: Vec<ToolCallData> = acc_tool_calls.values()
+                .map(|(id, name, args)| ToolCallData {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                })
+                .collect();
+            tracing::debug!("流式累积 {} 个 tool_calls", tool_data.len());
+            let _ = tx.send(ApiEvent::ToolCalls(tool_data));
         }
 
         // 流结束前发送 ProviderMeta（如果收集到了任意字段）
