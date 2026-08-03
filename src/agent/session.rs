@@ -379,7 +379,7 @@ impl AgentSession {
                 max_tokens: Some(4096),
                 temperature: None,
                 tools: Some(crate::tools::all_tool_defs()),
-                reasoning_effort: None,
+                reasoning_effort: infer_reasoning_effort(user_msg).map(|s| s.to_string()),
             };
 
             let chat_result = tokio::time::timeout(
@@ -700,3 +700,46 @@ impl AgentSession {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// reasoning_effort 推断（P2 动态思考强度）
+//
+// 根据用户消息特征推断合适的思考强度，对 omniroute/GLM-5.2 等支持 thinking
+// 的模型生效；对不支持的模型发送该参数会被忽略（无副作用）。
+//
+// 判断依据：关键词 + 消息长度
+// ---------------------------------------------------------------------------
+
+fn infer_reasoning_effort(user_msg: &str) -> Option<&'static str> {
+    let msg = user_msg.trim();
+    let len = msg.chars().count();
+
+    // 1. 复杂推理类（分析/设计/重构/对比/架构/why）→ 高 effort 思考更深（优先级最高）
+    let complex_markers = [
+        "分析", "设计", "重构", "优化", "对比", "比较", "为什么", "为何", "权衡",
+        "architecture", "架构", "debug", "调试", "根因", "explain", "方案设计",
+        "review", "审查", "评估",
+    ];
+    if complex_markers.iter().any(|m| msg.to_lowercase().contains(m)) || len > 500 {
+        return Some("high");
+    }
+
+    // 2. 简单工具调用类（读取/查看/运行/list/cat 等）→ 低 effort 省 tokens
+    let simple_markers = [
+        "读取", "查看", "看下", "看一下", "运行", "执行", "列出", "list", "show", "cat",
+        "ls ", "状态", "status", "当前目录", "pwd", "是什么", "在哪", "多少",
+    ];
+    if simple_markers.iter().any(|m| msg.to_lowercase().contains(m)) {
+        return Some("low");
+    }
+
+    // 3. 极短消息（打招呼、简单确认，≤ 2 字符或命中 trivial 词表）→ 不触发思考
+    let trivial_markers = ["hi", "hello", "你好", "嗯", "ok", "好的", "谢谢", "继续", "再见"];
+    if len <= 2 || trivial_markers.iter().any(|m| msg.eq_ignore_ascii_case(m)) {
+        return None;
+    }
+
+    // 4. 默认（中等对话、工具编排）→ medium
+    Some("medium")
+}
+
