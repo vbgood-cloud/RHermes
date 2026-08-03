@@ -424,6 +424,36 @@ pub struct BalanceResponse {
     pub balance_infos: Vec<BalanceInfo>,
 }
 
+/// Provider 元信息（OMNIRoute 响应尾注 / 自定义响应头）
+///
+/// OMNIRoute 在 SSE 流末尾以注释行形式返回路由决策，例如：
+///   : x-omniroute-cache-hit=false
+///   : x-omniroute-latency-ms=70
+///   : x-omniroute-response-cost=0.0001
+///   : x-omniroute-tokens-in=6
+///   : x-omniroute-tokens-out=5
+///   : x-omniroute-model=glm-4.7-flash
+///   : x-omniroute-provider=glmcn
+///
+/// 这些信息用于状态栏展示和性能自优化。
+#[derive(Debug, Clone, Default)]
+pub struct ProviderMeta {
+    /// OMNIRoute 实际路由到的后端模型（如 "glm-4.7-flash"）
+    pub routed_model: Option<String>,
+    /// 实际服务的 provider 名（如 "glmcn"）
+    pub provider: Option<String>,
+    /// 后端处理延迟（毫秒）
+    pub latency_ms: Option<u64>,
+    /// 本次请求实际花费
+    pub cost: Option<f64>,
+    /// 缓存是否命中
+    pub cache_hit: Option<bool>,
+    /// 输入 tokens（后端口径）
+    pub tokens_in: Option<u64>,
+    /// 输出 tokens（后端口径）
+    pub tokens_out: Option<u64>,
+}
+
 /// API → TUI 事件（GUI 友好格式）
 #[derive(Debug)]
 pub enum ApiEvent {
@@ -439,6 +469,8 @@ pub enum ApiEvent {
     Balance(f64),
     /// 思考流（reasoning 模型的 reasoning_content，独立于正文）
     Thinking(String),
+    /// Provider 元信息（OMNIRoute 路由决策、延迟、成本等）
+    ProviderMeta(ProviderMeta),
     /// 错误
     Error(String),
 }

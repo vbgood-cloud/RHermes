@@ -118,6 +118,10 @@ pub struct Stats {
     pub cache_hit_tokens: u32,
     /// 缓存未命中的 input tokens
     pub cache_miss_tokens: u32,
+    /// OMNIRoute 实际路由到的后端模型（如 glm-4.7-flash）
+    pub routed_model: String,
+    /// 最近一次后端延迟（毫秒）
+    pub last_latency_ms: u64,
 }
 
 impl Default for Stats {
@@ -133,6 +137,8 @@ impl Default for Stats {
             output_tokens: 0,
             cache_hit_tokens: 0,
             cache_miss_tokens: 0,
+            routed_model: String::new(),
+            last_latency_ms: 0,
         }
     }
 }
@@ -247,6 +253,14 @@ pub struct App {
     channel_inbound_tx: Option<tokio::sync::mpsc::UnboundedSender<InboundMessage>>,
     /// 外部通道入站消息接收端（仅用于显示通知，实际处理由后台 SessionRouter 完成）
     inbound_rx: Option<tokio::sync::mpsc::UnboundedReceiver<InboundMessage>>,
+
+    // ---- P3 新增：思考流和 Provider 元数据展示 ----
+    /// 当前思考流缓冲（ApiEvent::Thinking 累积，Done 时一次性展示）
+    thinking_buffer: String,
+    /// 最近一次 Provider 元数据（OMNIRoute 路由决策、延迟、成本）
+    last_provider_meta: Option<crate::api::ProviderMeta>,
+    /// 是否展示思考流（默认开启，/thinking 命令切换）
+    show_thinking: bool,
 }
 
 /// 可用命令列表（命令, 说明）
@@ -271,6 +285,7 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/remember",  "搜索跨会话记忆"),
     ("/plan",      "先输出结构化计划，确认后再执行（/plan <任务描述>）"),
     ("/model",     "查看当前模型（/model set <名称> 切换模型）"),
+    ("/thinking",  "切换思考流展示（默认开启）"),
 ];
 
 impl App {
@@ -347,6 +362,9 @@ impl App {
             stall_warned: false,
             channel_inbound_tx: None,
             inbound_rx: None,
+            thinking_buffer: String::new(),
+            last_provider_meta: None,
+            show_thinking: true,
         };
         app.stats.mode = mode.to_string();
 
@@ -670,6 +688,22 @@ impl App {
                     if let Some(start) = self.response_start.take() {
                         self.last_response_secs = start.elapsed().as_secs();
                     }
+                    // 先输出思考流（如果开启且有内容）— 折叠展示，超过 200 字截断
+                    if self.show_thinking && !self.thinking_buffer.is_empty() {
+                        let thinking = self.thinking_buffer.clone();
+                        let display = if thinking.chars().count() > 200 {
+                            let head: String = thinking.chars().take(180).collect();
+                            format!("> 🤔 **思考过程** ({} 字)\n> {}\n> …（已截断，共 {} 字）",
+                                thinking.chars().count(),
+                                head.lines().collect::<Vec<_>>().join("\n> "),
+                                thinking.chars().count())
+                        } else {
+                            format!("> 🤔 **思考过程**\n> {}",
+                                thinking.lines().collect::<Vec<_>>().join("\n> "))
+                        };
+                        self.messages.push(Message::system(&display));
+                    }
+                    self.thinking_buffer.clear();
                     // 将缓冲内容作为完整消息
                     let content = self.streaming_buffer.clone();
                     if !content.is_empty() {
@@ -699,8 +733,18 @@ impl App {
                     self.stats.update_from_usage(&usage);
                 }
                 ApiEvent::Thinking(text) => {
-                    // 思考流暂不做 UI 展示（P2 时再加），仅记日志避免编译警告
-                    tracing::debug!("thinking: {}", text.chars().take(100).collect::<String>());
+                    // 累积思考流到 buffer，Done 时一次性展示
+                    self.thinking_buffer.push_str(&text);
+                }
+                ApiEvent::ProviderMeta(meta) => {
+                    // 记录 provider 元数据用于状态栏展示
+                    if let Some(ref m) = meta.routed_model {
+                        self.stats.routed_model = m.clone();
+                    }
+                    if let Some(latency) = meta.latency_ms {
+                        self.stats.last_latency_ms = latency;
+                    }
+                    self.last_provider_meta = Some(meta);
                 }
                 ApiEvent::Error(err) => {
                     if let Some(ref d) = self.debug {
@@ -751,6 +795,13 @@ impl App {
                         // 删除会话文件
                         let _ = std::fs::remove_file(&self.session_path);
                     }
+                    "/thinking" => {
+                        self.show_thinking = !self.show_thinking;
+                        let status = if self.show_thinking { "开启" } else { "关闭" };
+                        self.messages.push(Message::system(format!(
+                            "🤔 思考流展示已{}（/thinking 切换）", status
+                        )));
+                    }
                     "/help" | "/?" => {
                         let help_text = "\
 可用命令:
@@ -766,6 +817,7 @@ impl App {
   /归档       — 将当前对话摘要存入记忆
   /plan <任务> — 先分析并输出结构化计划，确认后开始执行
   /model       — 查看当前模型（/model set <名称> 切换模型）
+  /thinking    — 切换思考流展示（默认开启）
 
 快捷键:
   Ctrl+Q       — 退出
@@ -1446,12 +1498,26 @@ impl App {
 
     fn render_title_bar(&self, frame: &mut Frame, area: Rect) {
         let now = Local::now().format("%H:%M:%S");
+        // 如果 OMNIRoute 路由到了与配置不同的后端模型，显示出来
+        let model_display = if !self.stats.routed_model.is_empty()
+            && self.stats.routed_model != self.stats.model
+        {
+            format!("{} → {}", self.stats.model, self.stats.routed_model)
+        } else {
+            self.stats.model.clone()
+        };
+        let latency_display = if self.stats.last_latency_ms > 0 {
+            format!(" · {}ms", self.stats.last_latency_ms)
+        } else {
+            String::new()
+        };
         let title = format!(
-            " RHermes v{} · {} · 部署:{} · 模型:{} ",
+            " RHermes v{} · {} · 部署:{} · 模型:{}{} ",
             env!("CARGO_PKG_VERSION"),
             now,
             self.stats.mode,
-            self.stats.model,
+            model_display,
+            latency_display,
         );
 
         let bar = Paragraph::new(Text::from(Line::from(Span::styled(

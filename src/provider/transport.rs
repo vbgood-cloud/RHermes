@@ -142,6 +142,10 @@ impl Transport for DeepSeekTransport {
         }
 
         // 解析 SSE 流
+        // 解析 OMNIRoute 在 SSE 流末尾返回的注释行元数据
+        // 例如 ": x-omniroute-model=glm-4.7-flash" ": x-omniroute-latency-ms=70"
+        let mut provider_meta = crate::api::ProviderMeta::default();
+
         let mut buffer = String::new();
         let mut stream = response.bytes_stream();
 
@@ -155,6 +159,23 @@ impl Transport for DeepSeekTransport {
                 buffer = buffer[event_end + 2..].to_string();
 
                 for line in event.lines() {
+                    // OMNIRoute 注释行（": x-omniroute-xxx=yyy"）— 累积元数据
+                    if let Some(rest) = line.strip_prefix(": x-omniroute-") {
+                        if let Some((k, v)) = rest.split_once('=') {
+                            let v = v.trim();
+                            match k {
+                                "model" => provider_meta.routed_model = Some(v.to_string()),
+                                "provider" => provider_meta.provider = Some(v.to_string()),
+                                "latency-ms" => provider_meta.latency_ms = v.parse().ok(),
+                                "response-cost" => provider_meta.cost = v.parse().ok(),
+                                "cache-hit" => provider_meta.cache_hit = Some(v == "true"),
+                                "tokens-in" => provider_meta.tokens_in = v.parse().ok(),
+                                "tokens-out" => provider_meta.tokens_out = v.parse().ok(),
+                                _ => {}
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(data) = line.strip_prefix("data: ") {
                         let data = data.trim();
                         if data == "[DONE]" {
@@ -212,6 +233,15 @@ impl Transport for DeepSeekTransport {
             }
         }
 
+        // 流结束前发送 ProviderMeta（如果收集到了任意字段）
+        if provider_meta.routed_model.is_some()
+            || provider_meta.provider.is_some()
+            || provider_meta.latency_ms.is_some()
+            || provider_meta.cost.is_some()
+            || provider_meta.cache_hit.is_some()
+        {
+            let _ = tx.send(ApiEvent::ProviderMeta(provider_meta));
+        }
         let _ = tx.send(ApiEvent::Done);
         Ok(())
     }
