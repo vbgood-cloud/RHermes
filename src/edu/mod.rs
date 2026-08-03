@@ -74,7 +74,29 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
         }
         "status" => {
             println!("📊 学习状态");
-            println!("   （Phase 4+ 实现）");
+            println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+        }
+        "courses" => {
+            println!("📚 可选课程列表");
+            println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+        }
+        "profile" => {
+            println!("👤 个人学习档案");
+            println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+        }
+        "report" => {
+            println!("📝 成长报告");
+            println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+        }
+        "mode" => {
+            let mode = args.first().map(String::as_str).unwrap_or("");
+            if mode.is_empty() {
+                println!("🎯 当前学习模式: explore");
+                println!("   可切换: rhermes-stu mode <explore|scaffold>");
+            } else {
+                println!("🎯 切换学习模式 → {mode}");
+                println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+            }
         }
         "auth" => {
             auth::handle_auth_command(args, &db_path);
@@ -88,6 +110,10 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
             println!("  rhermes edu auth <login|verify>   认证");
             println!("  rhermes edu join <课程码>          加入课程");
             println!("  rhermes edu status                 学习状态");
+            println!("  rhermes edu courses                可选课程");
+            println!("  rhermes edu profile                学习档案");
+            println!("  rhermes edu report                 成长报告");
+            println!("  rhermes edu mode [explore|scaffold] 学习模式");
         }
     }
 }

@@ -1,11 +1,27 @@
 [package]
 name = "rhermes"
-version = "0.6.6"
+version = "0.6.9"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]
 license = "MIT"
 repository = "https://github.com/rhermes/rhermes"
+
+[lib]
+name = "rhermes"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rhermes"
+path = "src/main.rs"
+
+[[bin]]
+name = "rhermes-stu"
+path = "src/bin/rhermes_stu.rs"
+
+[[bin]]
+name = "rhermes-teacher"
+path = "src/bin/rhermes_teacher.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
