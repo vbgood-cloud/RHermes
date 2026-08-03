@@ -115,8 +115,8 @@ impl Channel for QqChannel {
                 let (hb_tx, mut hb_rx) = mpsc::unbounded_channel::<()>();
                 let mut heartbeat_interval = 30u64;
                 let mut session_id = String::new();
-                let mut last_seq: Option<u64> = None;
-                let mut identified = false;
+                let mut _last_seq: Option<u64> = None;
+                let mut _identified = false;
 
                 // 心跳 token
                 let hb_token = token.clone();
@@ -201,7 +201,7 @@ impl Channel for QqChannel {
                             // Dispatch — 事件推送
                             let event_type = event.get("t").and_then(|v| v.as_str()).unwrap_or("");
                             let seq = event.get("s").and_then(|v| v.as_u64());
-                            last_seq = seq;
+                            _last_seq = seq;
 
                             match event_type {
                                 "READY" => {
@@ -211,7 +211,7 @@ impl Channel for QqChannel {
                                             .unwrap_or_default()
                                             .to_string();
                                     }
-                                    identified = true;
+                                    _identified = true;
                                     tracing::info!("QQ Bot 已就绪 (session: {session_id})");
                                 }
                                 "GROUP_AT_MESSAGE_CREATE" => {
@@ -229,7 +229,7 @@ impl Channel for QqChannel {
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("unknown")
                                             .to_string();
-                                        let msg_id = d.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                                        let _msg_id = d.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
 
                                         if hb_api.allow_private {
                                             hb_api.state.inc_msg();

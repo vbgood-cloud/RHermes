@@ -495,7 +495,7 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
             enabled: true,
             channels: {
                 // 根据各通道 enabled 状态自动构建 gateway.channels 列表
-                let mut chs = Vec::new();
+                let chs = Vec::new();
                 // 复用已构建的 channels（但所有权已移走，重新检查 existing + 新值）
                 // 这里从最终 channels 值重建
                 chs
@@ -860,7 +860,7 @@ fn run_init_skip_provider(
         return Err(e.into());
     }
 
-    let env_path = config_path.parent().unwrap_or(Path::new(".")).join(".env");
+    let _env_path = config_path.parent().unwrap_or(Path::new(".")).join(".env");
     println!("┌────────────────────────────────────────────┐");
     println!("│          ✅ 配置完成！                      │");
     println!("├────────────────────────────────────────────┤");

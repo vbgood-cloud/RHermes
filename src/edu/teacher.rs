@@ -453,8 +453,8 @@ mod tests {
     fn test_teacher_class_lesson_student() {
         let (_tmp, mgr) = setup_mgr();
         let teacher = mgr.init_teacher("老师", "p").unwrap();
-        let course = mgr.create_course(teacher, "TS201", "测试").unwrap();
-        let class = mgr.create_class("TS201", "一班").unwrap();
+        let _course = mgr.create_course(teacher, "TS201", "测试").unwrap();
+        let _class = mgr.create_class("TS201", "一班").unwrap();
 
         let lesson = mgr.create_lesson("TS201", "一班", 1, "第一课").unwrap();
         assert_eq!(lesson.lesson_num, 1);

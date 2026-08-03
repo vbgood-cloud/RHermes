@@ -64,21 +64,19 @@ impl Tool for ReadDocx {
                         text.push_str("[表格]\n");
                         for tchild in &t.rows {
                             use docx_rs::TableChild;
-                            if let TableChild::TableRow(row) = tchild {
-                                for tcell in &row.cells {
-                                    use docx_rs::TableRowChild;
-                                    if let TableRowChild::TableCell(cell) = tcell {
-                                        for content in &cell.children {
-                                            use docx_rs::TableCellContent;
-                                            if let TableCellContent::Paragraph(p) = content {
-                                                extract_text_from_paragraph(p, &mut text);
-                                                text.push('\t');
-                                            }
-                                        }
+                            let TableChild::TableRow(row) = tchild;
+                            for tcell in &row.cells {
+                                use docx_rs::TableRowChild;
+                                let TableRowChild::TableCell(cell) = tcell;
+                                for content in &cell.children {
+                                    use docx_rs::TableCellContent;
+                                    if let TableCellContent::Paragraph(p) = content {
+                                        extract_text_from_paragraph(p, &mut text);
+                                        text.push('\t');
                                     }
                                 }
-                                text.push('\n');
                             }
+                            text.push('\n');
                         }
                     }
                     _ => {}

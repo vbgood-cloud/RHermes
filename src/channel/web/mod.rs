@@ -8,14 +8,13 @@ use std::sync::Mutex;
 use std::collections::HashMap;
 
 use axum::{
-    extract::{State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    extract::State,
     response::{Html, IntoResponse, Json},
     routing::{get, post},
     Router,
     extract::Path,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 
 use crate::channel::{Channel, ChannelStatus};
 use crate::channel::types::InboundMessage;
@@ -110,7 +109,7 @@ impl Channel for WebChannel {
         })
     }
 
-    async fn send_message(&self, chat_id: &str, text: &str) -> Result<(), String> {
+    async fn send_message(&self, _chat_id: &str, _text: &str) -> Result<(), String> {
         // Web 通道的回复通过 WebSocket/轮询获取，这里不直接发送
         // 实际实现中可以写入共享状态供 /api/reply 读取
         Ok(())

@@ -1389,8 +1389,8 @@ mod tests {
         assert_eq!(class.name, "计算机2301");
 
         // 创建课次
-        let lesson1 = store.create_lesson(course.id, class.id, 1, "线性表").unwrap();
-        let lesson2 = store.create_lesson(course.id, class.id, 2, "栈和队列").unwrap();
+        let _lesson1 = store.create_lesson(course.id, class.id, 1, "线性表").unwrap();
+        let _lesson2 = store.create_lesson(course.id, class.id, 2, "栈和队列").unwrap();
 
         // 查询课次
         let lessons = store.get_lessons(course.id, class.id).unwrap();

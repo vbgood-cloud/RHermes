@@ -82,7 +82,7 @@ impl Tool for ReadExcel {
             // 转为 CSV
             let limited_rows = height.min(max_rows);
             let mut csv = String::with_capacity(limited_rows * width * 8);
-            for (row_idx, row) in range.rows().take(limited_rows).enumerate() {
+            for (_row_idx, row) in range.rows().take(limited_rows).enumerate() {
                 for (col_idx, cell) in row.iter().enumerate() {
                     if col_idx > 0 {
                         csv.push(',');

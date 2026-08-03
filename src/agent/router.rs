@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::agent::event_sink::{ChannelSink, EventSink};
-use crate::agent::session::{AgentSession, ReflectionRecord, SessionConfig};
+use crate::agent::session::{AgentSession, SessionConfig};
 use crate::agent::MemorySystem;
 use crate::agent::SkillEngine;
 use crate::channel::telegram::TelegramSink;

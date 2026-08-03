@@ -3,7 +3,6 @@
 //! 教师创建课堂 → 生成课程码 → 学生通过课程码加入。
 //! 基于 iroh Endpoint 实现 P2P 连接，内置 NAT 穿透。
 
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -221,7 +220,7 @@ async fn handle_student_connection(
         let reply = process_student_message(msg, db_path);
         let reply_bytes = encode_message(&reply);
 
-        use futures_util::SinkExt;
+        
         send.write_all(&reply_bytes)
             .await
             .map_err(|e| format!("回复失败: {e}"))?;

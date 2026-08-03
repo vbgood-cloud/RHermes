@@ -221,7 +221,7 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
                     let Some(c) = c else { return format!("❌ 课程 '{course}' 不存在") };
                     let classes = mgr.store.get_classes_by_course(c.id).unwrap_or_default();
                     let cls = classes.iter().find(|cl| cl.name == class_name);
-                    let Some(cls) = cls else { return format!("❌ 班级 '{class_name}' 不存在") };
+                    let Some(_cls) = cls else { return format!("❌ 班级 '{class_name}' 不存在") };
 
                     // 尝试解析内联学生数据
                     let rest_args: Vec<&str> = args[3..].to_vec();
@@ -468,7 +468,7 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
                     let course = args.get(2).copied().unwrap_or("");
                     let class_name = args.get(3).copied().unwrap_or("");
                     let target = args.get(4).copied().unwrap_or(""); // lesson 序号 或 assignment id 或 "all"/"upto"
-                    let target2 = args.get(5).copied().unwrap_or("");
+                    let _target2 = args.get(5).copied().unwrap_or("");
                     if course.is_empty() || class_name.is_empty() {
                         return "用法: /class publish <lesson|assignment|all|upto> <课程码> <班级> [序号/id]".to_string();
                     }

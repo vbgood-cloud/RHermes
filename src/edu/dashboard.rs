@@ -4,7 +4,6 @@
 //! 使用 axum + 嵌入式 HTML。
 
 use std::path::Path;
-use std::sync::Arc;
 
 use axum::{
     extract::State,

@@ -6,7 +6,7 @@
 mod e2e_tests {
     use crate::edu::{
         auth,
-        course::{CourseContext, LearnMode, format_course_list},
+        course::{LearnMode, format_course_list},
         reflection::{evaluate_question_quality, evaluate_reflection, generate_growth_report},
         store::EduStore,
         teacher::TeacherManager,
@@ -27,7 +27,7 @@ mod e2e_tests {
         let course = mgr.create_course(teacher_id, "CS101", "Python 编程基础").unwrap();
 
         // 3. 创建班级
-        let class = mgr.create_class("CS101", "计算机2301").unwrap();
+        let _class = mgr.create_class("CS101", "计算机2301").unwrap();
 
         // 4. 创建课次
         mgr.create_lesson("CS101", "计算机2301", 1, "变量与数据类型").unwrap();
