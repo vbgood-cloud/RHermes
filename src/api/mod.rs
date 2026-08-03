@@ -35,6 +35,10 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
+    /// OMNIRoute / OpenAI 兼容的思考强度控制：low|medium|high|xhigh
+    /// None 时不序列化，向后兼容现有 DeepSeek provider
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// 工具定义（OpenAI 格式）
@@ -384,6 +388,12 @@ pub struct Usage {
     pub prompt_cache_hit_tokens: u32,
     #[serde(default)]
     pub prompt_cache_miss_tokens: u32,
+    /// OMNIRoute / GLM 系列返回的缓存命中 tokens（流式响应里）
+    #[serde(default)]
+    pub cached_tokens: Option<u32>,
+    /// 思考过程消耗的 tokens（reasoning 模型）
+    #[serde(default)]
+    pub reasoning_tokens: Option<u32>,
 }
 
 /// SSE 流式事件
@@ -427,6 +437,8 @@ pub enum ApiEvent {
     ToolCalls(Vec<ToolCallData>),
     /// 余额查询结果（元）
     Balance(f64),
+    /// 思考流（reasoning 模型的 reasoning_content，独立于正文）
+    Thinking(String),
     /// 错误
     Error(String),
 }
@@ -771,6 +783,9 @@ pub(crate) struct StreamDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<StreamToolCall>>,
+    /// OMNIRoute / GLM / DeepSeek-R1 等模型的思考流（与 content 并行，单独字段）
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -891,6 +906,7 @@ mod tests {
             max_tokens: Some(4096),
             temperature: None,
             tools: None,
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();

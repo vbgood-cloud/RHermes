@@ -58,6 +58,7 @@ pub async fn run_sub_agent(
         max_tokens: Some(2048),
         temperature: None,
         tools: Some(crate::tools::all_tool_defs()),
+        reasoning_effort: None,
     };
 
     match transport.chat(request).await {
@@ -128,6 +129,7 @@ pub async fn auto_refine_skill(
             max_tokens: Some(4096),
             temperature: None,
             tools: Some(tools.clone()),
+            reasoning_effort: None,
         };
 
         match transport.chat(request).await {
@@ -247,6 +249,7 @@ pub async fn auto_refine_memory(
         max_tokens: Some(2048),
         temperature: None,
         tools: Some(tools),
+        reasoning_effort: None,
     };
 
     match transport.chat(request).await {

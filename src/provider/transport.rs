@@ -176,6 +176,12 @@ impl Transport for DeepSeekTransport {
                                             return Ok(());
                                         }
                                     }
+                                    // OMNIRoute / GLM / DeepSeek-R1 的思考流，独立分发
+                                    if let Some(ref reasoning) = choice.delta.reasoning_content {
+                                        if !reasoning.is_empty() {
+                                            let _ = tx.send(ApiEvent::Thinking(reasoning.to_string()));
+                                        }
+                                    }
                                     if let Some(ref calls) = choice.delta.tool_calls {
                                         let tool_data: Vec<ToolCallData> = calls
                                             .iter()

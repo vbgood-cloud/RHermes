@@ -698,6 +698,10 @@ impl App {
                 ApiEvent::Usage(usage) => {
                     self.stats.update_from_usage(&usage);
                 }
+                ApiEvent::Thinking(text) => {
+                    // 思考流暂不做 UI 展示（P2 时再加），仅记日志避免编译警告
+                    tracing::debug!("thinking: {}", text.chars().take(100).collect::<String>());
+                }
                 ApiEvent::Error(err) => {
                     if let Some(ref d) = self.debug {
                         if let Ok(mut dbg) = d.lock() {
@@ -2019,6 +2023,8 @@ mod tests {
             total_tokens: 1100,
             prompt_cache_hit_tokens: 800,
             prompt_cache_miss_tokens: 200,
+        cached_tokens: None,
+        reasoning_tokens: None,
         };
 
         stats.update_from_usage(&usage);
@@ -2037,6 +2043,8 @@ mod tests {
             total_tokens: 110,
             prompt_cache_hit_tokens: 0,
             prompt_cache_miss_tokens: 0,
+        cached_tokens: None,
+        reasoning_tokens: None,
         };
 
         stats.update_from_usage(&usage);

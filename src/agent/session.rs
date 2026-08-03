@@ -320,6 +320,7 @@ impl AgentSession {
                     max_tokens: Some(1024),
                     temperature: None,
                     tools: None,
+                    reasoning_effort: None,
                 };
                 let summary = match self.transport.chat(sub_request).await {
                     Ok(resp) => resp.choices.first()
@@ -378,6 +379,7 @@ impl AgentSession {
                 max_tokens: Some(4096),
                 temperature: None,
                 tools: Some(crate::tools::all_tool_defs()),
+                reasoning_effort: None,
             };
 
             let chat_result = tokio::time::timeout(
@@ -629,7 +631,7 @@ impl AgentSession {
             }
             // 6b. 自动技能提炼
             if creation_nudge_interval > 0 && tool_call_counter >= creation_nudge_interval && !user_msg.is_empty() {
-                tool_call_counter = 0;
+                let _ = std::mem::replace(&mut tool_call_counter, 0);
                 let nudge_msg = user_msg.to_string();
                 let nudge_text = final_text.clone();
                 let _se = self.skill_engine.clone();
