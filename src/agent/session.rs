@@ -274,6 +274,7 @@ impl AgentSession {
             let mut final_text = String::new();
             let mut tool_calls: Vec<ToolCallData> = Vec::new();
             let mut choice_message_tool_calls: Option<Vec<crate::api::ResponseToolCall>> = None;
+            let mut raw_response_calls: Vec<crate::api::ResponseToolCall> = Vec::new();
 
             // 2a. 每 5 轮展示进化建议
             if round % 5 == 0 && round > 0 {
@@ -372,86 +373,89 @@ impl AgentSession {
             // 3. 调用 API（先发送 typing 状态）
             self.sink.on_typing().await;
 
+            // P0: 流式调用 + P1: 动态工具筛选
             let request = ChatRequest {
                 model: self.transport.model_name().to_string(),
                 messages,
-                stream: false,
+                stream: true,   // P0: 流式
                 max_tokens: Some(4096),
                 temperature: None,
-                tools: Some(crate::tools::all_tool_defs()),
+                tools: Some(select_tools(user_msg)),   // P1: 动态筛选
                 reasoning_effort: infer_reasoning_effort(user_msg).map(|s| s.to_string()),
             };
 
-            let chat_result = tokio::time::timeout(
-                Duration::from_secs(120),
-                self.transport.chat(request),
-            ).await;
+            // P0: spawn 流式请求 + P2b: 30s 超时
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::api::ApiEvent>();
+            let transport_clone = Arc::clone(&self.transport);
+            let stream_task = tokio::spawn(async move {
+                transport_clone.chat_stream(request, tx).await
+            });
 
-            match chat_result {
-                Ok(Ok(response)) => {
-                    // 传 usage 给 TUI（更新 token/成本统计）
-                    if let Some(ref usage) = response.usage {
-                        self.sink.on_usage(usage).await;
+            let mut thinking_buf = String::new();
+            let mut thinking_flushed = false;
+            let mut timed_out = false;
+
+            loop {
+                match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+                    Ok(Some(crate::api::ApiEvent::StreamChunk(text))) => {
+                        if !thinking_flushed && !thinking_buf.is_empty() {
+                            self.sink.on_chunk(&format_thinking_block(&thinking_buf)).await;
+                            thinking_flushed = true;
+                        }
+                        final_text.push_str(&text);
+                        self.sink.on_chunk(&text).await;
                     }
-                    if let Some(choice) = response.choices.first() {
-                        tracing::debug!(
-                            "API 响应: finish_reason={:?}, text_len={}, has_tool_calls={}",
-                            choice.finish_reason,
-                            choice.message.content.as_ref().map(|s| s.len()).unwrap_or(0),
-                            choice.message.tool_calls.is_some(),
-                        );
-                        final_text = choice.message.content.clone().unwrap_or_default();
-                        // OMNIRoute/GLM/DeepSeek-R1 思考流，拼到正文前面（markdown 引用块）
-                        if let Some(ref reasoning) = choice.message.reasoning_content {
-                            if !reasoning.is_empty() {
-                                let char_count = reasoning.chars().count();
-                                let display = if char_count > 200 {
-                                    let head: String = reasoning.chars().take(180).collect();
-                                    format!(">🤔 **思考过程** ({}字，已截断)
-> {}
-
-", char_count, head.replace("
-", "
-> "))
-                                } else {
-                                    format!(">🤔 **思考过程**
-> {}
-
-", reasoning.replace("
-", "
-> "))
-                                };
-                                final_text = format!("{}{}", display, final_text);
-                            }
-                        }
-                        if !final_text.is_empty() {
-                            self.sink.on_chunk(&final_text).await;
-                        }
-                        if let Some(ref calls) = choice.message.tool_calls {
-                            choice_message_tool_calls = Some(calls.clone());
-                            tool_calls = calls.iter().map(|tc| ToolCallData {
+                    Ok(Some(crate::api::ApiEvent::Thinking(text))) => {
+                        thinking_buf.push_str(&text);
+                    }
+                    Ok(Some(crate::api::ApiEvent::ToolCalls(calls))) => {
+                        tracing::debug!("流式工具调用: {} 个", calls.len());
+                        for tc in &calls {
+                            raw_response_calls.push(crate::api::ResponseToolCall {
                                 id: tc.id.clone(),
-                                name: tc.function.name.clone(),
-                                arguments: tc.function.arguments.clone(),
-                            }).collect();
-                            if !tool_calls.is_empty() {
-                                tracing::debug!("检测到 {} 个工具调用", tool_calls.len());
-                                self.sink.on_tool_calls(&tool_calls).await;
-                            }
+                                call_type: Some("function".into()),
+                                function: crate::api::ResponseToolFunction {
+                                    name: tc.name.clone(),
+                                    arguments: tc.arguments.clone(),
+                                },
+                            });
+                        }
+                        tool_calls = calls;
+                        if !tool_calls.is_empty() {
+                            self.sink.on_tool_calls(&tool_calls).await;
                         }
                     }
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("API 调用失败: {e}");
-                    self.sink.on_error(&format!("API 错误: {e}")).await;
-                }
-                Err(_) => {
-                    tracing::error!("API 调用超时（120s）");
-                    self.sink.on_error("API 请求超时（120秒），请检查网络或 API 服务状态").await;
+                    Ok(Some(crate::api::ApiEvent::Usage(usage))) => {
+                        self.sink.on_usage(&usage).await;
+                    }
+                    Ok(Some(crate::api::ApiEvent::ProviderMeta(_))) => {}
+                    Ok(Some(crate::api::ApiEvent::Balance(_))) => {}
+                    Ok(Some(crate::api::ApiEvent::Done)) => break,
+                    Ok(Some(crate::api::ApiEvent::Error(e))) => {
+                        tracing::error!("流式 API 错误: {e}");
+                        self.sink.on_error(&format!("API 错误: {e}")).await;
+                        break;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        timed_out = true;
+                        tracing::error!("API 调用超时（30s）");
+                        self.sink.on_error("API 请求超时（30秒）").await;
+                        break;
+                    }
                 }
             }
 
-            tracing::debug!("Context 消息数: {}", self.context.scratch_count());
+            // Done 时未 flush 的思考流
+            if !thinking_flushed && !thinking_buf.is_empty() {
+                self.sink.on_chunk(&format_thinking_block(&thinking_buf)).await;
+            }
+            if timed_out {
+                stream_task.abort();
+            }
+            choice_message_tool_calls = if raw_response_calls.is_empty() { None } else { Some(raw_response_calls) };
+
+                        tracing::debug!("Context 消息数: {}", self.context.scratch_count());
 
             // 4.5 护栏管线 — 修复 + 校验 tool_calls
             if !tool_calls.is_empty() && self.repair_pipeline.is_some() {
@@ -602,13 +606,19 @@ impl AgentSession {
                             continue;
                         }
                         let mut output = r.output.clone();
-                        let lines_before = output.lines().count();
-                        if output.len() > tool_result_max_chars {
-                            let truncated: String = output.chars().take(tool_result_max_chars).collect();
-                            let lines_after = truncated.lines().count();
-                            output = format!("{}\n... (共{}行, 截断{}行)", truncated, lines_before, lines_before - lines_after);
+                        // P3a: 分级截断 + P3b: 头尾保留
+                        let max_chars = max_output_for_tool(&r.name, tool_result_max_chars);
+                        if output.len() > max_chars {
+                            let lines_before = output.lines().count();
+                            let head_chars = max_chars * 3 / 4;
+                            let tail_chars = max_chars / 4;
+                            let head: String = output.chars().take(head_chars).collect();
+                            let tail: String = output.chars().rev().take(tail_chars)
+                                .collect::<String>().chars().rev().collect();
+                            output = format!("{}\n\n... [省略 {} 字, 共 {} 行] ...\n\n{}",
+                                head, output.len() - max_chars, lines_before, tail);
                         }
-                        let result_msg = if r.success {
+                                                let result_msg = if r.success {
                             format!("工具「{}」执行成功 ({}ms):\n{}", r.name, r.duration_ms, output)
                         } else {
                             format!("工具「{}」执行失败:\n{}", r.name, output)
@@ -770,3 +780,89 @@ fn infer_reasoning_effort(user_msg: &str) -> Option<&'static str> {
     Some("medium")
 }
 
+
+// ---------------------------------------------------------------------------
+// 工具调用优化辅助函数 (P0/P1/P3a)
+// ---------------------------------------------------------------------------
+
+/// P1: 按消息内容动态筛选工具列表，减少 prompt token 开销
+fn select_tools(user_msg: &str) -> Vec<crate::api::ToolDef> {
+    let all = crate::tools::all_tool_defs();
+    let msg = user_msg.to_lowercase();
+    let mut wanted: Vec<&str> = vec![
+        "read_file", "write_file", "run_command", "get_current_time",
+        "memory", "search_content", "glob",
+    ];
+    if msg.contains("技能") || msg.contains("skill") {
+        wanted.extend(["run_skill", "skill_list", "skill_search", "skill_create", "skill_patch", "skill_manage"]);
+    }
+    if msg.contains("搜索") || msg.contains("查一下") || msg.contains("search") || msg.contains("百度") {
+        wanted.push("web_search");
+    }
+    if msg.contains("网页") || msg.contains("url") || msg.contains("fetch") {
+        wanted.push("web_fetch");
+    }
+    if msg.contains("excel") || msg.contains("表格") || msg.contains("xlsx") {
+        wanted.extend(["read_excel", "write_excel"]);
+    }
+    if msg.contains("word") || msg.contains("docx") || msg.contains("文档") {
+        wanted.extend(["read_docx", "write_docx"]);
+    }
+    if msg.contains("ppt") || msg.contains("pptx") || msg.contains("幻灯片") {
+        wanted.push("read_pptx");
+    }
+    if msg.contains("pdf") {
+        wanted.push("read_pdf");
+    }
+    if msg.contains("解析") || msg.contains("parse") || msg.contains("截图") {
+        wanted.extend(["parse_document", "screenshot_document", "check_document_complexity"]);
+    }
+    if msg.contains("委派") || msg.contains("delegate") || msg.contains("子任务") {
+        wanted.push("delegate_task");
+    }
+    let filtered: Vec<crate::api::ToolDef> = all.iter()
+        .filter(|t| wanted.contains(&t.function.name.as_str()))
+        .cloned()
+        .collect();
+    if filtered.len() >= 5 {
+        tracing::debug!("工具筛选: {} → {} 个", all.len(), filtered.len());
+        filtered
+    } else {
+        all
+    }
+}
+
+/// P3a: 按工具类型返回最大输出字符数
+fn max_output_for_tool(name: &str, default_max: usize) -> usize {
+    match name {
+        "run_command" => 5000.min(default_max),
+        "web_search" => 4000.min(default_max),
+        "web_fetch" => 8000.min(default_max),
+        "read_file" | "read_pdf" => 10000.min(default_max),
+        "read_docx" | "read_pptx" | "read_excel" => 8000.min(default_max),
+        "delegate_task" => default_max,
+        "search_content" | "glob" => 5000.min(default_max),
+        _ => 5000.min(default_max),
+    }
+}
+
+/// P0: 格式化思考流为 markdown 引用块
+fn format_thinking_block(thinking: &str) -> String {
+    let cc = thinking.chars().count();
+    if cc > 200 {
+        let head: String = thinking.chars().take(180).collect();
+        format!("🤔 **思考过程** ({}字)
+> {}
+
+", cc, head.replace("
+", "
+> "))
+    } else {
+        format!("🤔 **思考过程**
+> {}
+
+", thinking.replace("
+", "
+> "))
+    }
+}
