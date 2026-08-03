@@ -361,6 +361,8 @@ pub struct ResponseMessage {
     pub role: String,
     pub content: Option<String>,
     #[serde(default)]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<ResponseToolCall>>,
 }
 

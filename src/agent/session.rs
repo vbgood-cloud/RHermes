@@ -389,6 +389,10 @@ impl AgentSession {
 
             match chat_result {
                 Ok(Ok(response)) => {
+                    // 传 usage 给 TUI（更新 token/成本统计）
+                    if let Some(ref usage) = response.usage {
+                        self.sink.on_usage(usage).await;
+                    }
                     if let Some(choice) = response.choices.first() {
                         tracing::debug!(
                             "API 响应: finish_reason={:?}, text_len={}, has_tool_calls={}",
@@ -397,6 +401,29 @@ impl AgentSession {
                             choice.message.tool_calls.is_some(),
                         );
                         final_text = choice.message.content.clone().unwrap_or_default();
+                        // OMNIRoute/GLM/DeepSeek-R1 思考流，拼到正文前面（markdown 引用块）
+                        if let Some(ref reasoning) = choice.message.reasoning_content {
+                            if !reasoning.is_empty() {
+                                let char_count = reasoning.chars().count();
+                                let display = if char_count > 200 {
+                                    let head: String = reasoning.chars().take(180).collect();
+                                    format!(">🤔 **思考过程** ({}字，已截断)
+> {}
+
+", char_count, head.replace("
+", "
+> "))
+                                } else {
+                                    format!(">🤔 **思考过程**
+> {}
+
+", reasoning.replace("
+", "
+> "))
+                                };
+                                final_text = format!("{}{}", display, final_text);
+                            }
+                        }
                         if !final_text.is_empty() {
                             self.sink.on_chunk(&final_text).await;
                         }

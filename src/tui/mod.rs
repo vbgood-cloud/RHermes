@@ -734,7 +734,6 @@ impl App {
                 }
                 ApiEvent::Thinking(text) => {
                     // 累积思考流到 buffer，Done 时一次性展示
-                    self.thinking_buffer.push_str(&text);
                 }
                 ApiEvent::ProviderMeta(meta) => {
                     // 记录 provider 元数据用于状态栏展示

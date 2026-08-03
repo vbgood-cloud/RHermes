@@ -200,7 +200,6 @@ impl Transport for DeepSeekTransport {
                                     // OMNIRoute / GLM / DeepSeek-R1 的思考流，独立分发
                                     if let Some(ref reasoning) = choice.delta.reasoning_content {
                                         if !reasoning.is_empty() {
-                                            let _ = tx.send(ApiEvent::Thinking(reasoning.to_string()));
                                         }
                                     }
                                     if let Some(ref calls) = choice.delta.tool_calls {
@@ -240,7 +239,6 @@ impl Transport for DeepSeekTransport {
             || provider_meta.cost.is_some()
             || provider_meta.cache_hit.is_some()
         {
-            let _ = tx.send(ApiEvent::ProviderMeta(provider_meta));
         }
         let _ = tx.send(ApiEvent::Done);
         Ok(())
