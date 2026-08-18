@@ -79,7 +79,7 @@ impl Tool for ReadPptx {
             let limited = total.min(max_slides);
             let mut output = format!("📑 PPTX ({total} 页):\n");
 
-            for (i, (num, xml)) in slide_files.iter().take(limited).enumerate() {
+            for (i, (_num, xml)) in slide_files.iter().take(limited).enumerate() {
                 output.push_str(&format!("\n── 第 {} 页 ──\n", i + 1));
                 let texts = extract_text_from_slide(xml);
                 for t in &texts {

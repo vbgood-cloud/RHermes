@@ -20,6 +20,7 @@ pub enum EduError {
     NotFound(String),
     Auth(String),
     Argon(String),
+    Db(String),
 }
 
 impl std::fmt::Display for EduError {
@@ -31,6 +32,7 @@ impl std::fmt::Display for EduError {
             EduError::NotFound(msg) => write!(f, "未找到: {msg}"),
             EduError::Auth(msg) => write!(f, "认证失败: {msg}"),
             EduError::Argon(msg) => write!(f, "密码哈希错误: {msg}"),
+            EduError::Db(msg) => write!(f, "数据库错误: {msg}"),
         }
     }
 }
@@ -150,6 +152,21 @@ pub struct ClassPublish {
     pub content_id: i64,
     pub published_at: String,
     pub published_by: String,
+}
+
+/// 按头（班级）的课程参数覆盖记录
+///
+/// 课程（Course）作为模板，每个头（Class）导入后可独立修改参数。
+/// 每个字段为 `None` 时继承课程模板值，为 `Some` 时该头独立。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClassCourseOverride {
+    pub class_id: i64,
+    pub course_id: i64,
+    /// NULL = 继承模板
+    pub tools_whitelist_override: Option<String>,
+    pub description_override: Option<String>,
+    pub allowed_modes_override: Option<String>,
+    pub imported_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -305,6 +322,19 @@ impl EduStore {
                 current_lesson_num INTEGER,
                 expires_at TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            );
+            -- 按头（班级）的课程参数覆盖表
+            --
+            -- 课程（edu_courses）作为模板：tools_whitelist / description / allowed_modes 全局共享。
+            -- 每个头导入课程后可以独立修改这些参数。NULL = 继承模板值，非 NULL = 该头独立覆盖。
+            CREATE TABLE IF NOT EXISTS edu_class_course_overrides (
+                class_id INTEGER NOT NULL REFERENCES edu_classes(id),
+                course_id INTEGER NOT NULL REFERENCES edu_courses(id),
+                tools_whitelist_override TEXT,      -- NULL=继承模板，否则该头独立
+                description_override TEXT,          -- NULL=继承模板
+                allowed_modes_override TEXT,        -- NULL=继承模板
+                imported_at TEXT NOT NULL,          -- 课程导入到该头的时间
+                PRIMARY KEY(class_id, course_id)
             );"
         )?;
 
@@ -566,6 +596,136 @@ impl EduStore {
             .filter_map(|r| r.ok())
             .collect();
         Ok(lessons)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 按头（班级）的课程参数覆盖 CRUD
+// ---------------------------------------------------------------------------
+
+impl EduStore {
+    /// 导入课程到头：创建覆盖记录（所有字段初始为 NULL = 继承模板）。
+    ///
+    /// 若已导入过（记录已存在）则不重复创建，返回现有记录。
+    pub fn import_course_to_class(
+        &self,
+        class_id: i64,
+        course_id: i64,
+    ) -> Result<ClassCourseOverride, EduError> {
+        let now = Self::now();
+        // INSERT OR IGNORE：已导入则跳过，保持已有覆盖不变
+        self.db.execute(
+            "INSERT OR IGNORE INTO edu_class_course_overrides
+             (class_id, course_id, tools_whitelist_override, description_override, allowed_modes_override, imported_at)
+             VALUES (?1, ?2, NULL, NULL, NULL, ?3)",
+            params![class_id, course_id, now],
+        )?;
+        // 回读记录
+        self.get_class_course_override(class_id, course_id)?
+            .ok_or_else(|| EduError::Db("导入后回读覆盖记录失败".into()))
+    }
+
+    /// 读取某个头的课程覆盖记录（None = 该头未导入此课程）
+    pub fn get_class_course_override(
+        &self,
+        class_id: i64,
+        course_id: i64,
+    ) -> Result<Option<ClassCourseOverride>, EduError> {
+        let result = self
+            .db
+            .prepare(
+                "SELECT class_id, course_id, tools_whitelist_override, description_override,
+                        allowed_modes_override, imported_at
+                 FROM edu_class_course_overrides WHERE class_id = ?1 AND course_id = ?2",
+            )?
+            .query_row(params![class_id, course_id], |row| {
+                Ok(ClassCourseOverride {
+                    class_id: row.get(0)?,
+                    course_id: row.get(1)?,
+                    tools_whitelist_override: row.get(2)?,
+                    description_override: row.get(3)?,
+                    allowed_modes_override: row.get(4)?,
+                    imported_at: row.get(5)?,
+                })
+            })
+            .ok();
+        Ok(result)
+    }
+
+    /// 更新某个头的课程参数覆盖（只更新提供的字段，None 字段保持不变）。
+    ///
+    /// 若该头未导入课程，返回错误。
+    pub fn update_class_course_override(
+        &self,
+        class_id: i64,
+        course_id: i64,
+        tools_whitelist: Option<&str>,
+        description: Option<&str>,
+        allowed_modes: Option<&str>,
+    ) -> Result<(), EduError> {
+        // 动态拼接 SET 子句：只更新提供的字段
+        let mut sets: Vec<&str> = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+        if let Some(v) = tools_whitelist {
+            sets.push("tools_whitelist_override = ?");
+            params_vec.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = description {
+            sets.push("description_override = ?");
+            params_vec.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = allowed_modes {
+            sets.push("allowed_modes_override = ?");
+            params_vec.push(Box::new(v.to_string()));
+        }
+
+        if sets.is_empty() {
+            return Ok(()); // 没有要更新的字段
+        }
+
+        let sql = format!(
+            "UPDATE edu_class_course_overrides SET {} WHERE class_id = ? AND course_id = ?",
+            sets.join(", ")
+        );
+        params_vec.push(Box::new(class_id));
+        params_vec.push(Box::new(course_id));
+
+        let affected = self.db.execute(&sql, rusqlite::params_from_iter(params_vec))?;
+        if affected == 0 {
+            return Err(EduError::NotFound(format!(
+                "头(class_id={class_id})未导入课程(course_id={course_id})，请先 /import"
+            )));
+        }
+        Ok(())
+    }
+
+    /// 合并课程模板 + 头覆盖，得到该头实际生效的课程参数。
+    ///
+    /// 覆盖字段为 NULL 时用模板值；否则用覆盖值。
+    /// 若该头未导入（无覆盖记录），则全部用模板值。
+    pub fn resolve_course_for_class(
+        &self,
+        class_id: i64,
+        course: &Course,
+    ) -> Result<Course, EduError> {
+        match self.get_class_course_override(class_id, course.id)? {
+            None => Ok(course.clone()),
+            Some(ov) => Ok(Course {
+                id: course.id,
+                course_code: course.course_code.clone(),
+                name: course.name.clone(),
+                teacher_id: course.teacher_id,
+                description: ov.description_override.unwrap_or_else(|| course.description.clone()),
+                tools_whitelist: ov
+                    .tools_whitelist_override
+                    .unwrap_or_else(|| course.tools_whitelist.clone()),
+                allowed_modes: ov
+                    .allowed_modes_override
+                    .unwrap_or_else(|| course.allowed_modes.clone()),
+                created_at: course.created_at.clone(),
+            }),
+        }
     }
 }
 
@@ -1229,8 +1389,8 @@ mod tests {
         assert_eq!(class.name, "计算机2301");
 
         // 创建课次
-        let lesson1 = store.create_lesson(course.id, class.id, 1, "线性表").unwrap();
-        let lesson2 = store.create_lesson(course.id, class.id, 2, "栈和队列").unwrap();
+        let _lesson1 = store.create_lesson(course.id, class.id, 1, "线性表").unwrap();
+        let _lesson2 = store.create_lesson(course.id, class.id, 2, "栈和队列").unwrap();
 
         // 查询课次
         let lessons = store.get_lessons(course.id, class.id).unwrap();
@@ -1339,5 +1499,57 @@ mod tests {
         // 验证 → 已过期
         let session = store.validate_session(&token).unwrap();
         assert!(session.is_none());
+    }
+
+    #[test]
+    fn test_class_course_override_isolation() {
+        // 验证核心需求：同一课程导入到两个头（班级）后，
+        // 修改头 A 的参数不影响头 B，也不影响课程模板。
+        let (_tmp, store) = setup_store();
+        let teacher = store.create_teacher("老师", "p").unwrap();
+        // create_course 默认 tools_whitelist = "[]"
+        let course = store
+            .create_course("CS999", "隔离测试", teacher.id)
+            .unwrap();
+
+        // 两个头（班级）
+        let class_a = store.create_class("头A", course.id).unwrap();
+        let class_b = store.create_class("头B", course.id).unwrap();
+
+        // 两个头都导入课程
+        store.import_course_to_class(class_a.id, course.id).unwrap();
+        store.import_course_to_class(class_b.id, course.id).unwrap();
+
+        // 头 A 修改工具白名单 + 描述
+        store
+            .update_class_course_override(
+                class_a.id,
+                course.id,
+                Some(r#"["read_file","glob","write_file"]"#),
+                Some("头A的专属描述"),
+                None,
+            )
+            .unwrap();
+
+        // 验证：头 A 用覆盖值
+        let resolved_a = store.resolve_course_for_class(class_a.id, &course).unwrap();
+        assert!(resolved_a.tools_whitelist.contains("write_file"));
+        assert_eq!(resolved_a.description, "头A的专属描述");
+
+        // 验证：头 B 仍用模板值（不受头 A 影响）
+        let resolved_b = store.resolve_course_for_class(class_b.id, &course).unwrap();
+        assert!(!resolved_b.tools_whitelist.contains("write_file"));
+        assert_eq!(resolved_b.description, ""); // 模板默认空
+
+        // 验证：课程模板本身未被修改
+        let template = store.get_course("CS999").unwrap().unwrap();
+        assert!(!template.tools_whitelist.contains("write_file"));
+        assert_eq!(template.description, "");
+
+        // 验证：更新未导入的课程应报错
+        let class_c = store.create_class("头C", course.id).unwrap();
+        assert!(store
+            .update_class_course_override(class_c.id, course.id, Some("[]"), None, None)
+            .is_err());
     }
 }

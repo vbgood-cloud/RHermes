@@ -5,7 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::edu::store::EduStore;
 
 // ---------------------------------------------------------------------------
 // 数据结构
@@ -68,7 +67,7 @@ pub struct ReflectionPrompt {
 /// 在实际使用中，可以调用 AI 来生成更精准的反思提示。
 /// 当前版本使用基于规则的智能选择 + 模板组合。
 pub fn generate_reflection_prompt(
-    conversation_summary: &str,
+    _conversation_summary: &str,
     tools_used: &[String],
     mode: &str,
 ) -> ReflectionPrompt {
@@ -145,7 +144,7 @@ pub fn pick_template_reflection(tools_used: &[String]) -> String {
 pub fn evaluate_reflection(reflection_text: &str, conversation_length: usize) -> ReflectionScore {
     let text = reflection_text.trim();
     let char_count = text.chars().count();
-    let word_count = text.split_whitespace().count();
+    let _word_count = text.split_whitespace().count();
 
     let mut score = ReflectionScore::default();
 

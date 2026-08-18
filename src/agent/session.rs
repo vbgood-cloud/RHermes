@@ -65,6 +65,45 @@ pub struct AgentSession {
     repair_pipeline: Option<crate::agent::repair::RepairPipeline>,
     /// 护栏重试计数（跨轮累加）
     guardrail_retry_count: u32,
+    /// edu 学习模式：工具白名单（空 = 全部允许，由 router 在切课时设置）
+    allowed_tools: Option<Vec<String>>,
+    /// edu 学习模式：当前学习模式名（explore / scaffold / locked / None=通用模式）
+    learn_mode: Option<String>,
+    /// edu 反思闭环：上一轮结束时生成的反思提示上下文（等待学生下一轮回答）
+    ///
+    /// 方案 B：handle_message 入口检测此字段。命中则把当前 user_msg 当作反思回答，
+    /// 调用 evaluate_reflection 评分，结果写入 reflection_outbox 供 router 落库。
+    pending_reflection: Option<PendingReflection>,
+    /// edu 反思闭环：本轮产出的反思评分结果（router 在 handle_message 返回后读取并落库）
+    reflection_outbox: Option<ReflectionRecord>,
+}
+
+/// 等待学生回答的反思上下文
+#[derive(Clone, Debug)]
+struct PendingReflection {
+    /// 上一轮对话的摘要（AI 回答前 200 字）
+    conversation_summary: String,
+    /// 上一轮用过的工具名
+    tools_used: Vec<String>,
+    /// 学习模式
+    mode: String,
+    /// 上一轮对话长度（用于 evaluate_reflection 的提问质量评估）
+    conversation_length: usize,
+}
+
+/// 本轮产出的反思评分记录（供 router 落库）
+#[derive(Clone, Debug)]
+pub struct ReflectionRecord {
+    /// 反思原文（学生的回答）
+    pub reflection_text: String,
+    /// 综合评分（0.0-1.0）
+    pub overall_score: f64,
+    /// 反思深度（0.0-1.0）
+    pub depth: f64,
+    /// 上一轮用过的工具（CSV 格式，供 journal.tool_calls 字段）
+    pub tools_csv: String,
+    /// 上一轮对话摘要（供 journal.topic 字段）
+    pub topic: String,
 }
 
 impl AgentSession {
@@ -104,12 +143,55 @@ impl AgentSession {
             session_debug: debug,
             repair_pipeline,
             guardrail_retry_count: 0,
+            allowed_tools: None,
+            learn_mode: None,
+            pending_reflection: None,
+            reflection_outbox: None,
         }
     }
 
     /// 获取 session_id
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    /// edu 学习模式控制：热更新 system_prompt + 工具白名单 + 模式名
+    ///
+    /// 由 SessionRouter 在 /sw 切课或 /mode 切换时调用。
+    /// - `prompt`: 新的系统提示词（如 scaffold 的苏格拉底式 prompt）
+    /// - `allowed_tools`: 工具白名单（None=不限，Some(空 vec)=全禁，Some(列表)=只允许这些）
+    /// - `mode`: 学习模式名（"explore" / "scaffold" / "locked"）
+    pub fn set_learn_mode(
+        &mut self,
+        prompt: Option<String>,
+        allowed_tools: Option<Vec<String>>,
+        mode: Option<String>,
+    ) {
+        if let Some(p) = prompt {
+            self.context.set_system_prompt(p);
+        }
+        self.allowed_tools = allowed_tools;
+        self.learn_mode = mode;
+        // 切换课程/学习模式时清除上一轮遗留的反思上下文，
+        // 避免旧 pending_reflection 污染新课程（下一条消息被误判为对旧课程的反思回答）。
+        self.pending_reflection = None;
+    }
+
+    /// 当前学习模式名
+    pub fn learn_mode(&self) -> Option<&str> {
+        self.learn_mode.as_deref()
+    }
+
+    /// 取出本轮产出的反思评分记录（router 在 handle_message 返回后调用）
+    ///
+    /// 取出后清空 outbox，避免重复落库。
+    pub fn take_reflection_record(&mut self) -> Option<ReflectionRecord> {
+        self.reflection_outbox.take()
+    }
+
+    /// 清除待处理的反思（如切换课程/模式时调用，避免旧反思污染新一轮）
+    pub fn clear_pending_reflection(&mut self) {
+        self.pending_reflection = None;
     }
 
     /// 处理用户消息（完整的 Agent Loop）
@@ -121,6 +203,57 @@ impl AgentSession {
             crate::tui::Role::User, user_msg,
         ));
 
+        // 1.5 edu 反思闭环（方案 B）：检测上一轮遗留的 pending_reflection
+        //
+        // 若存在且当前消息不是 slash 命令，则把这条消息当作学生对上一轮反思提示的回答，
+        // 调用 evaluate_reflection 评分，输出反馈，存入 outbox 供 router 落库，然后直接返回
+        // （反思是元认知活动，不再触发 AI 回应，避免干扰 + 省 token）。
+        if let Some(pr) = self.pending_reflection.take() {
+            if !user_msg.trim().is_empty() && !user_msg.trim().starts_with('/') {
+                use crate::edu::reflection::evaluate_reflection;
+                let conv_len = pr.conversation_length + user_msg.len();
+                let mut score = evaluate_reflection(user_msg, conv_len);
+                score.calculate_overall();
+
+                // 存入 outbox 供 router 落库
+                self.reflection_outbox = Some(ReflectionRecord {
+                    reflection_text: user_msg.to_string(),
+                    overall_score: score.overall,
+                    depth: score.depth,
+                    tools_csv: pr.tools_used.join(","),
+                    topic: pr.conversation_summary,
+                });
+
+                // 反馈给学生
+                let feedback = format!(
+                    "\n📝 **反思已记录**\n\
+                     综合评分：{:.2}/1.00 ｜ 反思深度：{:.2}\n\n\
+                     _（{}）_\n\n---",
+                    score.overall,
+                    score.depth,
+                    if score.depth > 0.6 {
+                        "深刻的反思！你分析了'为什么'，这是高质量学习的关键"
+                    } else if score.depth > 0.3 {
+                        "不错的开始，下次试着多问自己'为什么这样做'"
+                    } else {
+                        "反思偏简单，试着解释你的思考过程和理由"
+                    }
+                );
+                self.sink.on_chunk(&feedback).await;
+                self.sink.on_done().await;
+                tracing::info!(
+                    "edu 反思已评分 (深度={:.2}, 综合={:.2})",
+                    score.depth,
+                    score.overall
+                );
+                return;
+            }
+            // 是 slash 命令则保留 pending 不消费（放回去）
+            else {
+                self.pending_reflection = Some(pr);
+            }
+        }
+
         let max_rounds = self.config.max_rounds;
         let compress_ratio = self.config.compress_ratio;
         let creation_nudge_interval = self.config.creation_nudge_interval;
@@ -129,6 +262,8 @@ impl AgentSession {
 
         let mut round = 0u32;
         let mut tool_call_counter: u32 = 0;
+        // edu 反思用：收集本次对话使用的所有工具名
+        let mut tools_used_this_turn: Vec<String> = Vec::new();
         loop {
             round += 1;
             if round > max_rounds {
@@ -139,6 +274,7 @@ impl AgentSession {
             let mut final_text = String::new();
             let mut tool_calls: Vec<ToolCallData> = Vec::new();
             let mut choice_message_tool_calls: Option<Vec<crate::api::ResponseToolCall>> = None;
+            let mut raw_response_calls: Vec<crate::api::ResponseToolCall> = Vec::new();
 
             // 2a. 每 5 轮展示进化建议
             if round % 5 == 0 && round > 0 {
@@ -185,6 +321,7 @@ impl AgentSession {
                     max_tokens: Some(1024),
                     temperature: None,
                     tools: None,
+                    reasoning_effort: None,
                 };
                 let summary = match self.transport.chat(sub_request).await {
                     Ok(resp) => resp.choices.first()
@@ -236,58 +373,89 @@ impl AgentSession {
             // 3. 调用 API（先发送 typing 状态）
             self.sink.on_typing().await;
 
+            // P0: 流式调用 + P1: 动态工具筛选
             let request = ChatRequest {
                 model: self.transport.model_name().to_string(),
                 messages,
-                stream: false,
+                stream: true,   // P0: 流式
                 max_tokens: Some(4096),
                 temperature: None,
-                tools: Some(crate::tools::all_tool_defs()),
+                tools: Some(select_tools(user_msg)),   // P1: 动态筛选
+                reasoning_effort: infer_reasoning_effort(user_msg).map(|s| s.to_string()),
             };
 
-            let chat_result = tokio::time::timeout(
-                Duration::from_secs(120),
-                self.transport.chat(request),
-            ).await;
+            // P0: spawn 流式请求 + P2b: 30s 超时
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::api::ApiEvent>();
+            let transport_clone = Arc::clone(&self.transport);
+            let stream_task = tokio::spawn(async move {
+                transport_clone.chat_stream(request, tx).await
+            });
 
-            match chat_result {
-                Ok(Ok(response)) => {
-                    if let Some(choice) = response.choices.first() {
-                        tracing::debug!(
-                            "API 响应: finish_reason={:?}, text_len={}, has_tool_calls={}",
-                            choice.finish_reason,
-                            choice.message.content.as_ref().map(|s| s.len()).unwrap_or(0),
-                            choice.message.tool_calls.is_some(),
-                        );
-                        final_text = choice.message.content.clone().unwrap_or_default();
-                        if !final_text.is_empty() {
-                            self.sink.on_chunk(&final_text).await;
+            let mut thinking_buf = String::new();
+            let mut thinking_flushed = false;
+            let mut timed_out = false;
+
+            loop {
+                match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+                    Ok(Some(crate::api::ApiEvent::StreamChunk(text))) => {
+                        if !thinking_flushed && !thinking_buf.is_empty() {
+                            self.sink.on_chunk(&format_thinking_block(&thinking_buf)).await;
+                            thinking_flushed = true;
                         }
-                        if let Some(ref calls) = choice.message.tool_calls {
-                            choice_message_tool_calls = Some(calls.clone());
-                            tool_calls = calls.iter().map(|tc| ToolCallData {
+                        final_text.push_str(&text);
+                        self.sink.on_chunk(&text).await;
+                    }
+                    Ok(Some(crate::api::ApiEvent::Thinking(text))) => {
+                        thinking_buf.push_str(&text);
+                    }
+                    Ok(Some(crate::api::ApiEvent::ToolCalls(calls))) => {
+                        tracing::debug!("流式工具调用: {} 个", calls.len());
+                        for tc in &calls {
+                            raw_response_calls.push(crate::api::ResponseToolCall {
                                 id: tc.id.clone(),
-                                name: tc.function.name.clone(),
-                                arguments: tc.function.arguments.clone(),
-                            }).collect();
-                            if !tool_calls.is_empty() {
-                                tracing::debug!("检测到 {} 个工具调用", tool_calls.len());
-                                self.sink.on_tool_calls(&tool_calls).await;
-                            }
+                                call_type: Some("function".into()),
+                                function: crate::api::ResponseToolFunction {
+                                    name: tc.name.clone(),
+                                    arguments: tc.arguments.clone(),
+                                },
+                            });
+                        }
+                        tool_calls = calls;
+                        if !tool_calls.is_empty() {
+                            self.sink.on_tool_calls(&tool_calls).await;
                         }
                     }
-                }
-                Ok(Err(e)) => {
-                    tracing::error!("API 调用失败: {e}");
-                    self.sink.on_error(&format!("API 错误: {e}")).await;
-                }
-                Err(_) => {
-                    tracing::error!("API 调用超时（120s）");
-                    self.sink.on_error("API 请求超时（120秒），请检查网络或 API 服务状态").await;
+                    Ok(Some(crate::api::ApiEvent::Usage(usage))) => {
+                        self.sink.on_usage(&usage).await;
+                    }
+                    Ok(Some(crate::api::ApiEvent::ProviderMeta(_))) => {}
+                    Ok(Some(crate::api::ApiEvent::Balance(_))) => {}
+                    Ok(Some(crate::api::ApiEvent::Done)) => break,
+                    Ok(Some(crate::api::ApiEvent::Error(e))) => {
+                        tracing::error!("流式 API 错误: {e}");
+                        self.sink.on_error(&format!("API 错误: {e}")).await;
+                        break;
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        timed_out = true;
+                        tracing::error!("API 调用超时（30s）");
+                        self.sink.on_error("API 请求超时（30秒）").await;
+                        break;
+                    }
                 }
             }
 
-            tracing::debug!("Context 消息数: {}", self.context.scratch_count());
+            // Done 时未 flush 的思考流
+            if !thinking_flushed && !thinking_buf.is_empty() {
+                self.sink.on_chunk(&format_thinking_block(&thinking_buf)).await;
+            }
+            if timed_out {
+                stream_task.abort();
+            }
+            choice_message_tool_calls = if raw_response_calls.is_empty() { None } else { Some(raw_response_calls) };
+
+                        tracing::debug!("Context 消息数: {}", self.context.scratch_count());
 
             // 4.5 护栏管线 — 修复 + 校验 tool_calls
             if !tool_calls.is_empty() && self.repair_pipeline.is_some() {
@@ -342,6 +510,36 @@ impl AgentSession {
                 }
             }
 
+            // 4.6 edu 工具白名单拦截（locked 模式等）
+            if !tool_calls.is_empty() {
+                if let Some(ref allow) = self.allowed_tools {
+                    let original_count = tool_calls.len();
+                    let mut rejected: Vec<String> = Vec::new();
+                    tool_calls.retain(|tc| {
+                        let ok = allow.iter().any(|a| a == &tc.name);
+                        if !ok { rejected.push(tc.name.clone()); }
+                        ok
+                    });
+                    if !rejected.is_empty() {
+                        let msg = format!(
+                            "⚠️ 当前学习模式（{}）下以下工具不可用: {}\n请仅使用允许的工具，或改用允许的方式回答。",
+                            self.learn_mode.as_deref().unwrap_or("locked"),
+                            rejected.join(", ")
+                        );
+                        tracing::info!("edu 白名单拦截 {} 个工具: {}", rejected.len(), rejected.join(","));
+                        self.context.push_to_log(Message::new(
+                            crate::tui::Role::System,
+                            &msg,
+                        ));
+                    }
+                    if tool_calls.is_empty() && original_count > 0 {
+                        // 所有工具都被拦截 → 跳过本轮工具执行，让模型重新回答
+                        tracing::warn!("edu 白名单：本轮所有工具调用被拦截");
+                        continue;
+                    }
+                }
+            }
+
             // 5. 工具调用执行
             if !tool_calls.is_empty() {
                 tracing::info!("开始执行 {} 个工具调用", tool_calls.len());
@@ -361,6 +559,13 @@ impl AgentSession {
                     let results = dispatcher.dispatch(calls_to_dispatch).await;
                     tracing::info!("工具执行完成: {} 个结果", results.len());
                     tool_call_counter += results.len() as u32;
+
+                    // edu 反思：收集本轮用过的工具名
+                    for r in &results {
+                        if !tools_used_this_turn.contains(&r.name) {
+                            tools_used_this_turn.push(r.name.clone());
+                        }
+                    }
 
                     // 安全检查: 全局工具调用次数限制
                     const MAX_TOTAL_TOOL_CALLS: u32 = 200;
@@ -401,13 +606,19 @@ impl AgentSession {
                             continue;
                         }
                         let mut output = r.output.clone();
-                        let lines_before = output.lines().count();
-                        if output.len() > tool_result_max_chars {
-                            let truncated: String = output.chars().take(tool_result_max_chars).collect();
-                            let lines_after = truncated.lines().count();
-                            output = format!("{}\n... (共{}行, 截断{}行)", truncated, lines_before, lines_before - lines_after);
+                        // P3a: 分级截断 + P3b: 头尾保留
+                        let max_chars = max_output_for_tool(&r.name, tool_result_max_chars);
+                        if output.len() > max_chars {
+                            let lines_before = output.lines().count();
+                            let head_chars = max_chars * 3 / 4;
+                            let tail_chars = max_chars / 4;
+                            let head: String = output.chars().take(head_chars).collect();
+                            let tail: String = output.chars().rev().take(tail_chars)
+                                .collect::<String>().chars().rev().collect();
+                            output = format!("{}\n\n... [省略 {} 字, 共 {} 行] ...\n\n{}",
+                                head, output.len() - max_chars, lines_before, tail);
                         }
-                        let result_msg = if r.success {
+                                                let result_msg = if r.success {
                             format!("工具「{}」执行成功 ({}ms):\n{}", r.name, r.duration_ms, output)
                         } else {
                             format!("工具「{}」执行失败:\n{}", r.name, output)
@@ -457,7 +668,7 @@ impl AgentSession {
             }
             // 6b. 自动技能提炼
             if creation_nudge_interval > 0 && tool_call_counter >= creation_nudge_interval && !user_msg.is_empty() {
-                tool_call_counter = 0;
+                let _ = std::mem::replace(&mut tool_call_counter, 0);
                 let nudge_msg = user_msg.to_string();
                 let nudge_text = final_text.clone();
                 let _se = self.skill_engine.clone();
@@ -487,8 +698,171 @@ impl AgentSession {
                     }
                 });
             }
+            // 6c. edu 反思提示（仅 edu 学习模式）
+            if self.learn_mode.is_some() && !user_msg.is_empty() {
+                let mode = self.learn_mode.clone().unwrap_or_default();
+                // 注意：final_text.len() 是字节数，[..200] 按字节切会在中文字符边界 panic。
+                // 改为按字符数截断，保证 UTF-8 安全。
+                let summary = if final_text.chars().count() > 200 {
+                    let mut s: String = final_text.chars().take(200).collect();
+                    s.push_str("...");
+                    s
+                } else {
+                    final_text.clone()
+                };
+                let prompt = crate::edu::reflection::generate_reflection_prompt(
+                    &summary,
+                    &tools_used_this_turn,
+                    &mode,
+                );
+                // 通过 sink 输出反思提示（追加在回答之后）
+                let reflection_text = format!(
+                    "\n\n---\n🤔 **学习反思**\n{}\n\n_（提示：好的反思分析\"为什么\"，而不只是总结）_",
+                    prompt.question,
+                );
+                self.sink.on_chunk(&reflection_text).await;
+                tracing::info!("edu 反思提示已生成 (模式={}, 工具={:?})", mode, tools_used_this_turn);
+
+                // 设置 pending_reflection，下一轮 handle_message 入口会检测并评分
+                self.pending_reflection = Some(PendingReflection {
+                    conversation_summary: summary,
+                    tools_used: tools_used_this_turn.clone(),
+                    mode,
+                    conversation_length: final_text.chars().count() + user_msg.chars().count(),
+                });
+            }
+
             self.sink.on_done().await;
             break;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// reasoning_effort 推断（P2 动态思考强度）
+//
+// 根据用户消息特征推断合适的思考强度，对 omniroute/GLM-5.2 等支持 thinking
+// 的模型生效；对不支持的模型发送该参数会被忽略（无副作用）。
+//
+// 判断依据：关键词 + 消息长度
+// ---------------------------------------------------------------------------
+
+fn infer_reasoning_effort(user_msg: &str) -> Option<&'static str> {
+    let msg = user_msg.trim();
+    let len = msg.chars().count();
+
+    // 1. 复杂推理类（分析/设计/重构/对比/架构/why）→ 高 effort 思考更深（优先级最高）
+    let complex_markers = [
+        "分析", "设计", "重构", "优化", "对比", "比较", "为什么", "为何", "权衡",
+        "architecture", "架构", "debug", "调试", "根因", "explain", "方案设计",
+        "review", "审查", "评估",
+    ];
+    if complex_markers.iter().any(|m| msg.to_lowercase().contains(m)) || len > 500 {
+        return Some("high");
+    }
+
+    // 2. 简单工具调用类（读取/查看/运行/list/cat 等）→ 低 effort 省 tokens
+    let simple_markers = [
+        "读取", "查看", "看下", "看一下", "运行", "执行", "列出", "list", "show", "cat",
+        "ls ", "状态", "status", "当前目录", "pwd", "是什么", "在哪", "多少",
+    ];
+    if simple_markers.iter().any(|m| msg.to_lowercase().contains(m)) {
+        return Some("low");
+    }
+
+    // 3. 极短消息（打招呼、简单确认，≤ 2 字符或命中 trivial 词表）→ 不触发思考
+    let trivial_markers = ["hi", "hello", "你好", "嗯", "ok", "好的", "谢谢", "继续", "再见"];
+    if len <= 2 || trivial_markers.iter().any(|m| msg.eq_ignore_ascii_case(m)) {
+        return None;
+    }
+
+    // 4. 默认（中等对话、工具编排）→ medium
+    Some("medium")
+}
+
+
+// ---------------------------------------------------------------------------
+// 工具调用优化辅助函数 (P0/P1/P3a)
+// ---------------------------------------------------------------------------
+
+/// P1: 按消息内容动态筛选工具列表，减少 prompt token 开销
+fn select_tools(user_msg: &str) -> Vec<crate::api::ToolDef> {
+    let all = crate::tools::all_tool_defs();
+    let msg = user_msg.to_lowercase();
+    let mut wanted: Vec<&str> = vec![
+        "read_file", "write_file", "run_command", "get_current_time",
+        "memory", "search_content", "glob",
+    ];
+    if msg.contains("技能") || msg.contains("skill") {
+        wanted.extend(["run_skill", "skill_list", "skill_search", "skill_create", "skill_patch", "skill_manage"]);
+    }
+    if msg.contains("搜索") || msg.contains("查一下") || msg.contains("search") || msg.contains("百度") {
+        wanted.push("web_search");
+    }
+    if msg.contains("网页") || msg.contains("url") || msg.contains("fetch") {
+        wanted.push("web_fetch");
+    }
+    if msg.contains("excel") || msg.contains("表格") || msg.contains("xlsx") {
+        wanted.extend(["read_excel", "write_excel"]);
+    }
+    if msg.contains("word") || msg.contains("docx") || msg.contains("文档") {
+        wanted.extend(["read_docx", "write_docx"]);
+    }
+    if msg.contains("ppt") || msg.contains("pptx") || msg.contains("幻灯片") {
+        wanted.push("read_pptx");
+    }
+    if msg.contains("pdf") {
+        wanted.push("read_pdf");
+    }
+    if msg.contains("解析") || msg.contains("parse") || msg.contains("截图") {
+        wanted.extend(["parse_document", "screenshot_document", "check_document_complexity"]);
+    }
+    if msg.contains("委派") || msg.contains("delegate") || msg.contains("子任务") {
+        wanted.push("delegate_task");
+    }
+    let filtered: Vec<crate::api::ToolDef> = all.iter()
+        .filter(|t| wanted.contains(&t.function.name.as_str()))
+        .cloned()
+        .collect();
+    if filtered.len() >= 5 {
+        tracing::debug!("工具筛选: {} → {} 个", all.len(), filtered.len());
+        filtered
+    } else {
+        all
+    }
+}
+
+/// P3a: 按工具类型返回最大输出字符数
+fn max_output_for_tool(name: &str, default_max: usize) -> usize {
+    match name {
+        "run_command" => 5000.min(default_max),
+        "web_search" => 4000.min(default_max),
+        "web_fetch" => 8000.min(default_max),
+        "read_file" | "read_pdf" => 10000.min(default_max),
+        "read_docx" | "read_pptx" | "read_excel" => 8000.min(default_max),
+        "delegate_task" => default_max,
+        "search_content" | "glob" => 5000.min(default_max),
+        _ => 5000.min(default_max),
+    }
+}
+
+/// P0: 格式化思考流为 markdown 引用块
+fn format_thinking_block(thinking: &str) -> String {
+    let cc = thinking.chars().count();
+    if cc > 200 {
+        let head: String = thinking.chars().take(180).collect();
+        format!("🤔 **思考过程** ({}字)
+> {}
+
+", cc, head.replace("
+", "
+> "))
+    } else {
+        format!("🤔 **思考过程**
+> {}
+
+", thinking.replace("
+", "
+> "))
     }
 }

@@ -193,6 +193,89 @@ impl TeacherManager {
         }
         Ok(())
     }
+
+    /// 导入课程到头（班级）
+    ///
+    /// 将课程模板导入到指定的头（班级），创建覆盖记录。
+    /// 导入后该头可独立修改课程参数，不影响其他头和课程模板。
+    pub fn import_course_to_class(
+        &self,
+        course_code: &str,
+        class_name: &str,
+    ) -> Result<crate::edu::store::ClassCourseOverride, EduError> {
+        let course = self.lookup_course(course_code)?;
+        let class = self.lookup_class(course_code, course.id, class_name)?;
+        self.store.import_course_to_class(class.id, course.id)
+    }
+
+    /// 更新某个头的课程参数覆盖（只影响该头）
+    pub fn update_class_course_override(
+        &self,
+        course_code: &str,
+        class_name: &str,
+        field: &str,
+        value: &str,
+    ) -> Result<(), EduError> {
+        let course = self.lookup_course(course_code)?;
+        let class = self.lookup_class(course_code, course.id, class_name)?;
+
+        // 按 field 名映射到 store 层的三个参数
+        let (tools, desc, modes) = match field.to_lowercase().as_str() {
+            "tools" | "tool" | "tools_whitelist" => (Some(value), None, None),
+            "desc" | "description" | "描述" => (None, Some(value), None),
+            "modes" | "mode" | "allowed_modes" => (None, None, Some(value)),
+            _ => {
+                return Err(EduError::NotFound(format!(
+                    "未知字段 '{field}'，可用: tools / desc / modes"
+                )))
+            }
+        };
+
+        self.store
+            .update_class_course_override(class.id, course.id, tools, desc, modes)
+    }
+
+    /// 获取某个头生效的课程参数（课程模板 + 头覆盖合并）
+    pub fn resolve_course_for_class(
+        &self,
+        course_code: &str,
+        class_name: &str,
+    ) -> Result<crate::edu::store::Course, EduError> {
+        let course = self.lookup_course(course_code)?;
+        let class = self.lookup_class(course_code, course.id, class_name)?;
+        self.store.resolve_course_for_class(class.id, &course)
+    }
+
+    /// 按课程码查课程模板，不存在则报错
+    fn lookup_course(&self, course_code: &str) -> Result<crate::edu::store::Course, EduError> {
+        self.store
+            .get_course(course_code)?
+            .ok_or_else(|| EduError::NotFound(format!("课程 '{course_code}' 不存在")))
+    }
+
+    /// 在指定课程下按名称查找头（班级），不存在或重名则报错。
+    ///
+    /// 重名检测：`edu_classes.name` 无唯一约束，若同一课程存在多个同名头，
+    /// 静默取第一个会导致「改了 A 实际改了 B」的混淆，此处直接拒绝。
+    fn lookup_class(
+        &self,
+        course_code: &str,
+        course_id: i64,
+        class_name: &str,
+    ) -> Result<crate::edu::store::Class, EduError> {
+        let classes = self.store.get_classes_by_course(course_id)?;
+        let matches: Vec<_> = classes.iter().filter(|c| c.name == class_name).collect();
+        match matches.len() {
+            0 => Err(EduError::NotFound(format!(
+                "头（班级）'{class_name}' 不属于课程 '{course_code}'，请先用 /class create {course_code} {class_name} 创建"
+            ))),
+            1 => Ok(matches[0].clone()),
+            _ => Err(EduError::NotFound(format!(
+                "课程 '{course_code}' 下存在 {} 个名为 '{class_name}' 的头（班级），无法定位。请用 class_id 或先重命名消除重名",
+                matches.len()
+            ))),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -370,8 +453,8 @@ mod tests {
     fn test_teacher_class_lesson_student() {
         let (_tmp, mgr) = setup_mgr();
         let teacher = mgr.init_teacher("老师", "p").unwrap();
-        let course = mgr.create_course(teacher, "TS201", "测试").unwrap();
-        let class = mgr.create_class("TS201", "一班").unwrap();
+        let _course = mgr.create_course(teacher, "TS201", "测试").unwrap();
+        let _class = mgr.create_class("TS201", "一班").unwrap();
 
         let lesson = mgr.create_lesson("TS201", "一班", 1, "第一课").unwrap();
         assert_eq!(lesson.lesson_num, 1);
@@ -403,5 +486,47 @@ mod tests {
         // 验证学生存在
         let s1 = mgr.store.get_student("2024001").unwrap().unwrap();
         assert_eq!(s1.name, "张三");
+    }
+
+    #[test]
+    fn test_class_course_override_normal_flow() {
+        let (_tmp, mgr) = setup_mgr();
+        let teacher = mgr.init_teacher("老师", "p").unwrap();
+        let _course = mgr.create_course(teacher, "OC101", "覆盖测试").unwrap();
+        let _class = mgr.create_class("OC101", "头A").unwrap();
+
+        // 导入
+        mgr.import_course_to_class("OC101", "头A").unwrap();
+
+        // 更新工具白名单
+        mgr.update_class_course_override(
+            "OC101",
+            "头A",
+            "tools",
+            r#"["read_file","write_file"]"#,
+        )
+        .unwrap();
+
+        // resolve 应返回覆盖值
+        let resolved = mgr.resolve_course_for_class("OC101", "头A").unwrap();
+        assert!(resolved.tools_whitelist.contains("write_file"));
+    }
+
+    #[test]
+    fn test_lookup_class_rejects_duplicate_names() {
+        // 同一课程下两个同名头（班级），lookup_class 应拒绝而非静默取第一个
+        let (_tmp, mgr) = setup_mgr();
+        let teacher = mgr.init_teacher("老师", "p").unwrap();
+        let course = mgr.create_course(teacher, "DUP", "重名测试").unwrap();
+        // 通过 store 层直接创建两个同名 class（store 不去重）
+        mgr.store.create_class("重名头", course.id).unwrap();
+        mgr.store.create_class("重名头", course.id).unwrap();
+
+        // 三个方法都应因重名报错
+        assert!(mgr.import_course_to_class("DUP", "重名头").is_err());
+        assert!(mgr
+            .update_class_course_override("DUP", "重名头", "desc", "x")
+            .is_err());
+        assert!(mgr.resolve_course_for_class("DUP", "重名头").is_err());
     }
 }

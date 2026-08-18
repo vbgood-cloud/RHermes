@@ -3,7 +3,7 @@
 //! 管理课程上下文（CourseProfile），支持 /sw 命令切换课程。
 //! 三种学习模式：explore（探索）/ scaffold（引导）/ locked（考试）。
 
-use crate::edu::store::{Course, EduStore, EduError};
+use crate::edu::store::Course;
 
 /// 学习模式
 #[derive(Debug, Clone, PartialEq)]
@@ -20,7 +20,7 @@ impl LearnMode {
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "scaffold" | "引导" => LearnMode::Scaffold,
-            "locked" | "locked" | "考试" => LearnMode::Locked,
+            "locked" | "考试" => LearnMode::Locked,
             _ => LearnMode::Explore,
         }
     }

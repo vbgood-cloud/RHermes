@@ -321,6 +321,21 @@ impl Context {
         &self.system_prompt
     }
 
+    /// 热更新系统提示词（用于 edu 学习模式切换）
+    ///
+    /// 重建三层 prefix 并重新冻结。已有的对话日志保留。
+    /// 注意：这会使 DeepSeek prefix cache 失效，应仅在模式切换时调用。
+    pub fn set_system_prompt(&mut self, prompt: impl Into<String>) {
+        self.system_prompt = prompt.into();
+        // 用新的 system_prompt 重建 layer1，保留原 layer2/layer3
+        let layer2 = self.prefix_mgr.layer2().to_string();
+        let layer3 = self.prefix_mgr.layer3().to_string();
+        self.prefix_mgr = PrefixCacheManager::new(&self.system_prompt);
+        self.prefix_mgr.set_layer2(layer2);
+        self.prefix_mgr.set_layer3(layer3);
+        self.immutable_prefix = self.prefix_mgr.freeze();
+    }
+
     /// 返回完整的消息列表（用于显示）
     pub fn all_messages(&self) -> Vec<Message> {
         // 从 raw bytes 反序列化出所有消息

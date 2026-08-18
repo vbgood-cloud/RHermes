@@ -144,8 +144,44 @@ pub fn create_transport(
         }
     };
 
-    // 包装到 ProviderPool（熔断）
-    let pool = ProviderPool::single(transport, circuit_breaker_threshold, circuit_breaker_cooldown_secs);
+    // P2a: 多 Provider 构建 — 收集所有已配置的 provider
+    let mut transports: Vec<(Arc<dyn Transport>, u32)> = vec![(transport, 1)];
+
+    // 遍历 config.providers，为主 provider 之外的其他 provider 创建 transport
+    for (name, pcfg) in &config.providers {
+        if name == &provider_name {
+            continue; // 主 provider 已创建
+        }
+        // 跳过没有显式配置 base_url 的 provider（通常是 Default 预填的占位）
+        if pcfg.base_url.is_none() {
+            tracing::debug!("跳过 provider {} (无显式 base_url)", name);
+            continue;
+        }
+        let base_url = pcfg.base_url.clone()
+            .unwrap_or_else(|| default_provider_base_url(name).into());
+        let p_model = pcfg.model.clone()
+            .unwrap_or_else(|| model.to_string());
+        let p_key = if pcfg.api_key.is_empty() {
+            config.api_key.clone()
+        } else {
+            pcfg.api_key.clone()
+        };
+        let mut tc = config.clone();
+        tc.api.base_url = base_url;
+        tc.api.model = p_model;
+        tc.api_key = p_key;
+        let t = Arc::new(DeepSeekTransport::new(&tc));
+        tracing::info!("添加 fallback provider: {} (model={})", name, tc.api.model);
+        // fallback provider 权重较低
+        transports.push((t, 1));
+    }
+
+    let pool = if transports.len() == 1 {
+        ProviderPool::single(transports[0].0.clone(), circuit_breaker_threshold, circuit_breaker_cooldown_secs)
+    } else {
+        tracing::info!("ProviderPool 包含 {} 个 provider", transports.len());
+        ProviderPool::with_providers(transports, circuit_breaker_threshold, circuit_breaker_cooldown_secs)
+    };
     Ok(Arc::new(pool))
 }
 

@@ -142,7 +142,13 @@ impl Transport for DeepSeekTransport {
         }
 
         // 解析 SSE 流
+        // 解析 OMNIRoute 在 SSE 流末尾返回的注释行元数据
+        // 例如 ": x-omniroute-model=glm-4.7-flash" ": x-omniroute-latency-ms=70"
+        let mut provider_meta = crate::api::ProviderMeta::default();
+
         let mut buffer = String::new();
+        // P0 fix: 累积流式 tool_calls（SSE 中 name 和 arguments 分多块返回）
+        let mut acc_tool_calls: std::collections::BTreeMap<i32, (String, String, String)> = std::collections::BTreeMap::new();
         let mut stream = response.bytes_stream();
 
         while let Some(chunk_result) = stream.next().await {
@@ -155,6 +161,23 @@ impl Transport for DeepSeekTransport {
                 buffer = buffer[event_end + 2..].to_string();
 
                 for line in event.lines() {
+                    // OMNIRoute 注释行（": x-omniroute-xxx=yyy"）— 累积元数据
+                    if let Some(rest) = line.strip_prefix(": x-omniroute-") {
+                        if let Some((k, v)) = rest.split_once('=') {
+                            let v = v.trim();
+                            match k {
+                                "model" => provider_meta.routed_model = Some(v.to_string()),
+                                "provider" => provider_meta.provider = Some(v.to_string()),
+                                "latency-ms" => provider_meta.latency_ms = v.parse().ok(),
+                                "response-cost" => provider_meta.cost = v.parse().ok(),
+                                "cache-hit" => provider_meta.cache_hit = Some(v == "true"),
+                                "tokens-in" => provider_meta.tokens_in = v.parse().ok(),
+                                "tokens-out" => provider_meta.tokens_out = v.parse().ok(),
+                                _ => {}
+                            }
+                        }
+                        continue;
+                    }
                     if let Some(data) = line.strip_prefix("data: ") {
                         let data = data.trim();
                         if data == "[DONE]" {
@@ -176,25 +199,21 @@ impl Transport for DeepSeekTransport {
                                             return Ok(());
                                         }
                                     }
+                                    // OMNIRoute / GLM / DeepSeek-R1 的思考流，独立分发
+                                    if let Some(ref reasoning) = choice.delta.reasoning_content {
+                                        if !reasoning.is_empty() {
+                                        }
+                                    }
+                                    // P0 fix: 累积 tool_calls delta（不直接发送）
                                     if let Some(ref calls) = choice.delta.tool_calls {
-                                        let tool_data: Vec<ToolCallData> = calls
-                                            .iter()
-                                            .map(|tc| ToolCallData {
-                                                id: tc.id.clone().unwrap_or_default(),
-                                                name: tc
-                                                    .function
-                                                    .as_ref()
-                                                    .and_then(|f| f.name.clone())
-                                                    .unwrap_or_default(),
-                                                arguments: tc
-                                                    .function
-                                                    .as_ref()
-                                                    .and_then(|f| f.arguments.clone())
-                                                    .unwrap_or_default(),
-                                            })
-                                            .collect();
-                                        if !tool_data.is_empty() {
-                                            let _ = tx.send(ApiEvent::ToolCalls(tool_data));
+                                        for tc in calls {
+                                            let idx = tc.index;
+                                            let entry = acc_tool_calls.entry(idx).or_insert_with(|| (String::new(), String::new(), String::new()));
+                                            if let Some(ref id) = tc.id { entry.0 = id.clone(); }
+                                            if let Some(ref f) = tc.function {
+                                                if let Some(ref name) = f.name { entry.1 = name.clone(); }
+                                                if let Some(ref args) = f.arguments { entry.2.push_str(args); }
+                                            }
                                         }
                                     }
                                 }
@@ -206,6 +225,27 @@ impl Transport for DeepSeekTransport {
             }
         }
 
+        // P0 fix: 流结束前发送累积的 tool_calls
+        if !acc_tool_calls.is_empty() {
+            let tool_data: Vec<ToolCallData> = acc_tool_calls.values()
+                .map(|(id, name, args)| ToolCallData {
+                    id: id.clone(),
+                    name: name.clone(),
+                    arguments: args.clone(),
+                })
+                .collect();
+            tracing::debug!("流式累积 {} 个 tool_calls", tool_data.len());
+            let _ = tx.send(ApiEvent::ToolCalls(tool_data));
+        }
+
+        // 流结束前发送 ProviderMeta（如果收集到了任意字段）
+        if provider_meta.routed_model.is_some()
+            || provider_meta.provider.is_some()
+            || provider_meta.latency_ms.is_some()
+            || provider_meta.cost.is_some()
+            || provider_meta.cache_hit.is_some()
+        {
+        }
         let _ = tx.send(ApiEvent::Done);
         Ok(())
     }

@@ -74,7 +74,29 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
         }
         "status" => {
             println!("📊 学习状态");
-            println!("   （Phase 4+ 实现）");
+            println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+        }
+        "courses" => {
+            println!("📚 可选课程列表");
+            println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+        }
+        "profile" => {
+            println!("👤 个人学习档案");
+            println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+        }
+        "report" => {
+            println!("📝 成长报告");
+            println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+        }
+        "mode" => {
+            let mode = args.first().map(String::as_str).unwrap_or("");
+            if mode.is_empty() {
+                println!("🎯 当前学习模式: explore");
+                println!("   可切换: rhermes-stu mode <explore|scaffold>");
+            } else {
+                println!("🎯 切换学习模式 → {mode}");
+                println!("   （需要先认证 — 运行 rhermes-stu login <学号> <密码>）");
+            }
         }
         "auth" => {
             auth::handle_auth_command(args, &db_path);
@@ -88,6 +110,10 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
             println!("  rhermes edu auth <login|verify>   认证");
             println!("  rhermes edu join <课程码>          加入课程");
             println!("  rhermes edu status                 学习状态");
+            println!("  rhermes edu courses                可选课程");
+            println!("  rhermes edu profile                学习档案");
+            println!("  rhermes edu report                 成长报告");
+            println!("  rhermes edu mode [explore|scaffold] 学习模式");
         }
     }
 }
@@ -221,7 +247,7 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
                     let Some(c) = c else { return format!("❌ 课程 '{course}' 不存在") };
                     let classes = mgr.store.get_classes_by_course(c.id).unwrap_or_default();
                     let cls = classes.iter().find(|cl| cl.name == class_name);
-                    let Some(cls) = cls else { return format!("❌ 班级 '{class_name}' 不存在") };
+                    let Some(_cls) = cls else { return format!("❌ 班级 '{class_name}' 不存在") };
 
                     // 尝试解析内联学生数据
                     let rest_args: Vec<&str> = args[3..].to_vec();
@@ -468,7 +494,7 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
                     let course = args.get(2).copied().unwrap_or("");
                     let class_name = args.get(3).copied().unwrap_or("");
                     let target = args.get(4).copied().unwrap_or(""); // lesson 序号 或 assignment id 或 "all"/"upto"
-                    let target2 = args.get(5).copied().unwrap_or("");
+                    let _target2 = args.get(5).copied().unwrap_or("");
                     if course.is_empty() || class_name.is_empty() {
                         return "用法: /class publish <lesson|assignment|all|upto> <课程码> <班级> [序号/id]".to_string();
                     }
@@ -654,6 +680,52 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
                     buf
                 }
                 Ok(None) => "（尚未提交此作业）".to_string(),
+                Err(e) => format!("❌ {e}"),
+            }
+        }
+
+        // ===== 课程导入到头 + 按头独立修改 =====
+        "/import" if role == "teacher" => {
+            let mgr = match teacher::TeacherManager::new(&db_path) {
+                Ok(m) => m,
+                Err(e) => return format!("❌ {e}"),
+            };
+            let course_code = args.get(0).copied().unwrap_or("");
+            let class_name = args.get(1).copied().unwrap_or("");
+            if course_code.is_empty() || class_name.is_empty() {
+                return "用法: /import <课程码> <班级名>\n  将课程导入到该头，之后该头可独立修改（不影响其他头）".to_string();
+            }
+            match mgr.import_course_to_class(course_code, class_name) {
+                Ok(_) => format!(
+                    "✅ 课程 {course_code} 已导入到「{class_name}」\n\
+                     该头现在可以独立修改课程参数，不影响其他头。\n\
+                     修改: /set {course_code} {class_name} <tools|desc|modes> <值>"
+                ),
+                Err(e) => format!("❌ {e}"),
+            }
+        }
+        "/set" if role == "teacher" => {
+            let mgr = match teacher::TeacherManager::new(&db_path) {
+                Ok(m) => m,
+                Err(e) => return format!("❌ {e}"),
+            };
+            let course_code = args.get(0).copied().unwrap_or("");
+            let class_name = args.get(1).copied().unwrap_or("");
+            let field = args.get(2).copied().unwrap_or("");
+            let value = args.get(3..).map(|v| v.join(" ")).unwrap_or_default();
+            if course_code.is_empty() || class_name.is_empty() || field.is_empty() {
+                return "用法: /set <课程码> <班级名> <字段> <值>\n\
+                         字段:\n  \
+                           tools  — 工具白名单(JSON数组, 如 [\"read_file\",\"glob\"])\n  \
+                           desc   — 课程描述\n  \
+                           modes  — 允许模式(JSON数组, 如 [\"explore\",\"scaffold\"])\n\
+                         示例: /set CS101 信工一班 tools [\"read_file\",\"glob\"]".to_string();
+            }
+            match mgr.update_class_course_override(course_code, class_name, field, &value) {
+                Ok(_) => format!(
+                    "✅ 「{class_name}」的课程 {course_code} 已更新: {field}\n\
+                     （此修改只影响该头，不影响其他头和课程模板）"
+                ),
                 Err(e) => format!("❌ {e}"),
             }
         }

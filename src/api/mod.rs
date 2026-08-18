@@ -35,6 +35,10 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDef>>,
+    /// OMNIRoute / OpenAI 兼容的思考强度控制：low|medium|high|xhigh
+    /// None 时不序列化，向后兼容现有 DeepSeek provider
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 /// 工具定义（OpenAI 格式）
@@ -357,6 +361,8 @@ pub struct ResponseMessage {
     pub role: String,
     pub content: Option<String>,
     #[serde(default)]
+    pub reasoning_content: Option<String>,
+    #[serde(default)]
     pub tool_calls: Option<Vec<ResponseToolCall>>,
 }
 
@@ -384,6 +390,12 @@ pub struct Usage {
     pub prompt_cache_hit_tokens: u32,
     #[serde(default)]
     pub prompt_cache_miss_tokens: u32,
+    /// OMNIRoute / GLM 系列返回的缓存命中 tokens（流式响应里）
+    #[serde(default)]
+    pub cached_tokens: Option<u32>,
+    /// 思考过程消耗的 tokens（reasoning 模型）
+    #[serde(default)]
+    pub reasoning_tokens: Option<u32>,
 }
 
 /// SSE 流式事件
@@ -414,6 +426,36 @@ pub struct BalanceResponse {
     pub balance_infos: Vec<BalanceInfo>,
 }
 
+/// Provider 元信息（OMNIRoute 响应尾注 / 自定义响应头）
+///
+/// OMNIRoute 在 SSE 流末尾以注释行形式返回路由决策，例如：
+///   : x-omniroute-cache-hit=false
+///   : x-omniroute-latency-ms=70
+///   : x-omniroute-response-cost=0.0001
+///   : x-omniroute-tokens-in=6
+///   : x-omniroute-tokens-out=5
+///   : x-omniroute-model=glm-4.7-flash
+///   : x-omniroute-provider=glmcn
+///
+/// 这些信息用于状态栏展示和性能自优化。
+#[derive(Debug, Clone, Default)]
+pub struct ProviderMeta {
+    /// OMNIRoute 实际路由到的后端模型（如 "glm-4.7-flash"）
+    pub routed_model: Option<String>,
+    /// 实际服务的 provider 名（如 "glmcn"）
+    pub provider: Option<String>,
+    /// 后端处理延迟（毫秒）
+    pub latency_ms: Option<u64>,
+    /// 本次请求实际花费
+    pub cost: Option<f64>,
+    /// 缓存是否命中
+    pub cache_hit: Option<bool>,
+    /// 输入 tokens（后端口径）
+    pub tokens_in: Option<u64>,
+    /// 输出 tokens（后端口径）
+    pub tokens_out: Option<u64>,
+}
+
 /// API → TUI 事件（GUI 友好格式）
 #[derive(Debug)]
 pub enum ApiEvent {
@@ -427,6 +469,10 @@ pub enum ApiEvent {
     ToolCalls(Vec<ToolCallData>),
     /// 余额查询结果（元）
     Balance(f64),
+    /// 思考流（reasoning 模型的 reasoning_content，独立于正文）
+    Thinking(String),
+    /// Provider 元信息（OMNIRoute 路由决策、延迟、成本等）
+    ProviderMeta(ProviderMeta),
     /// 错误
     Error(String),
 }
@@ -771,6 +817,9 @@ pub(crate) struct StreamDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<StreamToolCall>>,
+    /// OMNIRoute / GLM / DeepSeek-R1 等模型的思考流（与 content 并行，单独字段）
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -891,6 +940,7 @@ mod tests {
             max_tokens: Some(4096),
             temperature: None,
             tools: None,
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_string(&req).unwrap();

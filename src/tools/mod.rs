@@ -14,3 +14,4 @@ mod builtin;
 mod dispatcher;
 pub mod search;
 pub mod office;
+pub mod liteparse;

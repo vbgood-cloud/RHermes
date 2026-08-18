@@ -523,7 +523,7 @@ impl RepairPipeline {
 
         // 来源 A: API 返回的 tool_calls（修复 arguments JSON）
         if let Some(api_calls) = api_tool_calls {
-            for (i, tc) in api_calls.iter().enumerate() {
+            for (_i, tc) in api_calls.iter().enumerate() {
                 // 尝试解析 arguments JSON
                 let args_str = &tc.function.arguments;
                 let args: Value = if args_str.is_empty() {
