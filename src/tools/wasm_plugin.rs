@@ -79,12 +79,19 @@ pub struct WasmPluginTool {
 }
 
 impl WasmPluginTool {
-    /// 从 .wasm 文件加载并预提取元数据
+    /// 从 .wasm 文件加载并预提取元数据（权限来自 <name>.host.toml）
     pub fn load(path: &Path, config: &WasmPluginConfig) -> Result<Self, String> {
+        Self::load_with_access(path, config, load_access_config(path))
+    }
+
+    /// 从 .wasm 文件加载，权限显式注入（Plugin 系统 registry.toml 用）
+    pub fn load_with_access(
+        path: &Path,
+        config: &WasmPluginConfig,
+        access: HostAccessConfig,
+    ) -> Result<Self, String> {
         let wasm_bytes = std::fs::read(path)
             .map_err(|e| format!("读取 {path:?} 失败: {e}"))?;
-
-        let access = load_access_config(path);
 
         // 启动一次提取元数据
         let manifest = build_manifest(&wasm_bytes, config, &access);

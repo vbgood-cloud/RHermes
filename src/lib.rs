@@ -17,6 +17,7 @@ pub mod edu;
 pub mod gateway;
 pub mod init;
 pub mod mcp;
+pub mod plugin;
 pub mod provider;
 pub mod scheduler;
 pub mod tools;

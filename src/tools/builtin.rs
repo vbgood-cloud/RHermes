@@ -1967,6 +1967,77 @@ pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
 /// 在 full_registry() 完成后初始化，供 all_tool_defs() 使用
 static GLOBAL_REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
 
+// ---------------------------------------------------------------------------
+// run_plugin 工具 — Agent 经 PluginRouter 调用插件（P28）
+// ---------------------------------------------------------------------------
+
+/// 调用已加载插件（Wasm 沙盒 / Markdown 技能）
+pub struct RunPlugin;
+
+#[async_trait::async_trait]
+impl Tool for RunPlugin {
+    fn name(&self) -> String {
+        "run_plugin".to_string()
+    }
+
+    fn description(&self) -> String {
+        "调用已加载的插件。name=__list__ 列出全部插件；SkillMd 插件返回其文档内容供阅读；Wasm 插件执行计算。".to_string()
+    }
+
+    fn parallel_safe(&self) -> bool {
+        true // Router 内部 RwLock；Wasm 副作用由沙盒权限控制
+    }
+
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::new("name", ParamType::String, "插件名称（或 __list__）", true),
+            ParamDef::new("input", ParamType::String, "输入参数（JSON 字符串，可选）", false),
+        ]
+    }
+
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        let name = args
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            return Err(ToolError::MissingParam("name".into()));
+        }
+
+        let router = crate::plugin::global_router();
+
+        if name == "__list__" {
+            let descs = router.list_descriptors().await;
+            if descs.is_empty() {
+                return Ok("无已加载插件。将 .wasm/.md 放入 plugins/ 目录或配置 plugins/registry.toml。".to_string());
+            }
+            let lines: Vec<String> = descs
+                .iter()
+                .map(|d| format!("- {} [{}]{}: {}", d.name, d.source, d.version.as_deref().map(|v| format!(" v{v}")).unwrap_or_default(), d.description))
+                .collect();
+            return Ok(format!("可用插件:\n{}", lines.join("\n")));
+        }
+
+        let input: Value = match args.get("input") {
+            Some(v) if v.is_string() => {
+                serde_json::from_str(v.as_str().unwrap_or("{}"))
+                    .unwrap_or_else(|_| serde_json::json!({"raw": v}))
+            }
+            Some(v) => v.clone(),
+            None => serde_json::json!({}),
+        };
+
+        match router.call(&name, &input).await {
+            Ok(out) if out.success => Ok(out.output),
+            Ok(out) => Err(ToolError::ExecutionFailed(
+                out.error.unwrap_or_else(|| "插件返回失败".into()),
+            )),
+            Err(e) => Err(ToolError::ExecutionFailed(e.to_string())),
+        }
+    }
+}
+
 /// 获取所有工具定义（内置 + MCP）
 ///
 /// 从 GLOBAL_REGISTRY 动态生成 ToolDef，确保与注册表一致。
@@ -2078,7 +2149,7 @@ pub async fn full_registry(mcp_config: &crate::core::McpConfig) -> (ToolRegistry
         });
     }
 
-    // ── WASM 插件注册 ──
+    // ── WASM 插件注册（Tool 直挂，向后兼容）──
     if config.wasm.enabled {
         let wasm_tools = crate::tools::wasm_plugin::load_plugins(
             &config.wasm.plugins_dir,
@@ -2086,6 +2157,20 @@ pub async fn full_registry(mcp_config: &crate::core::McpConfig) -> (ToolRegistry
         );
         if !wasm_tools.is_empty() {
             registry = registry.register_all(wasm_tools);
+        }
+    }
+
+    // ── PluginRouter 初始化（P28：registry.toml 显式声明优先；无配置时扫描 plugins/）──
+    {
+        let sandbox = crate::plugin::WasmSandboxConfig {
+            max_memory: config.wasm.max_memory,
+            timeout_ms: config.wasm.timeout_ms,
+        };
+        let plugins_dir = std::path::PathBuf::from(&config.wasm.plugins_dir);
+        let n = crate::plugin::init_plugin_router(&plugins_dir, &sandbox).await;
+        if n > 0 {
+            tracing::info!("PluginRouter: {n} 个插件（run_plugin 工具可用）");
+            registry = registry.register(crate::tools::builtin::RunPlugin);
         }
     }
 
