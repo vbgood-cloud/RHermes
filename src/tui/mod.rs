@@ -56,6 +56,8 @@ pub enum AppCommand {
     EnterLearnModeFile(String, String, String),
     /// 退出学习模式（带总结）
     StopLearnMode,
+    /// 学习模式中途阶段总结（不退出）
+    LearnSummary,
 }
 
 // ---------------------------------------------------------------------------
@@ -671,6 +673,16 @@ impl App {
                             )).await;
                         }
                     }
+                    AppCommand::LearnSummary => {
+                        let topic = session.kb_mode().unwrap_or("").to_string();
+                        if topic.is_empty() {
+                            let _ = session.handle_message("[系统] 当前不在学习模式中（/summary 仅学习模式可用）。").await;
+                        } else {
+                            session.handle_message(&format!(
+                                "[系统] 用户想看「{topic}」的阶段总结（不退出学习模式）。请调用 kb_stats(topic=\"{topic}\", html=true) 生成 Bento 战绩，把 HTML 文件路径连同阶段性小结（已点亮节点、平均掌握度、薄弱点、下一步建议）一起给用户，然后询问是继续下一个知识点还是休息。"
+                            )).await;
+                        }
+                    }
                 }
             }
         });
@@ -696,7 +708,7 @@ impl App {
 
         let arg = arg.trim();
         if arg.is_empty() {
-            return Ok("用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式".to_string());
+            return Ok("用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式\n  /summary — 阶段总结（不退出，随时可用）".to_string());
         }
 
         // 参数是文件路径？-> 以文件内容为学习资料，库名取文件名（去扩展名）
@@ -765,6 +777,19 @@ impl App {
             self.learn_topic = None;
             let _ = tx.send(AppCommand::StopLearnMode);
             Ok("🏁 已退出学习模式，正在生成学习总结…".to_string())
+        } else {
+            Err("Agent 未就绪".to_string())
+        }
+    }
+
+    /// /summary 命令：学习模式中途阶段总结（不退出）
+    fn handle_learn_summary(&mut self) -> Result<String, String> {
+        if let Some(tx) = &self.cmd_tx {
+            if self.learn_topic.is_none() {
+                return Ok("当前不在学习模式中。/summary 仅学习模式可用；/learn <名称> 开始学习。".to_string());
+            }
+            let _ = tx.send(AppCommand::LearnSummary);
+            Ok("📊 正在生成阶段学习总结（学习模式保持）…".to_string())
         } else {
             Err("Agent 未就绪".to_string())
         }
@@ -1030,6 +1055,12 @@ impl App {
                     }
                     "/stop" => {
                         match self.handle_stop_learn() {
+                            Ok(msg) => { self.messages.push(Message::system(msg)); }
+                            Err(e) => { self.messages.push(Message::system(format!("⚠ {e}"))); }
+                        }
+                    }
+                    "/summary" | "/总结" => {
+                        match self.handle_learn_summary() {
                             Ok(msg) => { self.messages.push(Message::system(msg)); }
                             Err(e) => { self.messages.push(Message::system(format!("⚠ {e}"))); }
                         }

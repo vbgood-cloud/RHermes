@@ -27,6 +27,13 @@ struct StudentIdentity {
 }
 
 /// 会话路由器 — 按 `channel:chat_id` 管理 AgentSession
+/// 知识库学习模式命令种类（dispatch 拦截层使用）
+enum KbCommand {
+    Learn,
+    Summary,
+    Stop,
+}
+
 pub struct SessionRouter {
     sessions: HashMap<String, AgentSession>,
     dispatcher: Option<ToolDispatcher>,
@@ -130,8 +137,10 @@ impl SessionRouter {
             let content = inbound.content.trim();
             let is_learn = content == "/learn" || content.starts_with("/learn ");
             let is_stop = content == "/stop" || content.starts_with("/stop ");
-            if is_learn || is_stop {
-                self.handle_kb_mode_command(&inbound, is_learn).await;
+            let is_summary = content == "/summary" || content == "/总结" || content.starts_with("/summary ") || content.starts_with("/总结 ");
+            if is_learn || is_stop || is_summary {
+                let cmd = if is_learn { KbCommand::Learn } else if is_summary { KbCommand::Summary } else { KbCommand::Stop };
+                self.handle_kb_mode_command(&inbound, cmd).await;
                 return;
             }
         }
@@ -289,14 +298,15 @@ impl SessionRouter {
     }
 
     /// 处理 /sw 课程切换命令
-    /// 知识库学习模式命令（Gateway 全通道）：/learn [名称|文件路径|list] · /stop
+    /// 知识库学习模式命令（Gateway 全通道）：/learn [名称|文件路径|list] · /summary · /stop
     ///
     /// 与 TUI 版行为一致：
     /// - /learn list         列出所有知识库
     /// - /learn <文件路径>   文件内容建库（库名=文件名去扩展名；小文件注入全文，大文件给预览+分批读取指引）
     /// - /learn <名称> [提示] 存在则续学（带进度），不存在则问主题
     /// - /stop               退出并 kb_stats html=true 总结
-    async fn handle_kb_mode_command(&mut self, inbound: &InboundMessage, is_learn: bool) {
+    /// - /summary            阶段总结（不退出学习模式，学习中随时可用）
+    async fn handle_kb_mode_command(&mut self, inbound: &InboundMessage, cmd: KbCommand) {
         let content = inbound.content.trim().to_string();
         let key = format!(
             "{}:{}{}",
@@ -305,7 +315,7 @@ impl SessionRouter {
             inbound.metadata.get("course_suffix").cloned().unwrap_or_default()
         );
 
-        if !is_learn {
+        if matches!(cmd, KbCommand::Stop) {
             // /stop：退出学习模式 + 总结
             let topic = self
                 .sessions
@@ -324,6 +334,30 @@ impl SessionRouter {
                 }
                 None => {
                     let reply = "当前不在学习模式中。用 /learn <名称> 或 /learn <文件路径> 开始。";
+                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, reply).await;
+                    return;
+                }
+            }
+        }
+
+        if matches!(cmd, KbCommand::Summary) {
+            // /summary（/总结）：阶段总结，不退出学习模式，学习中随时可用
+            let topic = self
+                .sessions
+                .get_mut(&key)
+                .and_then(|s| s.kb_mode().map(|t| t.to_string()));
+            match topic {
+                Some(t) => {
+                    if let Some(session) = self.sessions.get_mut(&key) {
+                        let kickoff = format!(
+                            "[系统] 用户想看「{t}」的阶段总结（不退出学习模式）。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径连同阶段性小结（已点亮节点、平均掌握度、薄弱点、下一步建议）一起给用户，然后询问是继续下一个知识点还是休息。"
+                        );
+                        session.handle_message(&kickoff).await;
+                    }
+                    return;
+                }
+                None => {
+                    let reply = "当前不在学习模式中。/summary 仅学习模式可用；用 /learn <名称> 或 /learn <文件路径> 开始。";
                     self.reply_to_channel(&inbound.channel, &inbound.chat_id, reply).await;
                     return;
                 }
@@ -355,7 +389,7 @@ impl SessionRouter {
         }
 
         if arg.is_empty() {
-            let reply = "用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式";
+            let reply = "用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式\n  /summary — 阶段总结（不退出，随时可用）";
             self.reply_to_channel(&inbound.channel, &inbound.chat_id, reply).await;
             return;
         }

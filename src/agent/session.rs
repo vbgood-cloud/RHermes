@@ -907,6 +907,7 @@ pub const KB_TUTOR_BLOCK: &str = r#"<!--kb-tutor-begin-->
 3. 每 3-5 个节点调 kb_graph 刷新图谱，把生成的 HTML 文件路径告知用户（浏览器打开）。
 4. 用户闲聊时简短回应一句，随即拉回当前学习节点。
 5. 全部节点掌握度 >= 80% 时主动祝贺收官，kb_stats html=true 出 Bento 战绩。
+6. 用户中途要「总结一下/小结/学到哪了/进度如何」等：不退出学习模式，调 kb_stats 出阶段报告（已点亮节点、平均掌握度、薄弱点），给简短小结后询问继续下一节点还是休息；用户明确要结束学习时才走退出流程。
 <!--kb-tutor-end-->"#;
 
 /// 从 system prompt 中剥离已注入的教学块
@@ -952,6 +953,7 @@ mod kb_mode_tests {
         assert!(KB_TUTOR_BLOCK.contains("kb_quiz"));
         assert!(KB_TUTOR_BLOCK.contains("kb_graph"));
         assert!(KB_TUTOR_BLOCK.contains("kb_stats"));
+        assert!(KB_TUTOR_BLOCK.contains("总结一下"));
         // 标记成对
         assert_eq!(KB_TUTOR_BLOCK.matches("kb-tutor").count(), 2);
     }
