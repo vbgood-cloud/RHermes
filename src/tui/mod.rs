@@ -52,6 +52,8 @@ pub enum AppCommand {
     SetModel(String),
     /// 进入知识库学习模式（库名, 主题提示）
     EnterLearnMode(String, String),
+    /// 进入学习模式并以文件内容建库（库名, 文件路径, 额外提示）
+    EnterLearnModeFile(String, String, String),
     /// 退出学习模式（带总结）
     StopLearnMode,
 }
@@ -620,6 +622,39 @@ impl App {
                         };
                         session.handle_message(&kickoff).await;
                     }
+                    AppCommand::EnterLearnModeFile(name, file_path, extra_hint) => {
+                        session.enter_kb_mode(&name);
+                        use crate::knowledge as kb;
+                        let exists = kb::open_db()
+                            .ok()
+                            .and_then(|c| kb::store::topic_id(&c, &name).ok().flatten());
+                        let kickoff = match exists {
+                            Some(tid) => {
+                                let progress = kb::open_db().ok()
+                                    .and_then(|c| kb::store::stats(&c, tid).ok())
+                                    .map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery))
+                                    .unwrap_or_default();
+                                format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。")
+                            }
+                            None => {
+                                // 读文件内容（截断到 ~24000 字符防超大文件爆 context）
+                                let content = std::fs::read_to_string(&file_path)
+                                    .map_err(|e| format!("读取失败: {e}"))
+                                    .unwrap_or_else(|e| format!("（文件读取失败：{e}）"));
+                                let truncated = if content.chars().count() > 24000 {
+                                    let t: String = content.chars().take(24000).collect();
+                                    format!("{t}\n…（内容过长已截断）")
+                                } else {
+                                    content
+                                };
+                                let hint = if extra_hint.is_empty() { String::new() } else { format!("用户补充要求：{extra_hint}。") };
+                                format!(
+                                    "[学习模式·文件建库] 请基于以下文件内容为用户构建知识库「{name}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点（规模由内容量决定），忠于原文可补充常识性前置知识；按 knowledge-base-tutor 技能规范 kb_create 建库（source=\"file:{file_path}\"），kb_graph 出图告知路径，然后 kb_learn 开始第一个知识点。\n\n===== 文件内容（{file_path}）=====\n{truncated}"
+                                )
+                            }
+                        };
+                        session.handle_message(&kickoff).await;
+                    }
                     AppCommand::StopLearnMode => {
                         let topic = session.kb_mode().unwrap_or("").to_string();
                         session.exit_kb_mode();
@@ -656,34 +691,66 @@ impl App {
 
         let arg = arg.trim();
         if arg.is_empty() {
-            return Ok("用法：\n  /learn <名称> — 继续或创建该知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式".to_string());
+            return Ok("用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式".to_string());
         }
 
-        // 名称 = 第一个词；其余视作主题提示（可选）
-        let mut parts = arg.splitn(2, char::is_whitespace);
-        let name = parts.next().unwrap_or("").trim().to_string();
-        let topic_hint = parts.next().unwrap_or("").trim().to_string();
-        if name.is_empty() {
-            return Ok("用法：/learn <名称> [主题提示]".to_string());
-        }
-
-        // 查库是否存在 + 进度
-        let conn = kb::open_db().map_err(|e| e.to_string())?;
-        let exists = kb::store::topic_id(&conn, &name).map_err(|e| e.to_string())?;
-
-        // 发消息给 Agent 进入模式（由 session task 处理）
-        if let Some(tx) = &self.cmd_tx {
-            self.learn_topic = Some(name.clone());
-            let _ = tx.send(AppCommand::EnterLearnMode(name.clone(), topic_hint.clone()));
-            Ok(match exists {
-                Some(tid) => {
-                    let st = kb::store::stats(&conn, tid).map_err(|e| e.to_string())?;
-                    format!("📚 学习模式：{name}（已点亮 {}/{} · 平均 {}%）\n正在载入下一个知识点…", st.lit_nodes, st.total_nodes, st.avg_mastery)
-                }
-                None => format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"),
-            })
+        // 参数是文件路径？-> 以文件内容为学习资料，库名取文件名（去扩展名）
+        let first_token = arg.split_whitespace().next().unwrap_or("");
+        let looks_like_file = first_token.contains('.') || first_token.starts_with('/')
+            || first_token.starts_with("~/") || first_token.starts_with("./");
+        if looks_like_file {
+            let file_path = if first_token.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_default();
+                first_token.replacen("~", &home, 1)
+            } else {
+                first_token.to_string()
+            };
+            let meta = std::fs::metadata(&file_path).map_err(|e| format!("文件不存在: {file_path}（{e}）"))?;
+            if !meta.is_file() {
+                return Err(format!("{file_path} 不是普通文件"));
+            }
+            let size_kb = meta.len() / 1024;
+            // 库名 = 文件名去扩展名；同名冲突时直接续学该库
+            let stem = std::path::Path::new(&file_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("study")
+                .to_string();
+            let rest_hint = arg.strip_prefix(first_token).unwrap_or("").trim().to_string();
+            if let Some(tx) = &self.cmd_tx {
+                self.learn_topic = Some(stem.clone());
+                let _ = tx.send(AppCommand::EnterLearnModeFile(stem.clone(), file_path.clone(), rest_hint));
+                Ok(format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取文件并构建知识库…"))
+            } else {
+                Err("Agent 未就绪".to_string())
+            }
         } else {
-            Err("Agent 未就绪".to_string())
+            // 名称 = 第一个词；其余视作主题提示（可选）
+            let mut parts = arg.splitn(2, char::is_whitespace);
+            let name = parts.next().unwrap_or("").trim().to_string();
+            let topic_hint = parts.next().unwrap_or("").trim().to_string();
+            if name.is_empty() {
+                return Ok("用法：/learn <名称> [主题提示] 或 /learn <文件路径>".to_string());
+            }
+
+            // 查库是否存在 + 进度
+            let conn = kb::open_db().map_err(|e| e.to_string())?;
+            let exists = kb::store::topic_id(&conn, &name).map_err(|e| e.to_string())?;
+
+            // 发消息给 Agent 进入模式（由 session task 处理）
+            if let Some(tx) = &self.cmd_tx {
+                self.learn_topic = Some(name.clone());
+                let _ = tx.send(AppCommand::EnterLearnMode(name.clone(), topic_hint.clone()));
+                Ok(match exists {
+                    Some(tid) => {
+                        let st = kb::store::stats(&conn, tid).map_err(|e| e.to_string())?;
+                        format!("📚 学习模式：{name}（已点亮 {}/{} · 平均 {}%）\n正在载入下一个知识点…", st.lit_nodes, st.total_nodes, st.avg_mastery)
+                    }
+                    None => format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"),
+                })
+            } else {
+                Err("Agent 未就绪".to_string())
+            }
         }
     }
 
