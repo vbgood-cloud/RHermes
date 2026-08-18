@@ -7,6 +7,7 @@ pub use builtin::*;
 pub use dispatcher::*;
 
 /// WASM 插件系统
+pub mod wasm_host_functions;
 pub mod wasm_plugin;
 
 mod registry;

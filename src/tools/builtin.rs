@@ -2012,7 +2012,7 @@ pub async fn full_registry(mcp_config: &crate::core::McpConfig) -> (ToolRegistry
     for (name, config) in &mcp_config.servers {
         match crate::mcp::McpAdapter::connect(name.clone(), config).await {
             Ok(adapter) => {
-                let tool_count = adapter.tools().len();
+                let tool_count = adapter.tools().len();  // Vec 快照
                 mcp_tool_count += tool_count;
                 report.connected_servers.push(format!("{} ({} 工具)", name, tool_count));
 
@@ -2021,7 +2021,7 @@ pub async fn full_registry(mcp_config: &crate::core::McpConfig) -> (ToolRegistry
 
                 let adapter_arc = Arc::new(adapter);
 
-                for tool_info in adapter_arc.tools() {
+                for tool_info in adapter_arc.tools() {  // Vec 快照迭代
                     let remote_tool = crate::mcp::McpRemoteTool::new(
                         name,
                         &tool_info.original_name,
