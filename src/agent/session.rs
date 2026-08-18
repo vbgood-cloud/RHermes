@@ -76,6 +76,8 @@ pub struct AgentSession {
     pending_reflection: Option<PendingReflection>,
     /// edu 反思闭环：本轮产出的反思评分结果（router 在 handle_message 返回后读取并落库）
     reflection_outbox: Option<ReflectionRecord>,
+    /// 知识库学习模式：当前激活的知识库名（/learn 进入，/stop 退出）
+    kb_mode: Option<String>,
 }
 
 /// 等待学生回答的反思上下文
@@ -147,6 +149,7 @@ impl AgentSession {
             learn_mode: None,
             pending_reflection: None,
             reflection_outbox: None,
+            kb_mode: None,
         }
     }
 
@@ -180,6 +183,29 @@ impl AgentSession {
     /// 当前学习模式名
     pub fn learn_mode(&self) -> Option<&str> {
         self.learn_mode.as_deref()
+    }
+
+    /// 知识库学习模式：当前激活的知识库名
+    pub fn kb_mode(&self) -> Option<&str> {
+        self.kb_mode.as_deref()
+    }
+
+    /// 进入知识库学习模式（/learn）。热更 system_prompt 追加教学规则。
+    pub fn enter_kb_mode(&mut self, topic: &str) {
+        self.kb_mode = Some(topic.to_string());
+        let base = self.context.system_prompt().to_string();
+        // 若已注入过学习块则先剥离，避免叠加
+        let base = strip_kb_block(&base);
+        let prompt = format!("{base}\n\n{KB_TUTOR_BLOCK}");
+        self.context.set_system_prompt(prompt);
+    }
+
+    /// 退出知识库学习模式（/stop）。剥离教学规则块。
+    pub fn exit_kb_mode(&mut self) {
+        if self.kb_mode.take().is_some() {
+            let base = strip_kb_block(self.context.system_prompt());
+            self.context.set_system_prompt(base);
+        }
     }
 
     /// 取出本轮产出的反思评分记录（router 在 handle_message 返回后调用）
@@ -864,5 +890,81 @@ fn format_thinking_block(thinking: &str) -> String {
 ", thinking.replace("
 ", "
 > "))
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// 知识库学习模式（/learn · /stop）
+// ---------------------------------------------------------------------------
+
+/// 学习模式注入的教学规则块（enter/exit 的标记边界用于剥离）
+pub const KB_TUTOR_BLOCK: &str = r#"<!--kb-tutor-begin-->
+【学习模式已激活】
+你现在是一位知识库学习导师。遵守：
+1. 用 kb_learn(topic=当前库) 取下一个知识点，围绕摘要讲解，结合前置知识承上启下，一段一问。
+2. 用户回答后出 1-2 道题验证，严格判分（全对 90-100 / 部分 50-79 / 未答上 0-49），立即用 kb_quiz 回填（topic/node/score/question/answer）。
+3. 每 3-5 个节点调 kb_graph 刷新图谱，把生成的 HTML 文件路径告知用户（浏览器打开）。
+4. 用户闲聊时简短回应一句，随即拉回当前学习节点。
+5. 全部节点掌握度 >= 80% 时主动祝贺收官，kb_stats html=true 出 Bento 战绩。
+<!--kb-tutor-end-->"#;
+
+/// 从 system prompt 中剥离已注入的教学块
+fn strip_kb_block(prompt: &str) -> String {
+    if let (Some(s), Some(e)) = (prompt.find("<!--kb-tutor-begin-->"), prompt.find("<!--kb-tutor-end-->")) {
+        if e > s {
+            let mut out = String::with_capacity(prompt.len());
+            out.push_str(&prompt[..s]);
+            // 吃掉块后的前导换行
+            let after = &prompt[e + "<!--kb-tutor-end-->".len()..];
+            out.push_str(after.trim_start_matches('\n'));
+            return out.trim_end().to_string();
+        }
+    }
+    prompt.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// 测试：知识库学习模式 prompt 注入/剥离（纯函数级，不依赖 transport）
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod kb_mode_tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_kb_block() {
+        let plain = "基础提示词";
+        assert_eq!(strip_kb_block(plain), "基础提示词");
+
+        let injected = format!("基础提示词\n\n{KB_TUTOR_BLOCK}");
+        let stripped = strip_kb_block(&injected);
+        assert!(stripped.starts_with("基础提示词"));
+        assert!(!stripped.contains("kb-tutor-begin"));
+        assert!(!stripped.contains("学习模式已激活"));
+        // 双重剥离幂等
+        assert_eq!(strip_kb_block(&stripped), stripped);
+    }
+
+    #[test]
+    fn test_kb_tutor_block_content() {
+        assert!(KB_TUTOR_BLOCK.contains("kb_learn"));
+        assert!(KB_TUTOR_BLOCK.contains("kb_quiz"));
+        assert!(KB_TUTOR_BLOCK.contains("kb_graph"));
+        assert!(KB_TUTOR_BLOCK.contains("kb_stats"));
+        // 标记成对
+        assert_eq!(KB_TUTOR_BLOCK.matches("kb-tutor").count(), 2);
+    }
+
+    #[test]
+    fn test_reenter_no_duplicate_block() {
+        // 模拟连续两次 enter 的 prompt 叠加防护
+        let base = "BASE";
+        let once = format!("{base}\n\n{KB_TUTOR_BLOCK}");
+        let once = strip_kb_block(&once);
+        let twice = format!("{once}\n\n{KB_TUTOR_BLOCK}");
+        let twice = strip_kb_block(&twice);
+        assert_eq!(once, twice);
+        assert_eq!(once, "BASE");
     }
 }

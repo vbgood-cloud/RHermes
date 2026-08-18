@@ -50,6 +50,10 @@ use serde::{Deserialize, Serialize};
 pub enum AppCommand {
     SendMessage(String),
     SetModel(String),
+    /// 进入知识库学习模式（库名, 主题提示）
+    EnterLearnMode(String, String),
+    /// 退出学习模式（带总结）
+    StopLearnMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +192,8 @@ pub struct App {
     pub running: bool,
     /// 退出标志
     pub should_quit: bool,
+    /// 知识库学习模式：当前库名（状态栏显示）
+    learn_topic: Option<String>,
 
     // ---- 命令补全 ----
     /// 过滤后的命令建议列表
@@ -286,6 +292,12 @@ const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/plan",      "先输出结构化计划，确认后再执行（/plan <任务描述>）"),
     ("/model",     "查看当前模型（/model set <名称> 切换模型）"),
     ("/thinking",  "切换思考流展示（默认开启）"),
+    ("/learn", "进入/继续知识库学习模式"),
+    ("/learn list", "列出所有知识库"),
+    ("/stop", "退出学习模式（自动总结）"),
+    ("/learn", "进入/继续知识库学习模式"),
+    ("/learn list", "列出所有知识库"),
+    ("/stop", "退出学习模式（自动总结）"),
 ];
 
 impl App {
@@ -346,6 +358,7 @@ impl App {
             stats: Stats::default(),
             running: false,
             should_quit: false,
+            learn_topic: None,
             cmd_suggestions: Vec::new(),
             suggestion_idx: 0,
             just_autocompleted: false,
@@ -586,9 +599,103 @@ impl App {
                     AppCommand::SetModel(m) => {
                         transport.set_model(&m);
                     }
+                    AppCommand::EnterLearnMode(name, topic_hint) => {
+                        session.enter_kb_mode(&name);
+                        use crate::knowledge as kb;
+                        let conn = match kb::open_db() {
+                            Ok(c) => c,
+                            Err(e) => { tracing::warn!("kb db 打开失败: {e}"); continue; }
+                        };
+                        let exists = kb::store::topic_id(&conn, &name).ok().flatten();
+                        let kickoff = match exists {
+                            Some(tid) => {
+                                let st = kb::store::stats(&conn, tid).ok();
+                                let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
+                                format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。")
+                            }
+                            None => {
+                                let hint = if topic_hint.is_empty() { String::new() } else { format!("用户主题提示：{topic_hint}。") };
+                                format!("[学习模式·新建] 知识库「{name}」尚不存在。{hint}请询问用户想学的具体主题或资料路径，然后按 knowledge-base-tutor 技能用 kb_create 建库（节点规模由内容决定），kb_graph 出图后开始教学。")
+                            }
+                        };
+                        session.handle_message(&kickoff).await;
+                    }
+                    AppCommand::StopLearnMode => {
+                        let topic = session.kb_mode().unwrap_or("").to_string();
+                        session.exit_kb_mode();
+                        if topic.is_empty() {
+                            let _ = session.handle_message("[系统] 用户退出了学习模式（当前不在学习模式中）。").await;
+                        } else {
+                            session.handle_message(&format!(
+                                "[系统] 用户结束了「{topic}」的学习。请调用 kb_stats(topic=\"{topic}\", html=true) 生成 Bento 战绩，把 HTML 文件路径（浏览器打开）连同简短学习小结一起给用户，然后停止教学行为。"
+                            )).await;
+                        }
+                    }
                 }
             }
         });
+    }
+
+
+    /// /learn 命令：进入（或继续）知识库学习模式
+    fn handle_learn_command(&mut self, arg: &str) -> Result<String, String> {
+        use crate::knowledge as kb;
+
+        // 子命令：列出所有知识库
+        if arg == "list" || arg == "列表" {
+            let conn = kb::open_db().map_err(|e| e.to_string())?;
+            let rows = kb::store::list_topics(&conn).map_err(|e| e.to_string())?;
+            if rows.is_empty() {
+                return Ok("📚 还没有任何知识库。/learn <名称> <主题> 创建，或直接 /learn <名称> 后告诉我想学什么。".to_string());
+            }
+            let lines: Vec<String> = rows.iter().map(|(name, source, total, lit, avg)| {
+                format!("📚 {name}（{source}）— 点亮 {lit}/{total} · 平均掌握 {avg}%")
+            }).collect();
+            return Ok(format!("📚 我的知识库（用 /learn <名称> 继续）：\n{}", lines.join("\n")));
+        }
+
+        let arg = arg.trim();
+        if arg.is_empty() {
+            return Ok("用法：\n  /learn <名称> — 继续或创建该知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式".to_string());
+        }
+
+        // 名称 = 第一个词；其余视作主题提示（可选）
+        let mut parts = arg.splitn(2, char::is_whitespace);
+        let name = parts.next().unwrap_or("").trim().to_string();
+        let topic_hint = parts.next().unwrap_or("").trim().to_string();
+        if name.is_empty() {
+            return Ok("用法：/learn <名称> [主题提示]".to_string());
+        }
+
+        // 查库是否存在 + 进度
+        let conn = kb::open_db().map_err(|e| e.to_string())?;
+        let exists = kb::store::topic_id(&conn, &name).map_err(|e| e.to_string())?;
+
+        // 发消息给 Agent 进入模式（由 session task 处理）
+        if let Some(tx) = &self.cmd_tx {
+            self.learn_topic = Some(name.clone());
+            let _ = tx.send(AppCommand::EnterLearnMode(name.clone(), topic_hint.clone()));
+            Ok(match exists {
+                Some(tid) => {
+                    let st = kb::store::stats(&conn, tid).map_err(|e| e.to_string())?;
+                    format!("📚 学习模式：{name}（已点亮 {}/{} · 平均 {}%）\n正在载入下一个知识点…", st.lit_nodes, st.total_nodes, st.avg_mastery)
+                }
+                None => format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"),
+            })
+        } else {
+            Err("Agent 未就绪".to_string())
+        }
+    }
+
+    /// /stop 命令：退出学习模式并总结
+    fn handle_stop_learn(&mut self) -> Result<String, String> {
+        if let Some(tx) = &self.cmd_tx {
+            self.learn_topic = None;
+            let _ = tx.send(AppCommand::StopLearnMode);
+            Ok("🏁 已退出学习模式，正在生成学习总结…".to_string())
+        } else {
+            Err("Agent 未就绪".to_string())
+        }
     }
 
     /// 运行 TUI 事件循环（异步）
@@ -822,6 +929,11 @@ impl App {
   Ctrl+Q       — 退出
   ↑↓           — 滚动对话
   Alt+↑↓       — 浏览输入历史
+
+学习模式:
+  /learn <名称> — 进入/继续知识库学习
+  /learn list   — 列出所有知识库
+  /stop         — 退出学习模式（自动总结）
   PageUp/Dn    — 滚动 10 行
   Home/End     — 光标到行首/行尾";
                         self.messages.push(Message::system(help_text));
@@ -834,6 +946,20 @@ impl App {
                             Err(e) => {
                                 self.messages.push(Message::system(format!("⚠ 初始化失败: {e}")));
                             }
+                        }
+                    }
+                    // 知识库学习模式
+                    cmd if cmd == "/learn" || cmd.starts_with("/learn ") => {
+                        let arg = cmd.strip_prefix("/learn").unwrap_or("").trim().to_string();
+                        match self.handle_learn_command(&arg) {
+                            Ok(msg) => { self.messages.push(Message::system(msg)); }
+                            Err(e) => { self.messages.push(Message::system(format!("⚠ {e}"))); }
+                        }
+                    }
+                    "/stop" => {
+                        match self.handle_stop_learn() {
+                            Ok(msg) => { self.messages.push(Message::system(msg)); }
+                            Err(e) => { self.messages.push(Message::system(format!("⚠ {e}"))); }
                         }
                     }
                     cmd if cmd.starts_with("/note ") || cmd.starts_with("/笔记 ") => {
@@ -1720,7 +1846,7 @@ impl App {
             "💬"
         };
 
-        let parts = vec![
+        let mut parts = vec![
             // 响应时间 & 状态（最前面）
             Span::styled(
                 format!(" ⏱ {}s ", timer_secs),
@@ -1772,6 +1898,13 @@ impl App {
                 }
             },
         ];
+        if let Some(t) = &self.learn_topic {
+            parts.push(Span::styled(
+                format!(" 📚 {t} "),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ));
+        }
+
 
         let bar = Paragraph::new(Line::from(parts))
             .style(Style::default().bg(Color::Black).fg(Color::White));
