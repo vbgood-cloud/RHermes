@@ -1,6 +1,6 @@
 # RHermes 架构总览
 
-> 基于 DeepSeek 的终端 AI 编程 Agent · Rust 2024 edition · 17 个内置工具 · 自进化技能系统
+> 多 Provider 终端 AI Agent · Rust 2024 edition · 25 个内置工具 + MCP 动态 + Wasm 插件 · 自进化技能系统 · v0.7.0
 
 ---
 
@@ -130,7 +130,7 @@
 | 文件 | 职责 |
 |------|------|
 | **registry.rs** | `ToolRegistry` — 全局只读注册表 + `Tool` trait 定义 + 参数模型 |
-| **builtin.rs** | 17 个内置工具的具体实现 |
+| **builtin.rs** | 25 个内置工具 + run_plugin（P28）的具体实现 |
 | **dispatcher.rs** | 并行调度器 — 按 `parallel_safe` 标志分组执行 |
 
 #### 调度策略
@@ -150,7 +150,7 @@
       合并结果 → 返回 Vec<ToolResult>
 ```
 
-#### 17 个内置工具
+#### 25 个内置工具（+MCP 动态注册 mcp__* + Wasm 插件 wasm_*）
 
 | 类别 | 工具 | 说明 | 并行安全 |
 |------|------|------|:--------:|
@@ -170,6 +170,12 @@
 | | `skill_create` | 创建新技能 | ❌ |
 | | `skill_patch` / `skill_manage` | 更新/管理技能 | ❌ |
 | **记忆** | `memory` | 读写管理 USER.md / MEMORY.md | ❌ |
+| **Office** | `read_excel` / `write_excel` | Excel 读写（calamine/rust_xlsxwriter） | ✅ |
+| | `read_docx` / `write_docx` | Word 读写（docx-rs） | ✅ |
+| | `read_pptx` | PowerPoint 读取（zip+quick-xml） | ✅ |
+| **文档解析** | `parse_document` | LiteParse 文档解析（PDF/图片） | ❌ |
+| | `screenshot_document` / `check_document_complexity` | 文档截图 / OCR 判断 | ❌ |
+| **插件** | `run_plugin` | 调用 PluginRouter 插件（Wasm/SKILL.md） | ✅ |
 
 ---
 
@@ -263,7 +269,7 @@ DeepSeep prefix cache 命中的 input token 只按 10% 计费，因此三段式 
     ↓
 TUI App.handle_key() 捕获键盘事件
     ↓
-Enter → 构建 ChatRequest (messages + 17 个 tool definitions)
+Enter → 构建 ChatRequest (messages + 全部 tool definitions)
     ↓
 DeepSeekClient.chat_stream() 发起 SSE 请求
     ↓
