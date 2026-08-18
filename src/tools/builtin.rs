@@ -2,6 +2,7 @@
 //!
 //! 每个工具都实现了 `Tool` trait，并声明 `parallel_safe` 标志。
 
+use rusqlite::OptionalExtension;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -1957,6 +1958,12 @@ pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
         .register(crate::tools::liteparse::ParseDocument)
         .register(crate::tools::liteparse::ScreenshotDocument)
         .register(crate::tools::liteparse::CheckDocumentComplexity)
+        .register(crate::tools::KbCreate)
+        .register(crate::tools::KbGraph)
+        .register(crate::tools::KbLearn)
+        .register(crate::tools::KbQuiz)
+        .register(crate::tools::KbStatsTool)
+        .register(crate::tools::KbList)
 }
 
 // ---------------------------------------------------------------------------
@@ -1966,6 +1973,308 @@ pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
 /// 全局注册表实例（包含内置工具 + MCP 远程工具）
 /// 在 full_registry() 完成后初始化，供 all_tool_defs() 使用
 static GLOBAL_REGISTRY: OnceLock<ToolRegistry> = OnceLock::new();
+
+
+// ---------------------------------------------------------------------------
+// 知识库学习工具组（kb_*）— 见 src/knowledge/
+// ---------------------------------------------------------------------------
+
+/// 建知识库：Agent 先用 LLM 从主题/资料抽取 nodes+edges JSON，再调本工具落库
+pub struct KbCreate;
+
+#[async_trait::async_trait]
+impl Tool for KbCreate {
+    fn name(&self) -> String { "kb_create".into() }
+    fn description(&self) -> String {
+        "创建知识库。参数: topic(库名), nodes(JSON数组[{name,summary}]), edges(JSON数组[{from,to,relation}]), source(topic|file:路径)。节点规模由内容决定，关系类型: 依赖/包含/相关。".into()
+    }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::new("topic", ParamType::String, "知识库名称", true),
+            ParamDef::new("nodes", ParamType::String, "节点JSON数组", true),
+            ParamDef::new("edges", ParamType::String, "边JSON数组", false),
+            ParamDef::new("source", ParamType::String, "来源: topic 或 file:路径", false),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        use crate::knowledge as kb;
+        let topic = str_arg(&args, "topic")?;
+        let nodes_json = str_arg(&args, "nodes")?;
+        let source = args.get("source").and_then(|v| v.as_str()).unwrap_or("topic").to_string();
+
+        let nodes: Vec<kb::store::NodeIn> = serde_json::from_str(&nodes_json)
+            .map_err(|e| ToolError::InvalidParam(format!("nodes JSON 解析失败: {e}")))?;
+        if nodes.is_empty() {
+            return Err(ToolError::InvalidParam("nodes 不能为空".into()));
+        }
+        let edges: Vec<kb::store::EdgeIn> = match args.get("edges").and_then(|v| v.as_str()) {
+            Some(ej) => serde_json::from_str(ej)
+                .map_err(|e| ToolError::InvalidParam(format!("edges JSON 解析失败: {e}")))?,
+            None => Vec::new(),
+        };
+
+        let conn = kb::open_db().map_err(|e| ToolError::ExecutionFailed(format!("打开知识库失败: {e}")))?;
+        let tid = kb::store::create_topic(&conn, &topic, &source)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let n = kb::store::add_nodes(&conn, tid, &nodes)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let (e_ok, e_skip) = kb::store::add_edges(&conn, tid, &edges)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        kb::store::recompute_layers(&conn, tid)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        Ok(format!(
+            "知识库 '{topic}' 创建成功：{n} 个知识点，{e_ok} 条关系（跳过 {e_skip} 条无效）。用 kb_graph 生成图谱，kb_learn 开始学习。"
+        ))
+    }
+}
+
+/// 生成图谱（浏览器 HTML）+ 返回终端概览
+pub struct KbGraph;
+
+#[async_trait::async_trait]
+impl Tool for KbGraph {
+    fn name(&self) -> String { "kb_graph".into() }
+    fn description(&self) -> String {
+        "生成知识图谱（SVG HTML，浏览器查看）。参数: topic。返回文件路径+进度概览。节点颜色: 灰=未学习/黄=初识/浅绿=掌握中/亮绿=精通。".into()
+    }
+    fn parallel_safe(&self) -> bool { true }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![ParamDef::new("topic", ParamType::String, "知识库名称", true)]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        use crate::knowledge as kb;
+        let topic = str_arg(&args, "topic")?;
+        let conn = kb::open_db().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let tid = kb::store::topic_id(&conn, &topic)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+            .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在，先 kb_create")))?;
+
+        let snap = kb::store::snapshot(&conn, tid).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let st = kb::store::stats(&conn, tid).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        let mut path = kb::graphs_dir();
+        path.push(format!("{}.html", sanitize_filename(&topic)));
+        kb::svg::render_svg(&snap, &st, &path)
+            .map_err(|e| ToolError::ExecutionFailed(format!("图谱渲染失败: {e}")))?;
+
+        let mut overview = format!(
+            "图谱已生成 -> {}\n学习进度 {}/{} 节点点亮 · 平均掌握度 {}%\n",
+            path.display(), st.lit_nodes, st.total_nodes, st.avg_mastery
+        );
+        let mut by_layer: Vec<(i64, Vec<&kb::store::NodeRow>)> = Vec::new();
+        for node in &snap.nodes {
+            if let Some(slot) = by_layer.iter_mut().find(|(l, _)| *l == node.layer) {
+                slot.1.push(node);
+            } else {
+                by_layer.push((node.layer, vec![node]));
+            }
+        }
+        for (layer, nodes) in by_layer {
+            overview.push_str(&format!("\nL{layer}: "));
+            for node in nodes {
+                let sym = match kb::store::mastery_stage(node.mastery) {
+                    0 => "░", 1 => "◐", 2 => "◉", _ => "●",
+                };
+                overview.push_str(&format!("{sym}{}({}%) ", node.name, node.mastery));
+            }
+        }
+        Ok(overview)
+    }
+}
+
+/// 学习会话：返回下一个该学的节点（拓扑序+薄弱优先）+ 上下文
+pub struct KbLearn;
+
+#[async_trait::async_trait]
+impl Tool for KbLearn {
+    fn name(&self) -> String { "kb_learn".into() }
+    fn description(&self) -> String {
+        "学习一个知识点。参数: topic, node(可选，默认自动选下一个: 基础层优先+掌握度最低优先)。返回节点摘要+前置/后续关联，Agent 据此讲解后用 kb_quiz 验证。".into()
+    }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::new("topic", ParamType::String, "知识库名称", true),
+            ParamDef::new("node", ParamType::String, "节点名（可选，默认自动选择）", false),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        use crate::knowledge as kb;
+        let topic = str_arg(&args, "topic")?;
+        let conn = kb::open_db().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let tid = kb::store::topic_id(&conn, &topic)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+            .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在")))?;
+
+        let node = match args.get("node").and_then(|v| v.as_str()) {
+            Some(n) => {
+                let row: Option<kb::store::NodeRow> = conn.query_row(
+                    "SELECT id, name, summary, layer, mastery, review_count, quiz_count FROM nodes WHERE topic_id = ?1 AND name = ?2",
+                    rusqlite::params![tid, n],
+                    |r| Ok(kb::store::NodeRow {
+                        id: r.get(0)?, name: r.get(1)?, summary: r.get(2)?,
+                        layer: r.get(3)?, mastery: r.get(4)?, review_count: r.get(5)?, quiz_count: r.get(6)?,
+                    }),
+                ).optional().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+                row.ok_or_else(|| ToolError::InvalidParam(format!("节点 '{n}' 不存在")))?
+            }
+            None => kb::store::next_node(&conn, tid)
+                .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+                .ok_or_else(|| ToolError::ExecutionFailed("全部节点掌握度已达 80%+，学习完成！用 kb_stats 看战绩".into()))?,
+        };
+
+        let (prereq, next) = kb::store::node_context(&conn, tid, &node.name)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        kb::store::log_session(&conn, tid, &node.name)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        Ok(format!(
+            "【学习节点】{}（层L{}，当前掌握度 {}%）\n【摘要】{}\n【前置】{}\n【后续】{}\n---\n请就以上知识点向用户讲解（一段一问），讲完用 kb_quiz 出题验证。",
+            node.name, node.layer, node.mastery,
+            if node.summary.is_empty() { "（无预置摘要，请根据主题上下文讲解）" } else { &node.summary },
+            if prereq.is_empty() { "无".to_string() } else { prereq.join("、") },
+            if next.is_empty() { "无".to_string() } else { next.join("、") },
+        ))
+    }
+}
+
+/// 测验：Agent 出题判分后回填，或从预留题库抽题
+pub struct KbQuiz;
+
+#[async_trait::async_trait]
+impl Tool for KbQuiz {
+    fn name(&self) -> String { "kb_quiz".into() }
+    fn description(&self) -> String {
+        "记录测验结果并更新掌握度(EMA)。参数: topic, node, score(0-100), question, answer(用户作答)。或 draw=true 从题库抽题。同节点同日取最高分防刷分。".into()
+    }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::new("topic", ParamType::String, "知识库名称", true),
+            ParamDef::new("node", ParamType::String, "节点名", true),
+            ParamDef::new("score", ParamType::Integer, "得分 0-100", false),
+            ParamDef::new("question", ParamType::String, "题目（记录用）", false),
+            ParamDef::new("answer", ParamType::String, "用户作答（记录用）", false),
+            ParamDef::new("draw", ParamType::Boolean, "true=从题库抽题（预留功能）", false),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        use crate::knowledge as kb;
+        let topic = str_arg(&args, "topic")?;
+        let node_name = str_arg(&args, "node")?;
+        let conn = kb::open_db().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let tid = kb::store::topic_id(&conn, &topic)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+            .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在")))?;
+        let node_id: i64 = conn.query_row(
+            "SELECT id FROM nodes WHERE topic_id = ?1 AND name = ?2",
+            rusqlite::params![tid, node_name],
+            |r| r.get(0),
+        ).optional().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+         .ok_or_else(|| ToolError::InvalidParam(format!("节点 '{node_name}' 不存在")))?;
+
+        if args.get("draw").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let qs = kb::store::draw_questions(&conn, node_id, 3)
+                .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+            if qs.is_empty() {
+                return Ok("题库暂无此节点题目（MVP 未填充）。请 Agent 自由出题：向用户提问后，将判分结果以 score 回填 kb_quiz。".to_string());
+            }
+            let lines: Vec<String> = qs.iter().map(|(q, opts, _)| {
+                format!("题: {q}\n选项: {opts}")
+            }).collect();
+            return Ok(format!("从题库抽出 {} 题:\n{}", qs.len(), lines.join("\n\n")));
+        }
+
+        let score = args.get("score").and_then(|v| v.as_i64())
+            .ok_or_else(|| ToolError::MissingParam("score (0-100)".into()))?;
+        let question = args.get("question").and_then(|v| v.as_str()).unwrap_or("");
+        let answer = args.get("answer").and_then(|v| v.as_str()).unwrap_or("");
+
+        let (mastery, applied) = kb::store::record_quiz(&conn, node_id, score, question, answer)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let stage = kb::store::stage_name(kb::store::mastery_stage(mastery));
+        if applied {
+            Ok(format!("已记录：'{node_name}' 掌握度 -> {mastery}%（{stage}）。继续 kb_learn 学下一个，或 kb_graph 看图谱变化。"))
+        } else {
+            Ok(format!("今日该节点已有更高分，本次不计入。'{node_name}' 掌握度保持 {mastery}%（{stage}）。"))
+        }
+    }
+}
+
+/// 学习统计（终端 Bento / HTML Bento）
+pub struct KbStatsTool;
+
+#[async_trait::async_trait]
+impl Tool for KbStatsTool {
+    fn name(&self) -> String { "kb_stats".into() }
+    fn description(&self) -> String {
+        "学习统计。参数: topic, html(true=生成浏览器Bento面板)。终端默认输出 Bento 风格战绩。".into()
+    }
+    fn parallel_safe(&self) -> bool { true }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::new("topic", ParamType::String, "知识库名称", true),
+            ParamDef::new("html", ParamType::Boolean, "生成 HTML Bento（浏览器查看）", false),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        use crate::knowledge as kb;
+        let topic = str_arg(&args, "topic")?;
+        let conn = kb::open_db().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let tid = kb::store::topic_id(&conn, &topic)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+            .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在")))?;
+        let st = kb::store::stats(&conn, tid).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        let mut out = kb::bento::render_terminal(&st);
+        if args.get("html").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let mut path = kb::bento_dir();
+            path.push(format!("{}.html", sanitize_filename(&topic)));
+            kb::bento::render_svg_bento(&st, &path)
+                .map_err(|e| ToolError::ExecutionFailed(format!("Bento 渲染失败: {e}")))?;
+            out.push_str(&format!("\nBento 面板 -> {}", path.display()));
+        }
+        Ok(out)
+    }
+}
+
+/// 列出所有知识库
+pub struct KbList;
+
+#[async_trait::async_trait]
+impl Tool for KbList {
+    fn name(&self) -> String { "kb_list".into() }
+    fn description(&self) -> String { "列出所有知识库及学习进度。无参数。".into() }
+    fn parallel_safe(&self) -> bool { true }
+    fn parameters(&self) -> Vec<ParamDef> { vec![] }
+    async fn execute(&self, _args: Value) -> Result<String, ToolError> {
+        use crate::knowledge as kb;
+        let conn = kb::open_db().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let rows = kb::store::list_topics(&conn).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        if rows.is_empty() {
+            return Ok("还没有知识库。用 kb_create 创建（可先给主题或资料让 Agent 抽取知识点）。".to_string());
+        }
+        let lines: Vec<String> = rows.iter().map(|(name, source, total, lit, avg)| {
+            format!("- {name}（来源 {source}）：{lit}/{total} 点亮 · 平均掌握 {avg}%")
+        }).collect();
+        Ok(lines.join("\n"))
+    }
+}
+
+fn str_arg(args: &Value, key: &str) -> Result<String, ToolError> {
+    args.get(key).and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| ToolError::MissingParam(key.to_string()))
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars().map(|c| match c {
+        'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
+        _ => '_',
+    }).collect()
+}
 
 // ---------------------------------------------------------------------------
 // run_plugin 工具 — Agent 经 PluginRouter 调用插件（P28）
@@ -2227,7 +2536,13 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry(&crate::core::Config::default());
-        assert_eq!(reg.len(), 25);
+        assert_eq!(reg.len(), 31);
+        assert!(reg.get("kb_create").is_some());
+        assert!(reg.get("kb_graph").is_some());
+        assert!(reg.get("kb_learn").is_some());
+        assert!(reg.get("kb_quiz").is_some());
+        assert!(reg.get("kb_stats").is_some());
+        assert!(reg.get("kb_list").is_some());
         assert!(reg.get("read_pdf").is_some());
         assert!(reg.get("skill_manage").is_some());
         assert!(reg.get("memory").is_some());

@@ -16,6 +16,7 @@ pub mod debug;
 pub mod edu;
 pub mod gateway;
 pub mod init;
+pub mod knowledge;
 pub mod mcp;
 pub mod plugin;
 pub mod provider;
