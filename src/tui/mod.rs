@@ -637,19 +637,24 @@ impl App {
                                 format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。")
                             }
                             None => {
-                                // 读文件内容（截断到 ~24000 字符防超大文件爆 context）
+                                // 探明文件规模：小文件直接注入全文；大文件只给结构概览，
+                                // 由 Agent 用 read_file(range=) 分批读取（复用现有工具，不爆 context）
                                 let content = std::fs::read_to_string(&file_path)
                                     .map_err(|e| format!("读取失败: {e}"))
-                                    .unwrap_or_else(|e| format!("（文件读取失败：{e}）"));
-                                let truncated = if content.chars().count() > 24000 {
-                                    let t: String = content.chars().take(24000).collect();
-                                    format!("{t}\n…（内容过长已截断）")
+                                    .unwrap_or_else(|e| format!("（文件读取失败：{e}，请用 read_file 自行读取 {file_path}）"));
+                                let total_lines = content.lines().count();
+                                let content_block = if content.chars().count() <= 24000 {
+                                    format!("\n\n===== 文件内容（{file_path}）=====\n{content}")
                                 } else {
-                                    content
+                                    // 大文件：给前 80 行预览 + 读取指引
+                                    let preview: String = content.lines().take(80).collect::<Vec<_>>().join("\n");
+                                    format!(
+                                        "\n\n===== 文件预览（前 80 行 / 共 {total_lines} 行）=====\n{preview}\n…\n【文件较大】请先用 read_file(path=\"{file_path}\", range=\"81-400\") 等分批读完全文，再抽取知识点建库。"
+                                    )
                                 };
                                 let hint = if extra_hint.is_empty() { String::new() } else { format!("用户补充要求：{extra_hint}。") };
                                 format!(
-                                    "[学习模式·文件建库] 请基于以下文件内容为用户构建知识库「{name}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点（规模由内容量决定），忠于原文可补充常识性前置知识；按 knowledge-base-tutor 技能规范 kb_create 建库（source=\"file:{file_path}\"），kb_graph 出图告知路径，然后 kb_learn 开始第一个知识点。\n\n===== 文件内容（{file_path}）=====\n{truncated}"
+                                    "[学习模式·文件建库] 请基于文件为用户构建知识库「{name}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点（规模由内容量决定），忠于原文可补充常识性前置知识；按 knowledge-base-tutor 技能规范 kb_create 建库（source=\"file:{file_path}\"），kb_graph 出图告知路径，然后 kb_learn 开始第一个知识点。{content_block}"
                                 )
                             }
                         };
