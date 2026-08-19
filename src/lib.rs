@@ -835,6 +835,11 @@ async fn run_code(resume: bool, role_hint: Option<&str>) {
     let inbound_tx = channel_mgr.inbound_tx();
     TuiChannel::attach(&mut app, inbound_tx);
 
+    // TUI 出站队列：TuiChannel.send_message → App 渲染循环
+    let (outbound_tx, outbound_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let _ = crate::tui::channel::TUI_OUTBOUND.set(outbound_tx);
+    app.set_outbound_rx(outbound_rx);
+
     // ── MCP 连接结果展示 ──
     if !mcp_report.connected_servers.is_empty() {
         app.messages.push(tui::Message::system(format!(
@@ -958,7 +963,10 @@ async fn run_code(resume: bool, role_hint: Option<&str>) {
         // 设置全局 Transport（供子 Agent 工具使用）
         crate::tools::set_global_transport(transport.clone());
 
-        // 创建 SessionRouter 处理外部通道消息（与 Gateway 模式统一）
+        // 创建 SessionRouter 处理消息（与 Gateway 模式统一；TUI 也是它的一个 channel）
+        // system prompt 优先用 TUI 完整版（记忆指引/技能/环境），fallback 简化版
+        let full_prompt = app.take_full_system_prompt();
+        let router_prompt = if full_prompt.is_empty() { system_prompt.to_string() } else { full_prompt };
         let mut router = crate::agent::SessionRouter::new(
             Some(router_dispatcher),
             router_memory,
@@ -966,10 +974,21 @@ async fn run_code(resume: bool, role_hint: Option<&str>) {
             transport,
             channel_mgr_arc,
             &session_config,
-            system_prompt.to_string(),
+            router_prompt,
             Some(session_debug),
             config_path.clone(),
         );
+
+        // TUI-as-Channel 注入：event 通道（TuiSink 渲染）+ volatile 层（时间/画像/AGENTS.md）
+        if let Some(tui_event_tx) = app.clone_event_tx() {
+            router.set_tui_event_tx(tui_event_tx);
+        }
+        let volatile = app.take_pending_volatile_text();
+        if !volatile.is_empty() {
+            router.set_volatile_text(volatile);
+        }
+        // 切入 channel 模式：Enter 消息走 SessionRouter
+        app.set_tui_router_mode(true);
 
         // 设置教育模式角色
         router.set_edu_role(&edu_role);

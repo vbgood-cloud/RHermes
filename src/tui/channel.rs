@@ -15,6 +15,10 @@ use crate::tui::App;
 ///
 /// 保持与现有 App 的完全兼容，同时实现 Channel trait。
 /// 当需要多渠道并行时，TuiChannel 可以像微信一样注册到 ChannelManager。
+/// TUI 出站队列：TuiChannel.send_message 推入，App 渲染循环消费上屏
+pub static TUI_OUTBOUND: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>> =
+    std::sync::OnceLock::new();
+
 pub struct TuiChannel;
 
 impl TuiChannel {
@@ -64,8 +68,18 @@ impl Channel for TuiChannel {
     }
 
     async fn send_message(&self, _chat_id: &str, text: &str) -> Result<(), String> {
-        // TUI 的消息显示由 handle_api_events 处理
-        tracing::debug!("TuiChannel 收到出站消息: {:.60}", text);
+        // 出站文本 → 全局队列 → App 渲染循环上屏
+        if text.is_empty() {
+            return Ok(());
+        }
+        match TUI_OUTBOUND.get() {
+            Some(tx) => {
+                if tx.send(text.to_string()).is_err() {
+                    tracing::warn!("TUI outbound 队列已关闭");
+                }
+            }
+            None => tracing::warn!("TUI_OUTBOUND 未初始化（lib.rs 启动时应挂接）"),
+        }
         Ok(())
     }
 

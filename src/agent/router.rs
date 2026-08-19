@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::agent::event_sink::{ChannelSink, EventSink};
+use crate::agent::event_sink::{ChannelSink, EventSink, TuiSink};
 use crate::agent::session::{AgentSession, SessionConfig};
 use crate::agent::MemorySystem;
 use crate::agent::SkillEngine;
@@ -60,6 +60,10 @@ pub struct SessionRouter {
     edu_role: String,
     /// 教育数据库路径
     edu_db_path: std::path::PathBuf,
+    /// TUI 事件发送端（tui 会话用 TuiSink 渲染到终端）
+    tui_event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::api::ApiEvent>>,
+    /// volatile 层文本（时间/画像/AGENTS.md，会话创建时注入，与 TUI 本地会话对齐）
+    volatile_text: String,
 }
 
 impl SessionRouter {
@@ -91,11 +95,23 @@ impl SessionRouter {
             setup_states: std::collections::HashMap::new(),
             student_ids: std::collections::HashMap::new(),
             edu_role: String::new(),
+            tui_event_tx: None,
+            volatile_text: String::new(),
             edu_db_path: config_path
                 .parent()
                 .unwrap_or(std::path::Path::new("."))
                 .join("home/edu.db"),
         }
+    }
+
+    /// 注入 TUI 事件发送端（tui 会话经 TuiSink 直接渲染到终端）
+    pub fn set_tui_event_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<crate::api::ApiEvent>) {
+        self.tui_event_tx = Some(tx);
+    }
+
+    /// 注入 volatile 层文本（所有新建会话统一注入）
+    pub fn set_volatile_text(&mut self, text: String) {
+        self.volatile_text = text;
     }
 
     /// 设置教育模式角色
@@ -155,7 +171,17 @@ impl SessionRouter {
 
         // 如果 session 不存在，创建一个新的
         if !self.sessions.contains_key(&key) {
-            let sink: Arc<dyn EventSink> = if inbound.channel == "telegram" {
+            let sink: Arc<dyn EventSink> = if inbound.channel == "tui" {
+                // TUI 通道：事件直接进终端渲染循环（流式/工具进度/成本统计全保留）
+                match self.tui_event_tx.clone() {
+                    Some(tx) => Arc::new(TuiSink::new(tx)),
+                    None => Arc::new(ChannelSink::new(
+                        self.channel_mgr.clone(),
+                        inbound.channel.clone(),
+                        inbound.chat_id.clone(),
+                    )),
+                }
+            } else if inbound.channel == "telegram" {
                 Arc::new(TelegramSink::new(
                     self.channel_mgr.clone(),
                     inbound.chat_id.clone(),
@@ -197,6 +223,11 @@ impl SessionRouter {
                     allowed,
                     Some(profile.mode.as_str().to_string()),
                 );
+            }
+
+            // volatile 层注入（时间/画像/项目上下文——TUI 本地会话有的，router 会话也要有）
+            if !self.volatile_text.is_empty() {
+                session.append_volatile(&self.volatile_text);
             }
 
             self.sessions.insert(key.clone(), session);

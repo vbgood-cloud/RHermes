@@ -34,6 +34,18 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::api::{ApiEvent, Usage};
+
+/// 这些命令在 router 模式下转发给 SessionRouter（与 Telegram 等外部通道行为一致）
+fn is_router_routed_command(input: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "/learn", "/stop", "/summary", "/总结", "/model", "/sw",
+        "/course", "/class", "/lesson", "/student", "/roster", "/courses",
+        "/profile", "/report", "/mode ", "/auth", "/assignment", "/assignments",
+        "/submit", "/feedback", "/import", "/set ", "/setup",
+    ];
+    PREFIXES.iter().any(|p| input.starts_with(p))
+}
+
 use crate::channel::InboundMessage;
 use crate::core::Config;
 use crate::core::Context;
@@ -224,6 +236,16 @@ pub struct App {
 
     /// 三段式 Context
     context: Option<Context>,
+    /// TUI 出站消息接收端（TuiChannel.send_message → 本循环消费上屏）
+    outbound_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    /// TUI 入站走 SessionRouter（true）还是本地 session（false，回退/模拟模式）
+    tui_router_mode: bool,
+    /// event 通道发送端保存位（router 模式下交给 SessionRouter 的 TuiSink）
+    event_tx_handle: Option<mpsc::UnboundedSender<ApiEvent>>,
+    /// 完整版 system prompt（init_api 构建，lib.rs 取走传给 SessionRouter）
+    full_system_prompt: Option<String>,
+    /// volatile 层文本（init_api 冻结，lib.rs 取走传给 SessionRouter）
+    pending_volatile_text: Option<String>,
 
     /// 工具调度器
     dispatcher: Option<ToolDispatcher>,
@@ -363,6 +385,11 @@ impl App {
             running: false,
             should_quit: false,
             learn_topic: None,
+            outbound_rx: None,
+            tui_router_mode: false,
+            event_tx_handle: None,
+            full_system_prompt: None,
+            pending_volatile_text: None,
             cmd_suggestions: Vec::new(),
             suggestion_idx: 0,
             just_autocompleted: false,
@@ -531,13 +558,11 @@ impl App {
         // 创建事件和命令通道
         let (event_tx, event_rx) = mpsc::unbounded_channel::<ApiEvent>();
         self.event_rx = event_rx;
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<AppCommand>();
-        self.cmd_tx = Some(cmd_tx);
-
-        // 构建 Agent Loop 所需的所有组件
-        let session_config = crate::agent::SessionConfig::from_config(&config);
+        self.event_tx_handle = Some(event_tx);
+        // cmd channel 已移除：TUI 入站统一走 SessionRouter（channel 模式）
 
         // volatile 层：session 开始时一次性冻结（时间 + 画像 + 项目上下文）
+        // （构建后交给 SessionRouter，由 router 在创建会话时注入）
         let volatile_text = {
             let time_str = chrono::Local::now().format("当前时间: %Y-%m-%d %H:%M:%S (UTC+8)");
             let mut v = format!("\n## 当前状态\n⏰ {time_str}");
@@ -555,139 +580,11 @@ impl App {
             }
             v
         };
-        let mut ctx = Context::new(system_prompt);
-        ctx.extend_prefix(volatile_text.as_bytes());
+        // TUI-as-Channel：完整 prompt 与 volatile 层交给 SessionRouter
+        self.full_system_prompt = Some(system_prompt);
+        self.pending_volatile_text = Some(volatile_text);
 
-        let dispatcher = self.dispatcher.take().expect("dispatcher 未初始化");
-        let agent_memory = self.memory.clone();
-        let skill_engine = self.skill_engine.clone();
-        let _session_path = self.session_path.clone();
-        let session_debug = self.debug.clone();
-
-        // 使用 TuiSink + AgentSession 替代内联的 600 行 Agent Loop
-        let balance_tx = event_tx.clone();
-        let sink = Arc::new(crate::agent::TuiSink::new(event_tx)) as Arc<dyn crate::agent::EventSink>;
-        let mut session = crate::agent::AgentSession::new(
-            "tui:local".to_string(),
-            ctx.system_prompt().to_string(),
-            Some(dispatcher),
-            agent_memory,
-            skill_engine,
-            transport.clone(),
-            sink,
-            session_config,
-            session_debug,
-        );
-
-        tokio::spawn(async move {
-            // 启动时查询余额
-            let balance_inner = balance_tx.clone();
-            let balance_transport = transport.clone();
-            tokio::spawn(async move {
-                match balance_transport.get_balance().await {
-                    Ok(b) => { let _ = balance_inner.send(ApiEvent::Balance(b)); }
-                    Err(e) => {
-                        tracing::warn!("余额查询失败: {e}");
-                        let _ = balance_inner.send(ApiEvent::Balance(0.0));
-                    }
-                }
-            });
-            let _ = balance_tx.send(ApiEvent::Balance(0.0));
-
-            while let Some(cmd) = cmd_rx.recv().await {
-                match cmd {
-                    AppCommand::SendMessage(msg) => {
-                        tracing::debug!("AgentSession 处理消息: {:.60}", msg);
-                        session.handle_message(&msg).await;
-                    }
-                    AppCommand::SetModel(m) => {
-                        transport.set_model(&m);
-                    }
-                    AppCommand::EnterLearnMode(name, topic_hint) => {
-                        session.enter_kb_mode(&name);
-                        use crate::knowledge as kb;
-                        let conn = match kb::open_db() {
-                            Ok(c) => c,
-                            Err(e) => { tracing::warn!("kb db 打开失败: {e}"); continue; }
-                        };
-                        let exists = kb::store::topic_id(&conn, &name).ok().flatten();
-                        let kickoff = match exists {
-                            Some(tid) => {
-                                let st = kb::store::stats(&conn, tid).ok();
-                                let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
-                                format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。")
-                            }
-                            None => {
-                                let hint = if topic_hint.is_empty() { String::new() } else { format!("用户主题提示：{topic_hint}。") };
-                                format!("[学习模式·新建] 知识库「{name}」尚不存在。{hint}请询问用户想学的具体主题或资料路径，然后按 knowledge-base-tutor 技能用 kb_create 建库（节点规模由内容决定），kb_graph 出图后开始教学。")
-                            }
-                        };
-                        session.handle_message(&kickoff).await;
-                    }
-                    AppCommand::EnterLearnModeFile(name, file_path, extra_hint) => {
-                        session.enter_kb_mode(&name);
-                        use crate::knowledge as kb;
-                        let exists = kb::open_db()
-                            .ok()
-                            .and_then(|c| kb::store::topic_id(&c, &name).ok().flatten());
-                        let kickoff = match exists {
-                            Some(tid) => {
-                                let progress = kb::open_db().ok()
-                                    .and_then(|c| kb::store::stats(&c, tid).ok())
-                                    .map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery))
-                                    .unwrap_or_default();
-                                format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。")
-                            }
-                            None => {
-                                // 探明文件规模：小文件直接注入全文；大文件只给结构概览，
-                                // 由 Agent 用 read_file(range=) 分批读取（复用现有工具，不爆 context）
-                                let content = std::fs::read_to_string(&file_path)
-                                    .map_err(|e| format!("读取失败: {e}"))
-                                    .unwrap_or_else(|e| format!("（文件读取失败：{e}，请用 read_file 自行读取 {file_path}）"));
-                                let total_lines = content.lines().count();
-                                let content_block = if content.chars().count() <= 24000 {
-                                    format!("\n\n===== 文件内容（{file_path}）=====\n{content}")
-                                } else {
-                                    // 大文件：给前 80 行预览 + 读取指引
-                                    let preview: String = content.lines().take(80).collect::<Vec<_>>().join("\n");
-                                    format!(
-                                        "\n\n===== 文件预览（前 80 行 / 共 {total_lines} 行）=====\n{preview}\n…\n【文件较大】请先用 read_file(path=\"{file_path}\", range=\"81-400\") 等分批读完全文，再抽取知识点建库。"
-                                    )
-                                };
-                                let hint = if extra_hint.is_empty() { String::new() } else { format!("用户补充要求：{extra_hint}。") };
-                                format!(
-                                    "[学习模式·文件建库] 请基于文件为用户构建知识库「{name}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点（规模由内容量决定），忠于原文可补充常识性前置知识；按 knowledge-base-tutor 技能规范 kb_create 建库（source=\"file:{file_path}\"），kb_graph 出图告知路径，然后 kb_learn 开始第一个知识点。{content_block}"
-                                )
-                            }
-                        };
-                        session.handle_message(&kickoff).await;
-                    }
-                    AppCommand::StopLearnMode => {
-                        let topic = session.kb_mode().unwrap_or("").to_string();
-                        session.exit_kb_mode();
-                        if topic.is_empty() {
-                            let _ = session.handle_message("[系统] 用户退出了学习模式（当前不在学习模式中）。").await;
-                        } else {
-                            session.handle_message(&format!(
-                                "[系统] 用户结束了「{topic}」的学习。请调用 kb_stats(topic=\"{topic}\", html=true) 生成 Bento 战绩，把 HTML 文件路径（浏览器打开）连同简短学习小结一起给用户，然后停止教学行为。"
-                            )).await;
-                        }
-                    }
-                    AppCommand::LearnSummary => {
-                        let topic = session.kb_mode().unwrap_or("").to_string();
-                        if topic.is_empty() {
-                            let _ = session.handle_message("[系统] 当前不在学习模式中（/summary 仅学习模式可用）。").await;
-                        } else {
-                            session.handle_message(&format!(
-                                "[系统] 用户想看「{topic}」的阶段总结（不退出学习模式）。请调用 kb_stats(topic=\"{topic}\", html=true) 生成 Bento 战绩，把 HTML 文件路径连同阶段性小结（已点亮节点、平均掌握度、薄弱点、下一步建议）一起给用户，然后询问是继续下一个知识点还是休息。"
-                            )).await;
-                        }
-                    }
-                }
-            }
-        });
     }
-
 
     /// /learn 命令：进入（或继续）知识库学习模式
     fn handle_learn_command(&mut self, arg: &str) -> Result<String, String> {
@@ -810,6 +707,9 @@ impl App {
 
             // 处理 API 事件（非阻塞）
             self.handle_api_events();
+
+            // 处理 TUI 出站消息（router 会话经 TuiChannel 回来的文本）
+            self.poll_outbound_messages();
 
             // 检查外部通道消息（微信/Telegram 等轮询消息）
             self.poll_inbound_messages();
@@ -983,8 +883,41 @@ impl App {
                     return;
                 }
 
+                // router 模式：agent 相关命令转发给 SessionRouter（与外部通道一致）
+                if self.tui_router_mode && is_router_routed_command(&input) {
+                    if let Some(tx) = &self.channel_inbound_tx {
+                        // 状态栏 📚 本地显示同步（真实 kb_mode 在 router 会话里）
+                        if input == "/stop" || input.starts_with("/stop ") {
+                            self.learn_topic = None;
+                        } else if let Some(rest) = input.strip_prefix("/learn ") {
+                            if let Some(name) = rest.split_whitespace().next() {
+                                if name != "list" && name != "列表" {
+                                    self.learn_topic = Some(name.to_string());
+                                }
+                            }
+                        }
+                        self.messages.push(Message::user(&input));
+                        let _ = tx.send(InboundMessage::new("tui", "local", input.clone()));
+                        // 输入历史维护（与正常路径一致）
+                        let trimmed = self.input.trim().to_string();
+                        if !trimmed.is_empty() {
+                            self.input_history.push(trimmed);
+                            if self.input_history.len() > 50 {
+                                self.input_history.remove(0);
+                            }
+                        }
+                        self.history_idx = self.input_history.len();
+                        self.input.clear();
+                        self.cursor_pos = 0;
+                        self.cmd_suggestions.clear();
+                        self.suggestion_idx = 0;
+                        return;
+                    }
+                }
+
                 // 处理命令
                 match input.as_str() {
+
                     "/quit" | "/exit" => {
                         self.archive_session();
                         self.export_debug();
@@ -1465,7 +1398,20 @@ impl App {
                             input.clone()
                         }));
 
-                        if let Some(tx) = &self.cmd_tx {
+                        if self.tui_router_mode {
+                            // TUI 即 channel：进 SessionRouter（与其他通道同一 Agent Loop）
+                            let content = if is_plan { plan_input } else { input };
+                            if let Some(tx) = &self.channel_inbound_tx {
+                                let _ = tx.send(InboundMessage::new("tui", "local", content));
+                                self.running = true;
+                                self.response_start = Some(Instant::now());
+                                self.stall_warned = false;
+                                self.streaming_buffer = String::new();
+                                self.messages.push(Message::system("⏳ 发送请求中..."));
+                            } else {
+                                self.messages.push(Message::system("⚠ 通道未挂接"));
+                            }
+                        } else if let Some(tx) = &self.cmd_tx {
                             let _ = tx.send(AppCommand::SendMessage(if is_plan { plan_input } else { input }));
                             self.running = true;
                             self.response_start = Some(Instant::now());
@@ -2143,6 +2089,56 @@ impl App {
                 let _ = dbg.export(&path);
             }
         }
+    }
+
+    /// 消费 TUI 出站队列（TuiChannel.send_message → 这里上屏）
+    ///
+    /// router 的命令回复（/learn list、/model 等 reply_to_channel 短路返回）不经
+    /// ApiEvent 流，因此收到出站消息即视为本轮完成：清 running/计时，防“等待响应”卡死。
+    fn poll_outbound_messages(&mut self) {
+        if let Some(ref mut rx) = self.outbound_rx {
+            let mut got = false;
+            while let Ok(text) = rx.try_recv() {
+                if !text.is_empty() {
+                    self.messages.push(Message::assistant(&text));
+                    self.scroll_offset = 0;
+                    got = true;
+                }
+            }
+            if got {
+                // 命令回复到达 = 本轮结束（普通对话的 Done 事件也会先清一次，双保险）
+                if self.running && self.streaming_buffer.is_empty() {
+                    self.running = false;
+                    self.response_start.take();
+                    self.messages.retain(|m| !(m.role == Role::System && (m.content.starts_with("⏳") || m.content.starts_with("🔧"))));
+                }
+            }
+        }
+    }
+
+    /// 设置 TUI 出站消息接收端
+    pub fn set_outbound_rx(&mut self, rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
+        self.outbound_rx = Some(rx);
+    }
+
+    /// TUI 入站是否走 SessionRouter
+    pub fn set_tui_router_mode(&mut self, on: bool) {
+        self.tui_router_mode = on;
+    }
+
+    /// 取走完整版 system prompt（lib.rs 传给 SessionRouter）
+    pub fn take_full_system_prompt(&mut self) -> String {
+        self.full_system_prompt.take().unwrap_or_default()
+    }
+
+    /// 取走 volatile 层文本（lib.rs 传给 SessionRouter）
+    pub fn take_pending_volatile_text(&mut self) -> String {
+        self.pending_volatile_text.take().unwrap_or_default()
+    }
+
+    /// 克隆 event 通道发送端（供 SessionRouter 的 TuiSink）
+    pub fn clone_event_tx(&self) -> Option<mpsc::UnboundedSender<ApiEvent>> {
+        self.event_tx_handle.clone()
     }
 
     /// 设置通道入站消息发送端

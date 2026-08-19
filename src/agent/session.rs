@@ -153,6 +153,14 @@ impl AgentSession {
         }
     }
 
+    /// 追加 volatile 层（时间/画像/项目上下文）到 Immutable Prefix
+    /// 必须在首条消息之前调用（router 创建会话后立即注入）
+    pub fn append_volatile(&mut self, text: &str) {
+        if !text.is_empty() {
+            self.context.extend_prefix(text.as_bytes());
+        }
+    }
+
     /// 获取 session_id
     pub fn session_id(&self) -> &str {
         &self.session_id
