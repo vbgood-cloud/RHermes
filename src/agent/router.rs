@@ -357,7 +357,7 @@ impl SessionRouter {
                     if let Some(session) = self.sessions.get_mut(&key) {
                         session.exit_kb_mode();
                         let kickoff = format!(
-                            "[系统] 用户结束了「{t}」的学习。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径（浏览器打开）连同简短学习小结一起给用户，然后停止教学行为。"
+                            "[系统] 用户结束了「{t}」的学习。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径（浏览器打开）连同简短学习小结一起给用户，然后停止教学行为。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。"
                         );
                         session.handle_message(&kickoff).await;
                     }
@@ -381,7 +381,7 @@ impl SessionRouter {
                 Some(t) => {
                     if let Some(session) = self.sessions.get_mut(&key) {
                         let kickoff = format!(
-                            "[系统] 用户想看「{t}」的阶段总结（不退出学习模式）。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径连同阶段性小结（已点亮节点、平均掌握度、薄弱点、下一步建议）一起给用户，然后询问是继续下一个知识点还是休息。"
+                            "[系统] 用户想看「{t}」的阶段总结（不退出学习模式）。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径连同阶段性小结（已点亮节点、平均掌握度、薄弱点、下一步建议）一起给用户，然后询问是继续下一个知识点还是休息。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。"
                         );
                         session.handle_message(&kickoff).await;
                     }
@@ -461,7 +461,7 @@ impl SessionRouter {
                         .file_name().and_then(|s| s.to_str()).unwrap_or("study").to_string();
                     let fc = files.len();
                     let fl = files.iter().map(|f| format!("  {f}")).collect::<Vec<_>>().join("\n");
-                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件后，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。\n\n===== 文件列表 =====\n{fl}");
+                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件后，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。\n\n===== 文件列表 =====\n{fl}");
                     let d_notice = format!("📚 学习模式：{d_stem}（目录 {fc} 个文件）\n正在遍历并构建知识库…");
                     (d_stem, d_kickoff, d_notice)
                 } else if m.is_file() {
@@ -474,7 +474,7 @@ impl SessionRouter {
                         Some(tid) => {
                             let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
                             let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
-                            let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始教学。");
+                            let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
                             (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"))
                         }
                         None => {
@@ -487,7 +487,7 @@ impl SessionRouter {
                                 format!("\n\n===== 文件预览（前 80 行 / 共 {total_lines} 行）=====\n{preview}\n…\n【文件较大】请先用 read_file(path=\"{file_path}\", range=\"81-400\") 等分批读完全文，再抽取知识点建库。")
                             };
                             let hint = if rest_hint.is_empty() { String::new() } else { format!("用户补充要求：{rest_hint}。") };
-                            let kickoff = format!("[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。{content_block}");
+                            let kickoff = format!("[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。{content_block}");
                             (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取并构建知识库…"))
                         }
                     }
@@ -510,12 +510,12 @@ impl SessionRouter {
                 Some(tid) => {
                     let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
                     let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
-                    let kickoff = format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。");
+                    let kickoff = format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
                     (name.clone(), kickoff, format!("📚 学习模式：{name}{progress}\n正在载入下一个知识点…"))
                 }
                 None => {
                     let hint = if topic_hint.is_empty() { String::new() } else { format!("用户主题提示：{topic_hint}。") };
-                    let kickoff = format!("[学习模式·新建] 知识库「{name}」尚不存在。{hint}请询问用户想学的具体主题或资料路径，然后按 knowledge-base-tutor 技能用 kb_create 建库（节点规模由内容决定），kb_graph 出图后开始教学。");
+                    let kickoff = format!("[学习模式·新建] 知识库「{name}」尚不存在。{hint}请询问用户想学的具体主题或资料路径，然后按 knowledge-base-tutor 技能用 kb_create 建库（节点规模由内容决定），kb_graph 出图后开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
                     (name.clone(), kickoff, format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"))
                 }
             }
