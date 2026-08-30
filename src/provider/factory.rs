@@ -140,12 +140,23 @@ pub fn create_transport(
             transport_config.api.base_url = base_url;
             transport_config.api.model = model;
             transport_config.api_key = api_key;
+            tracing::info!(
+                "[主 Transport] provider={}, base_url={}, model={}, api_key={}",
+                provider_name,
+                transport_config.api.base_url,
+                transport_config.api.model,
+                if transport_config.api_key.len() > 8 {
+                    format!("{}...{}", &transport_config.api_key[..4], &transport_config.api_key[transport_config.api_key.len()-4..])
+                } else {
+                    "(empty)".to_string()
+                }
+            );
             Arc::new(DeepSeekTransport::new(&transport_config))
         }
     };
 
     // P2a: 多 Provider 构建 — 收集所有已配置的 provider
-    let mut transports: Vec<(Arc<dyn Transport>, u32)> = vec![(transport, 1)];
+    let mut transports: Vec<(Arc<dyn Transport>, u32)> = vec![(transport, 10)]; // 主 provider 高权重
 
     // 遍历 config.providers，为主 provider 之外的其他 provider 创建 transport
     for (name, pcfg) in &config.providers {

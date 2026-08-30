@@ -432,12 +432,20 @@ impl AgentSession {
             loop {
                 match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
                     Ok(Some(crate::api::ApiEvent::StreamChunk(text))) => {
+                        // 过滤 <think> 标签：底层模型可能把思考内容放在 content 中
+                        let filtered = text
+                            .replace("<think>", "")
+                            .replace("</think>", "");
+                        if filtered.trim().is_empty() && !text.trim().is_empty() {
+                            // 整个 chunk 都是 think 标记，跳过
+                            continue;
+                        }
                         if !thinking_flushed && !thinking_buf.is_empty() {
                             self.sink.on_chunk(&format_thinking_block(&thinking_buf)).await;
                             thinking_flushed = true;
                         }
-                        final_text.push_str(&text);
-                        self.sink.on_chunk(&text).await;
+                        final_text.push_str(&filtered);
+                        self.sink.on_chunk(&filtered).await;
                     }
                     Ok(Some(crate::api::ApiEvent::Thinking(text))) => {
                         thinking_buf.push_str(&text);
@@ -853,6 +861,9 @@ fn select_tools(user_msg: &str) -> Vec<crate::api::ToolDef> {
     }
     if msg.contains("委派") || msg.contains("delegate") || msg.contains("子任务") {
         wanted.push("delegate_task");
+    }
+    if msg.contains("学习") || msg.contains("知识库") || msg.contains("kb_") || msg.contains("/learn") {
+        wanted.extend(["kb_create", "kb_graph", "kb_learn", "kb_quiz", "kb_stats", "kb_list"]);
     }
     let filtered: Vec<crate::api::ToolDef> = all.iter()
         .filter(|t| wanted.contains(&t.function.name.as_str()))

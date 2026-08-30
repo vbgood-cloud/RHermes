@@ -83,7 +83,17 @@ impl DeepSeekTransport {
     }
 
     fn base_url(&self) -> &str {
-        self.config.api.base_url.trim_end_matches('/')
+        let url = self.config.api.base_url.trim_end_matches('/');
+        tracing::debug!(
+            "[transport] base_url={url}, model={}, api_key={}",
+            self.config.api.model,
+            if self.config.api_key.len() > 8 {
+                format!("{}...{}", &self.config.api_key[..4], &self.config.api_key[self.config.api_key.len()-4..])
+            } else {
+                "(empty)".to_string()
+            }
+        );
+        url
     }
 }
 
@@ -147,6 +157,9 @@ impl Transport for DeepSeekTransport {
         let mut provider_meta = crate::api::ProviderMeta::default();
 
         let mut buffer = String::new();
+        // DSML 格式检测: 底层模型可能用 DSML 标记返回 tool_calls
+        let mut in_dsml = false;
+        let mut dsml_buffer = String::new();
         // P0 fix: 累积流式 tool_calls（SSE 中 name 和 arguments 分多块返回）
         let mut acc_tool_calls: std::collections::BTreeMap<i32, (String, String, String)> = std::collections::BTreeMap::new();
         let mut stream = response.bytes_stream();
@@ -192,6 +205,13 @@ impl Transport for DeepSeekTransport {
                                 if let Some(choice) = chunk_data.choices.first() {
                                     let content = choice.delta.content.as_deref().unwrap_or("");
                                     if !content.is_empty() {
+                                        // DSML 检测: 底层模型可能以 DSML 格式返回 tool_calls
+                                        // 一旦检测到 DSML 标记，停止发送文本，累积到 dsml_buffer
+                                        if content.contains("DSML") || in_dsml {
+                                            in_dsml = true;
+                                            dsml_buffer.push_str(content);
+                                            continue;
+                                        }
                                         if tx
                                             .send(ApiEvent::StreamChunk(content.to_string()))
                                             .is_err()
@@ -222,6 +242,21 @@ impl Transport for DeepSeekTransport {
                         }
                     }
                 }
+            }
+        }
+
+        // DSML 解析: 如果检测到 DSML 格式的 tool_calls，解析并追加到 acc_tool_calls
+        if in_dsml && !dsml_buffer.is_empty() {
+            tracing::debug!("[DSML] 检测到底层模型 DSML 格式 tool_calls ({} 字符)", dsml_buffer.len());
+            if let Some(calls) = parse_dsml_tool_calls(&dsml_buffer) {
+                tracing::debug!("[DSML] 解析出 {} 个 tool_calls", calls.len());
+                for (i, (name, args)) in calls.into_iter().enumerate() {
+                    let idx = 1000 + i as i32; // 避免和已有索引冲突
+                    acc_tool_calls.insert(idx, (format!("dsml_{i}"), name, args));
+                }
+            } else {
+                tracing::warn!("[DSML] 解析失败，原样输出");
+                let _ = tx.send(ApiEvent::StreamChunk(dsml_buffer));
             }
         }
 
@@ -290,5 +325,81 @@ impl Transport for DeepSeekTransport {
             *g = Some(model.to_string());
             tracing::info!("[Transport] 模型热切换: {model}");
         }
+    }
+}
+
+/// 解析 DSML 格式的 tool_calls
+///
+/// 底层模型（DeepSeek 系列）可能用 DSML 标记返回工具调用:
+/// <｜DSML｜tool_calls>
+/// <｜DSML｜invoke name="function_name">
+/// <｜DSML｜parameter name="param_name">value</｜DSML｜parameter>
+/// </｜DSML｜invoke>
+/// </｜DSML｜tool_calls>
+///
+/// 返回 Vec<(function_name, arguments_json)>
+fn parse_dsml_tool_calls(text: &str) -> Option<Vec<(String, String)>> {
+    let mut calls = Vec::new();
+
+    // 按 invoke 分割
+    let segments: Vec<&str> = text.split("<｜DSML｜invoke").collect();
+
+    for segment in segments.iter().skip(1) {
+        // 提取函数名: name="xxx"
+        let name_match = segment
+            .find("name=\"")
+            .and_then(|pos| {
+                let rest = &segment[pos + 6..];
+                rest.find("\"").map(|end| rest[..end].to_string())
+            });
+
+        let Some(name) = name_match else { continue };
+
+        if name.is_empty() {
+            continue;
+        }
+
+        // 提取参数
+        let mut params = serde_json::Map::new();
+        let param_parts: Vec<&str> = segment.split("<｜DSML｜parameter").collect();
+
+        for param_seg in param_parts.iter().skip(1) {
+            // 提取参数名
+            let param_name = param_seg
+                .find("name=\"")
+                .and_then(|pos| {
+                    let rest = &param_seg[pos + 6..];
+                    rest.find("\"").map(|end| rest[..end].to_string())
+                });
+
+            let Some(param_name) = param_name else { continue };
+
+            // 提取参数值（> 和 </｜DSML｜parameter> 之间）
+            let value = if let Some(gt) = param_seg.find('>') {
+                let after = &param_seg[gt + 1..];
+                if let Some(end) = after.find("</｜DSML｜parameter>") {
+                    after[..end].to_string()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            // 尝试解析为 JSON 值，否则作为字符串
+            let json_value: serde_json::Value = serde_json::from_str(&value)
+                .unwrap_or(serde_json::Value::String(value));
+
+            params.insert(param_name, json_value);
+        }
+
+        let args = serde_json::Value::Object(params).to_string();
+        calls.push((name, args));
+    }
+
+    if calls.is_empty() {
+        None
+    } else {
+        Some(calls)
     }
 }

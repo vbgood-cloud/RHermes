@@ -427,8 +427,9 @@ impl SessionRouter {
 
         // 参数是文件路径？
         let first_token = arg.split_whitespace().next().unwrap_or("").to_string();
-        let looks_like_file = first_token.contains('.') || first_token.starts_with('/')
-            || first_token.starts_with("~/") || first_token.starts_with("./");
+        let looks_like_file = first_token.contains('.') || first_token.contains('\\') || first_token.starts_with('/')
+            || first_token.starts_with("~/") || first_token.starts_with("./")
+            || std::path::Path::new(&first_token).exists();
 
         use crate::knowledge as kb;
         let (name, kickoff, user_notice) = if looks_like_file {
@@ -438,52 +439,67 @@ impl SessionRouter {
             } else {
                 first_token.clone()
             };
-            let meta = match std::fs::metadata(&file_path) {
-                Ok(m) if m.is_file() => m,
-                Ok(_) => {
-                    let reply = format!("⚠ {file_path} 不是普通文件");
-                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
-                    return;
-                }
-                Err(e) => {
-                    let reply = format!("⚠ 文件不存在: {file_path}（{e}）");
-                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
-                    return;
-                }
-            };
-            let size_kb = meta.len() / 1024;
-            let stem = std::path::Path::new(&file_path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("study")
-                .to_string();
-            let rest_hint = arg.strip_prefix(&first_token).unwrap_or("").trim().to_string();
+            // 支持目录和文件
+            let meta = std::fs::metadata(&file_path).ok();
+            if let Some(ref m) = meta {
+            if m.is_dir() {
+                    // 目录模式：收集文本文件
+                    let mut files = Vec::new();
+                    if let Ok(entries) = std::fs::read_dir(&file_path) {
+                        for entry in entries.filter_map(|e| e.ok()) {
+                            let p = entry.path();
+                            if p.is_file() {
+                                let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                                if ["txt","md","pdf","docx","pptx","xlsx","html","csv","json"].contains(&ext.as_str()) {
+                                    files.push(p.display().to_string());
+                                }
+                            }
+                        }
+                    }
+                    files.sort();
+                    let d_stem = std::path::Path::new(&file_path)
+                        .file_name().and_then(|s| s.to_str()).unwrap_or("study").to_string();
+                    let fc = files.len();
+                    let fl = files.iter().map(|f| format!("  {f}")).collect::<Vec<_>>().join("\n");
+                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件后，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。\n\n===== 文件列表 =====\n{fl}");
+                    let d_notice = format!("📚 学习模式：{d_stem}（目录 {fc} 个文件）\n正在遍历并构建知识库…");
+                    (d_stem, d_kickoff, d_notice)
+                } else if m.is_file() {
+                    let size_kb = m.len() / 1024;
+                    let stem = std::path::Path::new(&file_path)
+                        .file_stem().and_then(|s| s.to_str()).unwrap_or("study").to_string();
+                    let rest_hint = arg.strip_prefix(&first_token).unwrap_or("").trim().to_string();
 
-            // 复用 TUI 的文件建库 kickoff 逻辑（同步实现，含大文件分批指引）
-            match kb::open_db().and_then(|c| kb::store::topic_id(&c, &stem)).ok().flatten() {
-                Some(tid) => {
-                    let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
-                    let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
-                    let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始教学。");
-                    (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"))
+                    match kb::open_db().and_then(|c| kb::store::topic_id(&c, &stem)).ok().flatten() {
+                        Some(tid) => {
+                            let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
+                            let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
+                            let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始教学。");
+                            (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"))
+                        }
+                        None => {
+                            let content = std::fs::read_to_string(&file_path).unwrap_or_default();
+                            let total_lines = content.lines().count();
+                            let content_block = if content.chars().count() <= 24000 {
+                                format!("\n\n===== 文件内容（{file_path}）=====\n{content}")
+                            } else {
+                                let preview: String = content.lines().take(80).collect::<Vec<_>>().join("\n");
+                                format!("\n\n===== 文件预览（前 80 行 / 共 {total_lines} 行）=====\n{preview}\n…\n【文件较大】请先用 read_file(path=\"{file_path}\", range=\"81-400\") 等分批读完全文，再抽取知识点建库。")
+                            };
+                            let hint = if rest_hint.is_empty() { String::new() } else { format!("用户补充要求：{rest_hint}。") };
+                            let kickoff = format!("[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。{content_block}");
+                            (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取并构建知识库…"))
+                        }
+                    }
+                } else {
+                    let reply = format!("⚠ {file_path} 不是普通文件或目录");
+                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+                    return;
                 }
-                None => {
-                    let content = std::fs::read_to_string(&file_path).unwrap_or_default();
-                    let total_lines = content.lines().count();
-                    let content_block = if content.chars().count() <= 24000 {
-                        format!("\n\n===== 文件内容（{file_path}）=====\n{content}")
-                    } else {
-                        let preview: String = content.lines().take(80).collect::<Vec<_>>().join("\n");
-                        format!(
-                            "\n\n===== 文件预览（前 80 行 / 共 {total_lines} 行）=====\n{preview}\n…\n【文件较大】请先用 read_file(path=\"{file_path}\", range=\"81-400\") 等分批读完全文，再抽取知识点建库。"
-                        )
-                    };
-                    let hint = if rest_hint.is_empty() { String::new() } else { format!("用户补充要求：{rest_hint}。") };
-                    let kickoff = format!(
-                        "[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点（规模由内容量决定），忠于原文可补充常识性前置知识；按 knowledge-base-tutor 技能规范 kb_create 建库（source=\"file:{file_path}\"），kb_graph 出图告知路径，然后 kb_learn 开始第一个知识点。{content_block}"
-                    );
-                    (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取并构建知识库…"))
-                }
+            } else {
+                let reply = format!("⚠ 路径不存在: {file_path}");
+                self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+                return;
             }
         } else {
             // 名称模式
@@ -505,8 +521,43 @@ impl SessionRouter {
             }
         };
 
-        // 确保 session 存在（与 dispatch 主体相同的创建逻辑），然后进入模式并发 kickoff
-        // session 已在 dispatch 前半段创建过（此处 key 一致），直接 get_mut
+        // 确保 session 存在（若首次消息就是 /learn，session 尚未创建，需要先建）
+        if !self.sessions.contains_key(&key) {
+            let sink: Arc<dyn EventSink> = if inbound.channel == "tui" {
+                match self.tui_event_tx.clone() {
+                    Some(tx) => Arc::new(TuiSink::new(tx)),
+                    None => Arc::new(ChannelSink::new(
+                        self.channel_mgr.clone(),
+                        inbound.channel.clone(),
+                        inbound.chat_id.clone(),
+                    )),
+                }
+            } else if inbound.channel == "telegram" {
+                Arc::new(TelegramSink::new(
+                    self.channel_mgr.clone(),
+                    inbound.chat_id.clone(),
+                ))
+            } else {
+                Arc::new(ChannelSink::new(
+                    self.channel_mgr.clone(),
+                    inbound.channel.clone(),
+                    inbound.chat_id.clone(),
+                ))
+            };
+            let session = AgentSession::new(
+                key.clone(),
+                self.system_prompt.clone(),
+                self.dispatcher.clone(),
+                self.memory.clone(),
+                self.skill_engine.clone(),
+                self.transport.clone(),
+                sink,
+                self.config.clone(),
+                self.debug.clone(),
+            );
+            self.sessions.insert(key.clone(), session);
+        }
+
         self.reply_to_channel(&inbound.channel, &inbound.chat_id, &user_notice).await;
         if let Some(session) = self.sessions.get_mut(&key) {
             session.enter_kb_mode(&name);

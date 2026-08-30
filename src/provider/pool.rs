@@ -250,13 +250,15 @@ impl Transport for ProviderPool {
 
     async fn chat_stream(
         &self,
-        request: ChatRequest,
+        mut request: ChatRequest,
         tx: UnboundedSender<ApiEvent>,
     ) -> Result<(), ApiError> {
         let entry = match self.next_healthy() {
             Some(e) => e,
             None => return Err(ApiError::RetryExhausted),
         };
+        // 用选中 provider 的 model 替换（跨 provider 模型名不同）
+        request.model = entry.transport.model_name();
         match entry.transport.chat_stream(request, tx).await {
             Ok(r) => {
                 entry.breaker.record_success();

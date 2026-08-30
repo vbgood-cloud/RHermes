@@ -19,6 +19,12 @@ api_type = "openai"
 # 可选：覆盖 api.model
 # model = "deepseek-v4-flash"
 
+# 本地 LLM Provider (10.126.126.220:20128)
+[providers.local_llm]
+api_type = "openai"
+base_url = "http://10.126.126.220:20128"
+model = "auto"
+
 # ── 请求配置 ──
 [request]
 # 请求超时（秒）
@@ -59,8 +65,8 @@ compression_ratio = 0.8
 creation_nudge_interval = 15
 # 自动记忆提炼间隔（对话轮次，0=禁用）
 memory_nudge_interval = 10
-# 默认 Provider 名称（如 "deepseek"、"openai"），空则自动推断
-default_provider = ""
+# 默认 Provider 名称（如 "deepseek"、"openai"、"local_llm"），空则自动推断
+default_provider = "local_llm"
 # 安全工作目录（Agent 文件操作限制在此目录下，空=不限制）
 workspace = ""
 
