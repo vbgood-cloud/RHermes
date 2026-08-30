@@ -62,12 +62,21 @@ pub struct McpToolInfo {
     pub input_schema: Value,
 }
 
+/// MCP 资源信息（resources/list 返回项）
+#[derive(Debug, Clone)]
+pub struct McpResourceInfo {
+    pub uri: String,
+    pub name: String,
+    pub description: String,
+    pub mime_type: Option<String>,
+}
+
 /// 管理与一个 MCP Server 的完整生命周期
 pub struct McpAdapter {
     server_name: String,
     config: McpServerConfig,
     transport: Arc<Mutex<McpTransportWrapper>>,
-    tools: Vec<McpToolInfo>,
+    tools: Arc<std::sync::RwLock<Vec<McpToolInfo>>>,
     parallel_safe: bool,
 }
 
@@ -114,11 +123,19 @@ impl McpAdapter {
             }
         }
 
+        // 构造共享 transport/tools（后台热刷新用）
+        let transport_arc = Arc::new(Mutex::new(transport));
+        let tools_shared = Arc::new(std::sync::RwLock::new(tools));
+
         // 从 transport 取出 notification 接收端并启动后台处理 task
-        let notification_rx = transport.take_notification_rx();
+        let notification_rx = transport_arc.lock().await.take_notification_rx();
         let server_name_clone = server_name.clone();
         if let Some(mut notif_rx) = notification_rx {
+            let transport_for_refresh = transport_arc.clone();
+            let tools_for_refresh = tools_shared.clone();
             tokio::spawn(async move {
+                // tools_for_refresh 与 McpAdapter.tools 指向同一 RwLock（Arc 共享）
+                // 生命周期：McpAdapterManager 持有 adapter 至 shutdown，本 task 随 rx 关闭而结束
                 while let Some(notif) = notif_rx.recv().await {
                     let method = notif.get("method")
                         .and_then(|m| m.as_str())
@@ -126,7 +143,18 @@ impl McpAdapter {
                         .to_string();
                     match method.as_str() {
                         "notifications/tools/list_changed" => {
-                            tracing::info!("MCP [{}] 工具列表已变更（刷新需要重启程序）", server_name_clone);
+                            tracing::info!("MCP [{}] 工具列表已变更，自动刷新...", server_name_clone);
+                            match transport_for_refresh.lock().await.send_request("tools/list", serde_json::json!({})).await {
+                                Ok(result) => {
+                                    let new_tools = McpAdapter::parse_tools_list(&result);
+                                    let n = new_tools.len();
+                                    *tools_for_refresh.write().unwrap() = new_tools;
+                                    tracing::info!("MCP [{}] 工具列表已热更新: {} 个工具", server_name_clone, n);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("MCP [{}] 工具列表刷新失败: {}", server_name_clone, e);
+                                }
+                            }
                         }
                         "notifications/message" => {
                             // MCP 日志通知 — 转发到 tracing
@@ -164,8 +192,8 @@ impl McpAdapter {
         Ok(Self {
             server_name,
             config: config.clone(),
-            transport: Arc::new(Mutex::new(transport)),
-            tools,
+            transport: transport_arc,
+            tools: tools_shared,
             parallel_safe: config.parallel_safe,
         })
     }
@@ -230,8 +258,8 @@ impl McpAdapter {
         Ok(())
     }
 
-    /// 获取工具列表
-    pub fn tools(&self) -> &[McpToolInfo] { &self.tools }
+    /// 获取工具列表快照（支持热更新后读取）
+    pub fn tools(&self) -> Vec<McpToolInfo> { self.tools.read().unwrap().clone() }
     pub fn server_name(&self) -> &str { &self.server_name }
     pub fn server_name_owned(&self) -> String { self.server_name.clone() }
     pub fn parallel_safe(&self) -> bool { self.parallel_safe }
@@ -272,6 +300,42 @@ impl McpAdapter {
                 Err(e)
             }
         }
+    }
+
+    /// resources/list — 列出 Server 暴露的资源
+    pub async fn list_resources(&self) -> Result<Vec<McpResourceInfo>, McpError> {
+        let transport = self.transport.lock().await;
+        match transport.send_request("resources/list", serde_json::json!({})).await {
+            Ok(result) => {
+                let items = result.get("resources").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+                Ok(items.iter().filter_map(|r| {
+                    Some(McpResourceInfo {
+                        uri: r.get("uri")?.as_str()?.to_string(),
+                        name: r.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                        description: r.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+                        mime_type: r.get("mimeType").and_then(|m| m.as_str()).map(String::from),
+                    })
+                }).collect())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// resources/read — 读取资源内容
+    pub async fn read_resource(&self, uri: &str) -> Result<String, McpError> {
+        let transport = self.transport.lock().await;
+        let result = transport.send_request("resources/read", serde_json::json!({
+            "uri": uri,
+        })).await?;
+        // MCP 协议: { contents: [ { uri, mimeType?, text | blob } ] }
+        if let Some(contents) = result.get("contents").and_then(|c| c.as_array()) {
+            let texts: Vec<String> = contents.iter().filter_map(|c| {
+                c.get("text").and_then(|t| t.as_str()).map(String::from)
+            }).collect();
+            if !texts.is_empty() { return Ok(texts.join("
+")); }
+        }
+        Ok(serde_json::to_string_pretty(&result).unwrap_or_else(|_| result.to_string()))
     }
 
     fn parse_tools_list(result: &Value) -> Vec<McpToolInfo> {

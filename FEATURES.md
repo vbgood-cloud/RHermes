@@ -200,7 +200,7 @@
   - 调用超时控制（全局 120s 超时）
   - 全局工具定义获取（`all_tool_defs()`）
 
-### 3.3 内置工具 — 22 个工具
+### 3.3 内置工具 — 25 个工具（+MCP 动态 +Wasm 插件）
 
 | 工具名 | 描述 | 源文件 |
 |--------|------|--------|
@@ -226,6 +226,10 @@
 | `read_docx` | 读取 Word (.docx) 文件（docx-rs） | `src/tools/office/word.rs` |
 | `write_docx` | 写入 Word (.docx) 文件（docx-rs） | `src/tools/office/word.rs` |
 | `read_pptx` | 读取 PowerPoint (.pptx) 文件（zip+quick-xml） | `src/tools/office/pptx.rs` |
+| `parse_document` | LiteParse 文档解析（PDF/DOCX/图片 → 文本/Markdown） | `src/tools/liteparse.rs` |
+| `screenshot_document` | 文档页面截图 | `src/tools/liteparse.rs` |
+| `check_document_complexity` | 判断文档是否需要 OCR | `src/tools/liteparse.rs` |
+| `run_plugin` | 调用已加载插件（`__list__` 列出；Wasm 沙盒/SKILL.md 技能） | `src/tools/builtin.rs` |
 
 ### 3.4 文档解析（LiteParse）
 - **描述**：基于 liteparse Rust crate 的文档解析工具
@@ -252,14 +256,19 @@
     - Serper (`src/tools/search/serper.rs`)
     - 百度 (`src/tools/search/baidu.rs`)
 
-### 3.6 WASM 插件系统
-- **描述**：基于 Extism 框架的 WebAssembly 插件
-- **源文件**：`src/tools/wasm_plugin.rs`
+### 3.6 WASM 插件系统 + 统一 Plugin 系统（P28，v0.7.0）
+- **描述**：Extism Wasm 沙盒插件 + Host Functions 安全网关 + 统一 Plugin trait
+- **源文件**：`src/tools/wasm_plugin.rs`、`src/tools/wasm_host_functions.rs`、`src/plugin/`
 - **功能点**：
-  - `WasmPluginTool` — 加载 WASM 插件作为工具
-  - 导出函数：`info_name` / `info_description` / `info_parameters` / `execute`
-  - 插件目录自动扫描加载
-  - 执行超时和内存限制
+  - `WasmPluginTool` — 加载 WASM 插件作为工具（`info_name` / `info_description` / `info_parameters` / `execute` 约定）
+  - **Host Functions 安全网关**（v0.7.0）：`host_log` / `host_http_get` / `host_http_post` / `host_read_file` / `host_write_file` / `host_exec`
+  - **每插件权限声明**：`<name>.host.toml`（allowed_hosts / allowed_paths / allow_exec），无声明 = 最小权限纯计算
+  - 域名白名单支持 `*` / `*.example.com`；路径白名单 canonicalize 防 `../` 逃逸
+  - Manifest 强制内存上限 + 超时；execute 走 `spawn_blocking`
+  - **Plugin trait**（P28）：`descriptor()` / `execute()` / `health()` / `reload()`
+  - **PluginRouter**：注册/发现/路由，全局 OnceLock 单例
+  - `ExtismPlugin` / `SkillMdPlugin` 两种适配器；`plugins/registry.toml` 显式声明（per-plugin 权限）优先，无配置时目录扫描
+  - `run_plugin` 内置工具：Agent 直接调用（`__list__` 列出全部）
 
 ---
 
@@ -598,13 +607,13 @@ rhermes edu teacher             # 启动教师模式
 
 | 维度 | 数量 |
 |------|------|
-| 顶层模块 | 14 个 |
-| 内置工具 | 22 个 |
+| 顶层模块 | 15 个（含 plugin/） |
+| 内置工具 | 25 个 + MCP 动态 + Wasm 插件 |
 | 搜索引擎 | 5 种（Bing/DuckDuckGo/SearXNG/Serper/百度） |
-| 通信通道 | 5 种（TUI/微信/企微/Telegram/QQ/Web） |
-| MCP 传输 | 2 种（SSE/Direct HTTP） |
+| 通信通道 | 6 种（TUI/微信/企微/Telegram/QQ/Web） |
+| MCP 传输 | 2 种（SSE/Direct HTTP）+ resources/list/read + 工具热刷新 |
 | 教育子模块 | 10 个 |
-| 单元测试 | 173+ 个 |
+| 单元测试 | 267 个 |
 | 危险命令黑名单 | 70+ 模式 |
 | 学习模式 | 3 种（explore/scaffold/locked） |
 | 代理模式 | 3 种（all/off/auto） |

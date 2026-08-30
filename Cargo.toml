@@ -1,6 +1,6 @@
 [package]
 name = "rhermes"
-version = "0.6.9"
+version = "0.7.0"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]
@@ -60,6 +60,7 @@ scraper = "0.22"
 lru = "0.12"
 cron = "0.13"
 extism = "1.5"
+ureq = { version = "2", features = ["json"] }
 
 ratatui = "0.29"
 crossterm = "0.28"

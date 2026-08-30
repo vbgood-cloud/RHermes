@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use crate::agent::event_sink::{ChannelSink, EventSink};
+use crate::agent::event_sink::{ChannelSink, EventSink, TuiSink};
 use crate::agent::session::{AgentSession, SessionConfig};
 use crate::agent::MemorySystem;
 use crate::agent::SkillEngine;
@@ -27,6 +27,13 @@ struct StudentIdentity {
 }
 
 /// 会话路由器 — 按 `channel:chat_id` 管理 AgentSession
+/// 知识库学习模式命令种类（dispatch 拦截层使用）
+enum KbCommand {
+    Learn,
+    Summary,
+    Stop,
+}
+
 pub struct SessionRouter {
     sessions: HashMap<String, AgentSession>,
     dispatcher: Option<ToolDispatcher>,
@@ -53,6 +60,10 @@ pub struct SessionRouter {
     edu_role: String,
     /// 教育数据库路径
     edu_db_path: std::path::PathBuf,
+    /// TUI 事件发送端（tui 会话用 TuiSink 渲染到终端）
+    tui_event_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::api::ApiEvent>>,
+    /// volatile 层文本（时间/画像/AGENTS.md，会话创建时注入，与 TUI 本地会话对齐）
+    volatile_text: String,
 }
 
 impl SessionRouter {
@@ -84,11 +95,23 @@ impl SessionRouter {
             setup_states: std::collections::HashMap::new(),
             student_ids: std::collections::HashMap::new(),
             edu_role: String::new(),
+            tui_event_tx: None,
+            volatile_text: String::new(),
             edu_db_path: config_path
                 .parent()
                 .unwrap_or(std::path::Path::new("."))
                 .join("home/edu.db"),
         }
+    }
+
+    /// 注入 TUI 事件发送端（tui 会话经 TuiSink 直接渲染到终端）
+    pub fn set_tui_event_tx(&mut self, tx: tokio::sync::mpsc::UnboundedSender<crate::api::ApiEvent>) {
+        self.tui_event_tx = Some(tx);
+    }
+
+    /// 注入 volatile 层文本（所有新建会话统一注入）
+    pub fn set_volatile_text(&mut self, text: String) {
+        self.volatile_text = text;
     }
 
     /// 设置教育模式角色
@@ -124,6 +147,20 @@ impl SessionRouter {
             }
         }
 
+        // 拦截知识库学习模式命令（Gateway 模式，全通道）
+        // /learn 进入/续学/文件建库；/stop 退出并总结。会话级 kb_mode 由 AgentSession 持有。
+        {
+            let content = inbound.content.trim();
+            let is_learn = content == "/learn" || content.starts_with("/learn ");
+            let is_stop = content == "/stop" || content.starts_with("/stop ");
+            let is_summary = content == "/summary" || content == "/总结" || content.starts_with("/summary ") || content.starts_with("/总结 ");
+            if is_learn || is_stop || is_summary {
+                let cmd = if is_learn { KbCommand::Learn } else if is_summary { KbCommand::Summary } else { KbCommand::Stop };
+                self.handle_kb_mode_command(&inbound, cmd).await;
+                return;
+            }
+        }
+
         // 拦截教育模式斜杠命令
         if let Some(reply) = self.handle_edu_slash_command(&inbound.content, &inbound.chat_id) {
             if !reply.is_empty() {
@@ -134,7 +171,17 @@ impl SessionRouter {
 
         // 如果 session 不存在，创建一个新的
         if !self.sessions.contains_key(&key) {
-            let sink: Arc<dyn EventSink> = if inbound.channel == "telegram" {
+            let sink: Arc<dyn EventSink> = if inbound.channel == "tui" {
+                // TUI 通道：事件直接进终端渲染循环（流式/工具进度/成本统计全保留）
+                match self.tui_event_tx.clone() {
+                    Some(tx) => Arc::new(TuiSink::new(tx)),
+                    None => Arc::new(ChannelSink::new(
+                        self.channel_mgr.clone(),
+                        inbound.channel.clone(),
+                        inbound.chat_id.clone(),
+                    )),
+                }
+            } else if inbound.channel == "telegram" {
                 Arc::new(TelegramSink::new(
                     self.channel_mgr.clone(),
                     inbound.chat_id.clone(),
@@ -176,6 +223,11 @@ impl SessionRouter {
                     allowed,
                     Some(profile.mode.as_str().to_string()),
                 );
+            }
+
+            // volatile 层注入（时间/画像/项目上下文——TUI 本地会话有的，router 会话也要有）
+            if !self.volatile_text.is_empty() {
+                session.append_volatile(&self.volatile_text);
             }
 
             self.sessions.insert(key.clone(), session);
@@ -277,6 +329,194 @@ impl SessionRouter {
     }
 
     /// 处理 /sw 课程切换命令
+    /// 知识库学习模式命令（Gateway 全通道）：/learn [名称|文件路径|list] · /summary · /stop
+    ///
+    /// 与 TUI 版行为一致：
+    /// - /learn list         列出所有知识库
+    /// - /learn <文件路径>   文件内容建库（库名=文件名去扩展名；小文件注入全文，大文件给预览+分批读取指引）
+    /// - /learn <名称> [提示] 存在则续学（带进度），不存在则问主题
+    /// - /stop               退出并 kb_stats html=true 总结
+    /// - /summary            阶段总结（不退出学习模式，学习中随时可用）
+    async fn handle_kb_mode_command(&mut self, inbound: &InboundMessage, cmd: KbCommand) {
+        let content = inbound.content.trim().to_string();
+        let key = format!(
+            "{}:{}{}",
+            inbound.channel,
+            inbound.chat_id,
+            inbound.metadata.get("course_suffix").cloned().unwrap_or_default()
+        );
+
+        if matches!(cmd, KbCommand::Stop) {
+            // /stop：退出学习模式 + 总结
+            let topic = self
+                .sessions
+                .get_mut(&key)
+                .and_then(|s| s.kb_mode().map(|t| t.to_string()));
+            match topic {
+                Some(t) => {
+                    if let Some(session) = self.sessions.get_mut(&key) {
+                        session.exit_kb_mode();
+                        let kickoff = format!(
+                            "[系统] 用户结束了「{t}」的学习。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径（浏览器打开）连同简短学习小结一起给用户，然后停止教学行为。"
+                        );
+                        session.handle_message(&kickoff).await;
+                    }
+                    return;
+                }
+                None => {
+                    let reply = "当前不在学习模式中。用 /learn <名称> 或 /learn <文件路径> 开始。";
+                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, reply).await;
+                    return;
+                }
+            }
+        }
+
+        if matches!(cmd, KbCommand::Summary) {
+            // /summary（/总结）：阶段总结，不退出学习模式，学习中随时可用
+            let topic = self
+                .sessions
+                .get_mut(&key)
+                .and_then(|s| s.kb_mode().map(|t| t.to_string()));
+            match topic {
+                Some(t) => {
+                    if let Some(session) = self.sessions.get_mut(&key) {
+                        let kickoff = format!(
+                            "[系统] 用户想看「{t}」的阶段总结（不退出学习模式）。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径连同阶段性小结（已点亮节点、平均掌握度、薄弱点、下一步建议）一起给用户，然后询问是继续下一个知识点还是休息。"
+                        );
+                        session.handle_message(&kickoff).await;
+                    }
+                    return;
+                }
+                None => {
+                    let reply = "当前不在学习模式中。/summary 仅学习模式可用；用 /learn <名称> 或 /learn <文件路径> 开始。";
+                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, reply).await;
+                    return;
+                }
+            }
+        }
+
+        // /learn ...
+        let arg = content
+            .strip_prefix("/learn")
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        // /learn list
+        if arg == "list" || arg == "列表" {
+            use crate::knowledge as kb;
+            let reply = match kb::open_db().and_then(|c| kb::store::list_topics(&c)) {
+                Ok(rows) if rows.is_empty() => "📚 还没有任何知识库。/learn <文件路径> 从文件建库，或 /learn <名称> 后告诉我想学什么。".to_string(),
+                Ok(rows) => {
+                    let lines: Vec<String> = rows.iter().map(|(name, source, total, lit, avg)| {
+                        format!("📚 {name}（{source}）— 点亮 {lit}/{total} · 平均掌握 {avg}%")
+                    }).collect();
+                    format!("📚 我的知识库（用 /learn <名称> 继续）：\n{}", lines.join("\n"))
+                }
+                Err(e) => format!("⚠ 知识库读取失败: {e}"),
+            };
+            self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+            return;
+        }
+
+        if arg.is_empty() {
+            let reply = "用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式\n  /summary — 阶段总结（不退出，随时可用）";
+            self.reply_to_channel(&inbound.channel, &inbound.chat_id, reply).await;
+            return;
+        }
+
+        // 参数是文件路径？
+        let first_token = arg.split_whitespace().next().unwrap_or("").to_string();
+        let looks_like_file = first_token.contains('.') || first_token.starts_with('/')
+            || first_token.starts_with("~/") || first_token.starts_with("./");
+
+        use crate::knowledge as kb;
+        let (name, kickoff, user_notice) = if looks_like_file {
+            let file_path = if first_token.starts_with("~/") {
+                let home = std::env::var("HOME").unwrap_or_default();
+                first_token.replacen("~", &home, 1)
+            } else {
+                first_token.clone()
+            };
+            let meta = match std::fs::metadata(&file_path) {
+                Ok(m) if m.is_file() => m,
+                Ok(_) => {
+                    let reply = format!("⚠ {file_path} 不是普通文件");
+                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+                    return;
+                }
+                Err(e) => {
+                    let reply = format!("⚠ 文件不存在: {file_path}（{e}）");
+                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+                    return;
+                }
+            };
+            let size_kb = meta.len() / 1024;
+            let stem = std::path::Path::new(&file_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("study")
+                .to_string();
+            let rest_hint = arg.strip_prefix(&first_token).unwrap_or("").trim().to_string();
+
+            // 复用 TUI 的文件建库 kickoff 逻辑（同步实现，含大文件分批指引）
+            match kb::open_db().and_then(|c| kb::store::topic_id(&c, &stem)).ok().flatten() {
+                Some(tid) => {
+                    let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
+                    let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
+                    let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始教学。");
+                    (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"))
+                }
+                None => {
+                    let content = std::fs::read_to_string(&file_path).unwrap_or_default();
+                    let total_lines = content.lines().count();
+                    let content_block = if content.chars().count() <= 24000 {
+                        format!("\n\n===== 文件内容（{file_path}）=====\n{content}")
+                    } else {
+                        let preview: String = content.lines().take(80).collect::<Vec<_>>().join("\n");
+                        format!(
+                            "\n\n===== 文件预览（前 80 行 / 共 {total_lines} 行）=====\n{preview}\n…\n【文件较大】请先用 read_file(path=\"{file_path}\", range=\"81-400\") 等分批读完全文，再抽取知识点建库。"
+                        )
+                    };
+                    let hint = if rest_hint.is_empty() { String::new() } else { format!("用户补充要求：{rest_hint}。") };
+                    let kickoff = format!(
+                        "[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点（规模由内容量决定），忠于原文可补充常识性前置知识；按 knowledge-base-tutor 技能规范 kb_create 建库（source=\"file:{file_path}\"），kb_graph 出图告知路径，然后 kb_learn 开始第一个知识点。{content_block}"
+                    );
+                    (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取并构建知识库…"))
+                }
+            }
+        } else {
+            // 名称模式
+            let mut parts = arg.splitn(2, char::is_whitespace);
+            let name = parts.next().unwrap_or("").trim().to_string();
+            let topic_hint = parts.next().unwrap_or("").trim().to_string();
+            match kb::open_db().and_then(|c| kb::store::topic_id(&c, &name)).ok().flatten() {
+                Some(tid) => {
+                    let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
+                    let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
+                    let kickoff = format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。");
+                    (name.clone(), kickoff, format!("📚 学习模式：{name}{progress}\n正在载入下一个知识点…"))
+                }
+                None => {
+                    let hint = if topic_hint.is_empty() { String::new() } else { format!("用户主题提示：{topic_hint}。") };
+                    let kickoff = format!("[学习模式·新建] 知识库「{name}」尚不存在。{hint}请询问用户想学的具体主题或资料路径，然后按 knowledge-base-tutor 技能用 kb_create 建库（节点规模由内容决定），kb_graph 出图后开始教学。");
+                    (name.clone(), kickoff, format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"))
+                }
+            }
+        };
+
+        // 确保 session 存在（与 dispatch 主体相同的创建逻辑），然后进入模式并发 kickoff
+        // session 已在 dispatch 前半段创建过（此处 key 一致），直接 get_mut
+        self.reply_to_channel(&inbound.channel, &inbound.chat_id, &user_notice).await;
+        if let Some(session) = self.sessions.get_mut(&key) {
+            session.enter_kb_mode(&name);
+            session.handle_message(&kickoff).await;
+        } else {
+            let reply = "⚠ 会话未就绪，请稍后再试".to_string();
+            self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+        }
+    }
+
     fn handle_sw_command(&mut self, input: &str, chat_id: &str) -> String {
         use crate::edu::course::{parse_sw_command, CourseProfile, LearnMode, SwCommand};
 

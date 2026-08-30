@@ -1,0 +1,1567 @@
+{
+  "version": "0.7.0",
+  "generated": "2026-08-18",
+  "totals": {
+    "files": 87,
+    "lines": 34566,
+    "pub_fns": 496,
+    "tests": 267,
+    "traits": [
+      "Channel",
+      "EventSink",
+      "MemoryProvider",
+      "Plugin",
+      "SearchEngine",
+      "Tool",
+      "Transport"
+    ]
+  },
+  "modules": {
+    "agent": {
+      "files": 11,
+      "lines": 5717,
+      "pub_fns": 100,
+      "tests": 58,
+      "traits": [
+        "EventSink",
+        "MemoryProvider"
+      ],
+      "deps": [
+        "api",
+        "channel",
+        "core",
+        "edu",
+        "provider",
+        "tools"
+      ]
+    },
+    "api": {
+      "files": 1,
+      "lines": 986,
+      "pub_fns": 11,
+      "tests": 6,
+      "traits": [],
+      "deps": [
+        "core",
+        "provider"
+      ]
+    },
+    "bin": {
+      "files": 2,
+      "lines": 10,
+      "pub_fns": 0,
+      "tests": 0,
+      "traits": [],
+      "deps": []
+    },
+    "channel": {
+      "files": 11,
+      "lines": 3410,
+      "pub_fns": 41,
+      "tests": 11,
+      "traits": [
+        "Channel"
+      ],
+      "deps": [
+        "agent",
+        "api",
+        "core"
+      ]
+    },
+    "core": {
+      "files": 7,
+      "lines": 2892,
+      "pub_fns": 48,
+      "tests": 32,
+      "traits": [],
+      "deps": [
+        "tui"
+      ]
+    },
+    "cost": {
+      "files": 1,
+      "lines": 561,
+      "pub_fns": 27,
+      "tests": 20,
+      "traits": [],
+      "deps": []
+    },
+    "debug": {
+      "files": 1,
+      "lines": 337,
+      "pub_fns": 8,
+      "tests": 6,
+      "traits": [],
+      "deps": []
+    },
+    "edu": {
+      "files": 10,
+      "lines": 5430,
+      "pub_fns": 104,
+      "tests": 57,
+      "traits": [],
+      "deps": []
+    },
+    "gateway": {
+      "files": 2,
+      "lines": 815,
+      "pub_fns": 2,
+      "tests": 0,
+      "traits": [],
+      "deps": [
+        "channel",
+        "core"
+      ]
+    },
+    "init": {
+      "files": 1,
+      "lines": 877,
+      "pub_fns": 1,
+      "tests": 0,
+      "traits": [],
+      "deps": [
+        "core"
+      ]
+    },
+    "lib": {
+      "files": 1,
+      "lines": 1005,
+      "pub_fns": 4,
+      "tests": 0,
+      "traits": [],
+      "deps": [
+        "channel",
+        "core",
+        "tui"
+      ]
+    },
+    "main": {
+      "files": 1,
+      "lines": 5,
+      "pub_fns": 0,
+      "tests": 0,
+      "traits": [],
+      "deps": []
+    },
+    "mcp": {
+      "files": 8,
+      "lines": 1832,
+      "pub_fns": 51,
+      "tests": 11,
+      "traits": [],
+      "deps": [
+        "core",
+        "tools"
+      ]
+    },
+    "plugin": {
+      "files": 4,
+      "lines": 733,
+      "pub_fns": 16,
+      "tests": 11,
+      "traits": [
+        "Plugin"
+      ],
+      "deps": [
+        "tools"
+      ]
+    },
+    "provider": {
+      "files": 4,
+      "lines": 811,
+      "pub_fns": 12,
+      "tests": 0,
+      "traits": [
+        "Transport"
+      ],
+      "deps": [
+        "api",
+        "core"
+      ]
+    },
+    "scheduler": {
+      "files": 1,
+      "lines": 219,
+      "pub_fns": 2,
+      "tests": 0,
+      "traits": [],
+      "deps": [
+        "agent",
+        "channel",
+        "core",
+        "provider",
+        "tools"
+      ]
+    },
+    "tools": {
+      "files": 17,
+      "lines": 6315,
+      "pub_fns": 56,
+      "tests": 36,
+      "traits": [
+        "Tool",
+        "SearchEngine"
+      ],
+      "deps": [
+        "api",
+        "core",
+        "mcp"
+      ]
+    },
+    "tui": {
+      "files": 4,
+      "lines": 2611,
+      "pub_fns": 13,
+      "tests": 19,
+      "traits": [],
+      "deps": [
+        "agent",
+        "api",
+        "channel",
+        "core",
+        "tools"
+      ]
+    }
+  },
+  "files": {
+    "agent/curator.rs": {
+      "lines": 504,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 4,
+      "pub_structs": [
+        "UmbrellaAction",
+        "SkillStatus",
+        "Curator",
+        "CuratorReport"
+      ],
+      "pub_traits": [],
+      "tests": 7
+    },
+    "agent/event_sink.rs": {
+      "lines": 142,
+      "deps": [
+        "api",
+        "channel"
+      ],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [
+        "TuiSink",
+        "ChannelSink"
+      ],
+      "pub_traits": [
+        "EventSink"
+      ],
+      "tests": 0
+    },
+    "agent/guardrails.rs": {
+      "lines": 212,
+      "deps": [
+        "agent",
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 4,
+      "pub_structs": [
+        "ValidationError",
+        "ValidationResult",
+        "ResponseValidator",
+        "NudgeBuilder"
+      ],
+      "pub_traits": [],
+      "tests": 6
+    },
+    "agent/memory.rs": {
+      "lines": 825,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 23,
+      "pub_structs": [
+        "MemoryType",
+        "MemoryEntry",
+        "MemorySystem",
+        "UserProfile",
+        "StoreMemory",
+        "MemoryError"
+      ],
+      "pub_traits": [],
+      "tests": 10
+    },
+    "agent/memory_manager.rs": {
+      "lines": 342,
+      "deps": [
+        "agent"
+      ],
+      "mods": [],
+      "pub_fns": 11,
+      "pub_structs": [
+        "BuiltinProvider",
+        "ExternalProviderType",
+        "MemoryManager"
+      ],
+      "pub_traits": [
+        "MemoryProvider"
+      ],
+      "tests": 5
+    },
+    "agent/mod.rs": {
+      "lines": 24,
+      "deps": [],
+      "mods": [
+        "curator",
+        "event_sink",
+        "guardrails",
+        "memory",
+        "memory_manager",
+        "repair",
+        "router",
+        "session",
+        "skill",
+        "task"
+      ],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "agent/repair.rs": {
+      "lines": 807,
+      "deps": [
+        "api"
+      ],
+      "mods": [],
+      "pub_fns": 10,
+      "pub_structs": [
+        "RepairedResponse",
+        "RepairedToolCall",
+        "RepairAction",
+        "FlattenRepair",
+        "ScavengeRepair",
+        "TruncationRepair",
+        "StormSuppression",
+        "RepairPipeline"
+      ],
+      "pub_traits": [],
+      "tests": 19
+    },
+    "agent/router.rs": {
+      "lines": 721,
+      "deps": [
+        "agent",
+        "channel",
+        "edu",
+        "provider",
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 5,
+      "pub_structs": [
+        "SessionRouter"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "agent/session.rs": {
+      "lines": 869,
+      "deps": [
+        "agent",
+        "api",
+        "core",
+        "edu",
+        "provider",
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 8,
+      "pub_structs": [
+        "SessionConfig",
+        "AgentSession",
+        "ReflectionRecord"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "agent/skill.rs": {
+      "lines": 956,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 29,
+      "pub_structs": [
+        "RunAs",
+        "UsageTelemetry",
+        "Skill",
+        "SkillEngine",
+        "SkillError"
+      ],
+      "pub_traits": [],
+      "tests": 11
+    },
+    "agent/task.rs": {
+      "lines": 315,
+      "deps": [
+        "api",
+        "core",
+        "provider"
+      ],
+      "mods": [],
+      "pub_fns": 4,
+      "pub_structs": [
+        "SubAgentResult"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "api/mod.rs": {
+      "lines": 986,
+      "deps": [
+        "core",
+        "provider"
+      ],
+      "mods": [],
+      "pub_fns": 11,
+      "pub_structs": [
+        "ChatRequest",
+        "ToolDef",
+        "ToolFunction",
+        "ChatResponse",
+        "Choice",
+        "ResponseMessage",
+        "ResponseToolCall",
+        "ResponseToolFunction",
+        "Usage",
+        "StreamEvent",
+        "BalanceInfo",
+        "BalanceResponse",
+        "ProviderMeta",
+        "ApiEvent",
+        "ToolCallData",
+        "DeepSeekClient",
+        "ApiError"
+      ],
+      "pub_traits": [],
+      "tests": 6
+    },
+    "bin/rhermes_stu.rs": {
+      "lines": 5,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "bin/rhermes_teacher.rs": {
+      "lines": 5,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "channel/manager.rs": {
+      "lines": 126,
+      "deps": [
+        "channel"
+      ],
+      "mods": [],
+      "pub_fns": 13,
+      "pub_structs": [
+        "ChannelManager"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "channel/mod.rs": {
+      "lines": 162,
+      "deps": [],
+      "mods": [
+        "manager",
+        "types",
+        "wechat",
+        "wecom",
+        "telegram",
+        "qq",
+        "web"
+      ],
+      "pub_fns": 6,
+      "pub_structs": [
+        "ChannelStatus",
+        "ChannelState"
+      ],
+      "pub_traits": [
+        "Channel"
+      ],
+      "tests": 0
+    },
+    "channel/qq/api.rs": {
+      "lines": 312,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 5,
+      "pub_structs": [
+        "QqApi",
+        "QqError",
+        "QqEvent",
+        "GroupMessage",
+        "GroupAuthor",
+        "C2cMessage",
+        "C2cAuthor"
+      ],
+      "pub_traits": [],
+      "tests": 5
+    },
+    "channel/qq/mod.rs": {
+      "lines": 334,
+      "deps": [
+        "channel",
+        "core"
+      ],
+      "mods": [
+        "api"
+      ],
+      "pub_fns": 1,
+      "pub_structs": [
+        "QqChannel"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "channel/telegram/api.rs": {
+      "lines": 207,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 6,
+      "pub_structs": [
+        "TgError",
+        "TgUpdate",
+        "TgMessage",
+        "TgChat",
+        "TgUser",
+        "TgBotInfo",
+        "TelegramApi"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "channel/telegram/mod.rs": {
+      "lines": 417,
+      "deps": [
+        "channel",
+        "core"
+      ],
+      "mods": [
+        "api",
+        "sink"
+      ],
+      "pub_fns": 2,
+      "pub_structs": [
+        "TelegramChannel"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "channel/telegram/sink.rs": {
+      "lines": 165,
+      "deps": [
+        "agent",
+        "api",
+        "channel"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "TelegramSink"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "channel/types.rs": {
+      "lines": 46,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "InboundMessage",
+        "OutboundMessage"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "channel/web/mod.rs": {
+      "lines": 283,
+      "deps": [
+        "channel"
+      ],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [
+        "WebChannel"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "channel/wechat/mod.rs": {
+      "lines": 1016,
+      "deps": [
+        "channel",
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 3,
+      "pub_structs": [
+        "WeChatChannel"
+      ],
+      "pub_traits": [],
+      "tests": 6
+    },
+    "channel/wecom/mod.rs": {
+      "lines": 342,
+      "deps": [
+        "channel",
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "WeComChannel"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "core/archive.rs": {
+      "lines": 83,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "core/config.rs": {
+      "lines": 1853,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 8,
+      "pub_structs": [
+        "Config",
+        "ProxyMode",
+        "ProxyConfig",
+        "ChannelsConfig",
+        "WeComConfig",
+        "WeChatConfig",
+        "TelegramConfig",
+        "QqConfig",
+        "GatewayConfig",
+        "SchedulerConfig",
+        "ScheduledTaskConfig",
+        "WasmPluginConfig",
+        "McpConfig",
+        "SearchConfig",
+        "McpServerConfig",
+        "ProviderPoolConfig",
+        "ProviderConfig",
+        "ApiConfig",
+        "RequestConfig",
+        "MemoryConfig",
+        "DebugConfig",
+        "DisplayConfig",
+        "AgentConfig",
+        "ConfigError",
+        "EduConfig",
+        "LiteParseSettings"
+      ],
+      "pub_traits": [],
+      "tests": 14
+    },
+    "core/context.rs": {
+      "lines": 552,
+      "deps": [
+        "core",
+        "tui"
+      ],
+      "mods": [],
+      "pub_fns": 18,
+      "pub_structs": [
+        "ApiMessage",
+        "Context",
+        "Message"
+      ],
+      "pub_traits": [],
+      "tests": 11
+    },
+    "core/http_client.rs": {
+      "lines": 46,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "core/mod.rs": {
+      "lines": 34,
+      "deps": [],
+      "mods": [
+        "archive",
+        "config",
+        "context",
+        "http_client",
+        "path",
+        "prefix_cache"
+      ],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "core/path.rs": {
+      "lines": 187,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 11,
+      "pub_structs": [
+        "PathManager"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "core/prefix_cache.rs": {
+      "lines": 137,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 9,
+      "pub_structs": [
+        "PrefixCacheManager"
+      ],
+      "pub_traits": [],
+      "tests": 4
+    },
+    "cost.rs": {
+      "lines": 561,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 27,
+      "pub_structs": [
+        "ModelTier",
+        "CostPreset",
+        "CostBreakdown",
+        "NeedsProDetector",
+        "ResultCompressor",
+        "CostController"
+      ],
+      "pub_traits": [],
+      "tests": 20
+    },
+    "debug.rs": {
+      "lines": 337,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 8,
+      "pub_structs": [
+        "DebugEntry",
+        "SessionDebug",
+        "DebugStats",
+        "DebugError"
+      ],
+      "pub_traits": [],
+      "tests": 6
+    },
+    "edu/auth.rs": {
+      "lines": 211,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 4,
+      "pub_structs": [
+        "AuthResult"
+      ],
+      "pub_traits": [],
+      "tests": 5
+    },
+    "edu/course.rs": {
+      "lines": 378,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 12,
+      "pub_structs": [
+        "LearnMode",
+        "CourseProfile",
+        "SwCommand",
+        "CourseContext"
+      ],
+      "pub_traits": [],
+      "tests": 9
+    },
+    "edu/dashboard.rs": {
+      "lines": 207,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [
+        "TeacherDashboard"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "edu/e2e_tests.rs": {
+      "lines": 222,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 5
+    },
+    "edu/mod.rs": {
+      "lines": 737,
+      "deps": [],
+      "mods": [
+        "auth",
+        "course",
+        "dashboard",
+        "reflection",
+        "setup",
+        "store",
+        "teacher"
+      ],
+      "pub_fns": 2,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "edu/p2p.rs": {
+      "lines": 759,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 18,
+      "pub_structs": [
+        "ClassroomMessage",
+        "CourseBrief",
+        "LessonBrief",
+        "AssignmentBrief",
+        "TeacherP2P",
+        "StudentConnection",
+        "P2pAuthResult"
+      ],
+      "pub_traits": [],
+      "tests": 8
+    },
+    "edu/reflection.rs": {
+      "lines": 400,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 6,
+      "pub_structs": [
+        "ReflectionScore",
+        "ReflectionPrompt"
+      ],
+      "pub_traits": [],
+      "tests": 10
+    },
+    "edu/setup.rs": {
+      "lines": 427,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 5,
+      "pub_structs": [
+        "SetupStep",
+        "SetupState"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "edu/store.rs": {
+      "lines": 1556,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 42,
+      "pub_structs": [
+        "EduError",
+        "Teacher",
+        "Course",
+        "Class",
+        "Lesson",
+        "Student",
+        "LearningJournal",
+        "SessionInfo",
+        "Assignment",
+        "ClassPublish",
+        "ClassCourseOverride",
+        "Submission",
+        "EduStore"
+      ],
+      "pub_traits": [],
+      "tests": 15
+    },
+    "edu/teacher.rs": {
+      "lines": 533,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 13,
+      "pub_structs": [
+        "TeacherManager"
+      ],
+      "pub_traits": [],
+      "tests": 5
+    },
+    "gateway/mod.rs": {
+      "lines": 565,
+      "deps": [
+        "channel",
+        "core"
+      ],
+      "mods": [
+        "setup"
+      ],
+      "pub_fns": 1,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "gateway/setup.rs": {
+      "lines": 250,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "init.rs": {
+      "lines": 877,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "lib.rs": {
+      "lines": 1005,
+      "deps": [
+        "channel",
+        "core",
+        "tui"
+      ],
+      "mods": [
+        "agent",
+        "api",
+        "channel",
+        "core",
+        "cost",
+        "debug",
+        "edu",
+        "gateway",
+        "init",
+        "mcp",
+        "plugin",
+        "provider",
+        "scheduler",
+        "tools",
+        "tui"
+      ],
+      "pub_fns": 4,
+      "pub_structs": [
+        "Cli",
+        "CommonCommands",
+        "TeacherCli",
+        "TeacherCommands",
+        "StudentCli",
+        "StudentCommands"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "main.rs": {
+      "lines": 5,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "mcp/adapter.rs": {
+      "lines": 446,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 20,
+      "pub_structs": [
+        "McpLogLevel",
+        "McpToolInfo",
+        "McpResourceInfo",
+        "McpAdapter",
+        "McpAdapterManager"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "mcp/config.rs": {
+      "lines": 4,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "mcp/import.rs": {
+      "lines": 314,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 4
+    },
+    "mcp/mod.rs": {
+      "lines": 17,
+      "deps": [],
+      "mods": [
+        "adapter",
+        "config",
+        "import",
+        "setup",
+        "sse_transport",
+        "tool_wrapper",
+        "transport"
+      ],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "mcp/setup.rs": {
+      "lines": 210,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "mcp/sse_transport.rs": {
+      "lines": 431,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 20,
+      "pub_structs": [
+        "McpSseTransport",
+        "McpDirectTransport",
+        "McpTransportWrapper"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "mcp/tool_wrapper.rs": {
+      "lines": 119,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "McpRemoteTool"
+      ],
+      "pub_traits": [],
+      "tests": 2
+    },
+    "mcp/transport.rs": {
+      "lines": 291,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 7,
+      "pub_structs": [
+        "McpError",
+        "McpTransport"
+      ],
+      "pub_traits": [],
+      "tests": 2
+    },
+    "plugin/extism_adapter.rs": {
+      "lines": 98,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [
+        "ExtismPlugin"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "plugin/mod.rs": {
+      "lines": 269,
+      "deps": [
+        "tools"
+      ],
+      "mods": [
+        "extism_adapter",
+        "skill_md_adapter",
+        "types"
+      ],
+      "pub_fns": 9,
+      "pub_structs": [
+        "PluginRouter"
+      ],
+      "pub_traits": [
+        "Plugin"
+      ],
+      "tests": 2
+    },
+    "plugin/skill_md_adapter.rs": {
+      "lines": 160,
+      "deps": [
+        "plugin"
+      ],
+      "mods": [],
+      "pub_fns": 3,
+      "pub_structs": [
+        "SkillMdPlugin"
+      ],
+      "pub_traits": [],
+      "tests": 4
+    },
+    "plugin/types.rs": {
+      "lines": 206,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [
+        "PluginDescriptor",
+        "PluginSource",
+        "PluginOutput",
+        "PluginError",
+        "PluginEntry",
+        "RegistryToml",
+        "WasmSandboxConfig"
+      ],
+      "pub_traits": [],
+      "tests": 5
+    },
+    "provider/factory.rs": {
+      "lines": 202,
+      "deps": [
+        "core",
+        "provider"
+      ],
+      "mods": [],
+      "pub_fns": 4,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "provider/mod.rs": {
+      "lines": 14,
+      "deps": [],
+      "mods": [
+        "factory",
+        "pool",
+        "transport"
+      ],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "provider/pool.rs": {
+      "lines": 300,
+      "deps": [
+        "api",
+        "provider"
+      ],
+      "mods": [],
+      "pub_fns": 7,
+      "pub_structs": [
+        "ProviderPool"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "provider/transport.rs": {
+      "lines": 295,
+      "deps": [
+        "api",
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "DeepSeekTransport"
+      ],
+      "pub_traits": [
+        "Transport"
+      ],
+      "tests": 0
+    },
+    "scheduler/mod.rs": {
+      "lines": 219,
+      "deps": [
+        "agent",
+        "channel",
+        "core",
+        "provider",
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [
+        "SchedulerShared",
+        "Scheduler"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/builtin.rs": {
+      "lines": 2299,
+      "deps": [
+        "api",
+        "mcp",
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 17,
+      "pub_structs": [
+        "ReadFile",
+        "SearchContent",
+        "ReadPdf",
+        "Glob",
+        "WriteFile",
+        "RunCommand",
+        "GetCurrentTime",
+        "WebSearch",
+        "WebFetch",
+        "DelegateTask",
+        "RunSkill",
+        "SkillList",
+        "SkillSearch",
+        "SkillCreate",
+        "SkillPatch",
+        "Memory",
+        "SkillManage",
+        "RunPlugin",
+        "McpConnectReport"
+      ],
+      "pub_traits": [],
+      "tests": 9
+    },
+    "tools/dispatcher.rs": {
+      "lines": 328,
+      "deps": [
+        "core",
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 4,
+      "pub_structs": [
+        "ToolDispatcher"
+      ],
+      "pub_traits": [],
+      "tests": 6
+    },
+    "tools/liteparse.rs": {
+      "lines": 293,
+      "deps": [
+        "core",
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "ParseDocument",
+        "ScreenshotDocument",
+        "CheckDocumentComplexity"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/mod.rs": {
+      "lines": 19,
+      "deps": [],
+      "mods": [
+        "wasm_host_functions",
+        "wasm_plugin",
+        "registry",
+        "builtin",
+        "dispatcher",
+        "search",
+        "office",
+        "liteparse"
+      ],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/office/excel.rs": {
+      "lines": 309,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 0,
+      "pub_structs": [
+        "ReadExcel",
+        "WriteExcel"
+      ],
+      "pub_traits": [],
+      "tests": 1
+    },
+    "tools/office/mod.rs": {
+      "lines": 40,
+      "deps": [],
+      "mods": [
+        "excel",
+        "word",
+        "pptx"
+      ],
+      "pub_fns": 0,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/office/pptx.rs": {
+      "lines": 175,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 0,
+      "pub_structs": [
+        "ReadPptx"
+      ],
+      "pub_traits": [],
+      "tests": 2
+    },
+    "tools/office/word.rs": {
+      "lines": 364,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 0,
+      "pub_structs": [
+        "ReadDocx",
+        "WriteDocx"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "tools/registry.rs": {
+      "lines": 361,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 16,
+      "pub_structs": [
+        "ParamType",
+        "ParamDef",
+        "ToolCall",
+        "ToolResult",
+        "ToolError",
+        "ToolRegistry"
+      ],
+      "pub_traits": [
+        "Tool"
+      ],
+      "tests": 5
+    },
+    "tools/search/baidu.rs": {
+      "lines": 205,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "BaiduEngine"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/search/bing.rs": {
+      "lines": 168,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "BingEngine"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/search/duckduckgo.rs": {
+      "lines": 332,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "DuckDuckGoEngine"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/search/mod.rs": {
+      "lines": 259,
+      "deps": [],
+      "mods": [
+        "bing",
+        "baidu",
+        "duckduckgo",
+        "searxng",
+        "serper"
+      ],
+      "pub_fns": 5,
+      "pub_structs": [
+        "SearchResult",
+        "SearchError",
+        "SearchCache",
+        "MultiEngineSearcher"
+      ],
+      "pub_traits": [
+        "SearchEngine"
+      ],
+      "tests": 0
+    },
+    "tools/search/searxng.rs": {
+      "lines": 325,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "SearXngEngine"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/search/serper.rs": {
+      "lines": 99,
+      "deps": [
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "SerperEngine"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tools/wasm_host_functions.rs": {
+      "lines": 472,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 5,
+      "pub_structs": [
+        "HostAccessConfig"
+      ],
+      "pub_traits": [],
+      "tests": 7
+    },
+    "tools/wasm_plugin.rs": {
+      "lines": 267,
+      "deps": [
+        "core",
+        "tools"
+      ],
+      "mods": [],
+      "pub_fns": 3,
+      "pub_structs": [
+        "WasmPluginTool"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "tui/channel.rs": {
+      "lines": 76,
+      "deps": [
+        "channel",
+        "tui"
+      ],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [
+        "TuiChannel"
+      ],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "tui/markdown.rs": {
+      "lines": 276,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 8
+    },
+    "tui/mod.rs": {
+      "lines": 2164,
+      "deps": [
+        "agent",
+        "api",
+        "channel",
+        "core",
+        "tools",
+        "tui"
+      ],
+      "mods": [
+        "markdown",
+        "channel",
+        "qrcode"
+      ],
+      "pub_fns": 9,
+      "pub_structs": [
+        "AppCommand",
+        "Role",
+        "Message",
+        "Stats",
+        "App"
+      ],
+      "pub_traits": [],
+      "tests": 9
+    },
+    "tui/qrcode.rs": {
+      "lines": 95,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 2
+    }
+  }
+}

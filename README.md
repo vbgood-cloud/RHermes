@@ -6,7 +6,7 @@
 
 [![Rust 2024](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.6.6-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
+[![Version](https://img.shields.io/badge/version-0.7.0-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
 
 不满足于"又一个 AI 助手"。DeepSeek 前缀缓存压到极限、工具并行调度榨干 IO、自进化技能让 Agent 越长越强——用 Rust 写的，就该零妥协。
 
@@ -18,7 +18,7 @@
 |------|-----------|
 | 🧠 **越用越聪明** | 自动从对话中提炼技能（Markdown Playbook），带使用统计和成功率，会自动淘汰过期技能 |
 | ⚡ **Token 省到极致** | 三段式 Context（Immutable Prefix + Append Log + Scratch），专为 DeepSeek 前缀缓存设计 |
-| 🔧 **22+ 工具随便使** | 文件读写 / ripgrep 搜索 / PDF 解析 / Office 文档(Excel/Word/PPT) / 命令执行 / 子 Agent 委派 / MCP 远程工具 |
+| 🔧 **26+ 工具随便使** | 文件读写 / ripgrep 搜索 / PDF 解析 / Office 文档(Excel/Word/PPT) / 命令执行 / 子 Agent 委派 / MCP 远程工具 |
 | 🌐 **多渠道接入** | TUI 终端 / 微信个号 / 企业微信 / Telegram，出门也能使唤 |
 | 🦾 **Provider 高可用** | 多 AI Provider 池 + 熔断器 + 加权轮询，挂一个自动切下一个 |
 | 🔒 **安全不是后话** | 命令黑名单 / 白名单 / 工作目录边界 / 配置写保护 / 内网 SSRF 防护 |
@@ -55,6 +55,11 @@ rhermes gateway setup           # 配置频道向导
 rhermes gateway status          # 看状态
 rhermes gateway stop            # 停了
 
+# 教育模式三件套（超集架构）
+rhermes-teacher course create CS101 数据结构  # 教师建课
+rhermes-stu login 2026001 password             # 学生登录
+rhermes edu ...                                # 通用入口也能跑教育命令
+
 # MCP 远程工具
 rhermes mcp setup               # 添加 MCP Server
 rhermes mcp list                # 看看连了哪些
@@ -90,7 +95,9 @@ rhermes config check            # 检查配置有没有写对
   read_excel/write_excel ──→ Office 文档处理
   read_docx/write_docx   ──→ Word 读写
   read_pptx              ──→ PPTX 读取
-  mcp__*     ──→ 远程 MCP Server 工具
+  parse_document 等 3 个 ──→ LiteParse 文档解析（PDF/图片/截图）
+  run_plugin ──→ Wasm 插件 / SKILL.md 技能插件（Extism 沙盒 + 权限网关）
+  mcp__*     ──→ 远程 MCP Server 工具（resources 支持 + 工具热刷新）
 ```
 
 ---
@@ -137,10 +144,12 @@ DEEPSEEK_API_KEY=sk-your-key
 
 | 指标 | 值 |
 |------|:---|
-| 版本 | v0.6.6 |
-| 文件数 | 61 .rs |
-| 内置工具 | 22 + MCP 动态扩展 |
-| 支持渠道 | TUI / 微信 / 企业微信 / Telegram |
+| 版本 | v0.7.0 |
+| 文件数 | 87 .rs（~34,500 行） |
+| 内置工具 | 25 + MCP 动态扩展 + Wasm 插件 |
+| 单元测试 | 267 个全过 |
+| 支持渠道 | TUI / 微信 / 企业微信 / Telegram / QQ / Web |
+| 可执行程序 | rhermes / rhermes-stu / rhermes-teacher 三件套 |
 | AI Provider | DeepSeek / OpenAI / Zhipu / SiliconFlow / Ollama / LM Studio / New API / ... |
 
 ---
