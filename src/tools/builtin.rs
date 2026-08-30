@@ -296,8 +296,17 @@ pub fn set_workspace(path: String) -> String {
     } else {
         path
     };
-    // 统一 normalize: 正斜杠 + 小写（与各工具中的检查逻辑保持一致）
-    let normalized = ws.replace('\\', "/");
+    // 相对路径解析为绝对路径（拼接 cwd，确保绝对路径检查不会误拒）
+    let ws_abs = if Path::new(&ws).is_absolute() {
+        ws
+    } else {
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        format!("{}/{}", cwd.trim_end_matches('/'), ws.trim_start_matches('/'))
+    };
+    // 统一 normalize: 正斜杠
+    let normalized = ws_abs.replace('\\', "/");
     let _ = GLOBAL_WORKSPACE.set(normalized.clone());
     normalized
 }

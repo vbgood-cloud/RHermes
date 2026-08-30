@@ -186,17 +186,24 @@ impl ProviderPool {
 
     // ---- 私有辅助 ----
 
-    /// 选择下一个健康的 Provider（加权轮询）
+    /// 选择下一个健康的 Provider（主 provider 优先 + 熔断降级）
     fn next_healthy(&self) -> Option<&ProviderEntry> {
         let len = self.providers.len();
         if len == 0 {
             return None;
         }
 
-        let start = self.index.fetch_add(1, Ordering::AcqRel) as usize % len;
+        // 主 provider（index 0）优先：健康时直接使用
+        if self.providers[0].is_healthy() {
+            return Some(&self.providers[0]);
+        }
+
+        // 主 provider 不健康，轮询 fallback
+        let start = self.index.fetch_add(1, Ordering::AcqRel) as usize % (len - 1).max(1) + 1;
 
         for i in 0..len {
             let idx = (start + i) % len;
+            if idx == 0 { continue; } // 跳过主 provider（已检查过）
             if self.providers[idx].is_healthy() {
                 return Some(&self.providers[idx]);
             }
