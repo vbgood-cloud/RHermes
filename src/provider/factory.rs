@@ -10,6 +10,7 @@ use crate::provider::{DeepSeekTransport, ProviderPool, Transport};
 /// 默认的 API base URL 映射
 pub fn default_provider_base_url(provider_name: &str) -> &'static str {
     match provider_name {
+        "omniroute" => "http://10.126.126.220:20128/v1",
         "openai" | "openrouter" => "https://api.openai.com/v1",
         "deepseek" => "https://api.deepseek.com",
         "siliconflow" => "https://api.siliconflow.cn/v1",
