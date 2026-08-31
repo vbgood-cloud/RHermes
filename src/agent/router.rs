@@ -117,6 +117,30 @@ impl SessionRouter {
     /// 设置教育模式角色
     pub fn set_edu_role(&mut self, role: &str) {
         self.edu_role = role.to_string();
+
+        // 学生模式：从 config.toml 恢复已保存的认证状态
+        if role == "student" {
+            if let Ok(cfg) = crate::core::Config::load(&self.config_path) {
+                let student_no = cfg.edu.student_no.as_str();
+                if !student_no.is_empty() {
+                    // 从 EduStore 恢复学生身份
+                    if let Ok(store) = crate::edu::store::EduStore::open(&self.edu_db_path) {
+                        if let Ok(Some(student)) = store.get_student(student_no) {
+                            tracing::info!("[edu] 从 config 恢复学生身份: {} ({})", student.name, student_no);
+                            self.student_ids.insert(
+                                "__restored__".to_string(),
+                                StudentIdentity {
+                                    student_id: student.id,
+                                    student_no: student_no.to_string(),
+                                    name: student.name.clone(),
+                                    class_id: student.primary_class_id,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// 路由一条入站消息到对应的 AgentSession
@@ -895,7 +919,7 @@ impl SessionRouter {
                         let store = crate::edu::store::EduStore::open(&self.edu_db_path).ok()?;
                         match crate::edu::auth::authenticate(&store, no, pwd) {
                             Ok(result) => {
-                                // 记录学生身份，供反思记录落库使用
+                                // 记录学生身份（内存，供反思记录落库）
                                 self.student_ids.insert(
                                     chat_id.to_string(),
                                     StudentIdentity {
@@ -905,6 +929,11 @@ impl SessionRouter {
                                         class_id: result.primary_class_id,
                                     },
                                 );
+                                // 持久化到 config.toml（供 TUI/submit/feedback 使用）
+                                let mut cfg = crate::core::Config::load(&self.config_path).unwrap_or_default();
+                                cfg.edu.student_no = no.to_string();
+                                cfg.edu.auth_token = result.token;
+                                let _ = cfg.save(&self.config_path);
                                 Some(format!("✅ 认证成功！欢迎, {}", result.student_name))
                             }
                             Err(e) => Some(format!("❌ {e}")),

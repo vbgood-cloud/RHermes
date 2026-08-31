@@ -350,8 +350,9 @@ pub fn handle_slash_command(input: &str, config_path: &Path) -> String {
                     };
                     match auth::authenticate(&store, no, pwd) {
                         Ok(result) => {
-                            // 保存 token 到 config
+                            // 保存 student_no + token 到 config（统一持久化）
                             let mut cfg = crate::core::Config::load(config_path).unwrap_or_default();
+                            cfg.edu.student_no = no.to_string();
                             cfg.edu.auth_token = result.token;
                             let _ = cfg.save(config_path);
                             format!("✅ 认证成功！欢迎, {}", result.student_name)
