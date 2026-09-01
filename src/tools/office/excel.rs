@@ -257,24 +257,12 @@ impl Tool for WriteExcel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::builtin::GLOBAL_WORKSPACE;
-
-    /// 确保 GLOBAL_WORKSPACE 已初始化（与 dispatcher 测试一致）
-    fn ensure_workspace() {
-        GLOBAL_WORKSPACE.get_or_init(|| {
-            std::env::current_dir()
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|_| ".".to_string())
-        });
-    }
 
     #[test]
     fn test_read_write_excel_roundtrip() {
-        ensure_workspace();
-        let ws = GLOBAL_WORKSPACE.get().unwrap();
-        let test_dir = format!("{ws}/target/tmp_office_test");
-        std::fs::create_dir_all(&test_dir).unwrap();
-        let path_str = format!("{test_dir}/test_excel.xlsx");
+        // 用 cwd 下的临时目录：在工作目录内（通过 check_workspace 边界），又不依赖共享 GLOBAL_WORKSPACE
+        let dir = tempfile::tempdir_in(std::env::current_dir().unwrap()).expect("创建临时目录失败");
+        let path_str = dir.path().join("test_excel.xlsx").to_string_lossy().to_string();
 
         // 先写
         let write_tool = WriteExcel;
@@ -301,8 +289,6 @@ mod tests {
         assert!(content.contains("张三"), "内容缺少张三: {content}");
         assert!(content.contains("员工"), "Sheet 名错误: {content}");
 
-        // 清理
-        let _ = std::fs::remove_file(&path_str);
-        let _ = std::fs::remove_dir(&test_dir);
+        // TempDir Drop 时自动清理
     }
 }

@@ -863,7 +863,7 @@ fn select_tools(user_msg: &str) -> Vec<crate::api::ToolDef> {
         wanted.push("delegate_task");
     }
     if msg.contains("学习") || msg.contains("知识库") || msg.contains("kb_") || msg.contains("/learn") {
-        wanted.extend(["kb_create", "kb_graph", "kb_learn", "kb_quiz", "kb_stats", "kb_list"]);
+        wanted.extend(["kb_create", "kb_append", "kb_graph", "kb_learn", "kb_quiz", "kb_stats", "kb_list"]);
     }
     let filtered: Vec<crate::api::ToolDef> = all.iter()
         .filter(|t| wanted.contains(&t.function.name.as_str()))

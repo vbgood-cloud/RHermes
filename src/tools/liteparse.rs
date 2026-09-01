@@ -58,6 +58,17 @@ fn get_liteparse() -> Result<Arc<liteparse::LiteParse>, ToolError> {
     })
 }
 
+/// 解析文档为纯文本（供 /learn 大文件管线直接调用，绕过 Tool 层）
+/// 返回 markdown 文本；失败返回错误信息
+pub async fn parse_document_text(file_path: &str) -> Result<String, String> {
+    let parser = get_liteparse().map_err(|e| e.to_string())?;
+    let result = parser
+        .parse(file_path)
+        .await
+        .map_err(|e| format!("文档解析失败: {e}"))?;
+    Ok(result.text)
+}
+
 // ---------------------------------------------------------------------------
 // 路径安全检查
 // ---------------------------------------------------------------------------

@@ -39,10 +39,19 @@ pub fn bento_dir() -> PathBuf {
     d
 }
 
+/// 大文件学习资料落盘目录（data_root/knowledge/sources/）
+/// /learn 大文件模式下，规范化全文分段落盘到这里，Agent 按 part 文件列表逐一读取
+pub fn sources_dir() -> PathBuf {
+    let d = crate::core::PathManager::detect().data_root().join("knowledge").join("sources");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
 /// 工具注册（在 builtin_registry 中调用）
 pub fn kb_tools() -> Vec<std::sync::Arc<dyn crate::tools::Tool>> {
     vec![
         std::sync::Arc::new(crate::tools::KbCreate),
+        std::sync::Arc::new(crate::tools::KbAppend),
         std::sync::Arc::new(crate::tools::KbGraph),
         std::sync::Arc::new(crate::tools::KbLearn),
         std::sync::Arc::new(crate::tools::KbQuiz),

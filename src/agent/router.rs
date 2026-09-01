@@ -66,6 +66,98 @@ pub struct SessionRouter {
     volatile_text: String,
 }
 
+/// 学习资料分块读取 + 落盘中转
+///
+/// 解决 /learn 大文件内容丢失问题：
+/// - 二进制文档（pdf/docx/pptx/xlsx/png 等）用 parse_document 解析为文本
+/// - 文本文件 read_to_string
+/// - 内容 ≤ 24000 字符：直接返回全文，内联注入 kickoff
+/// - 内容 > 24000 字符：按行分块（每块 ≤ CHUNK_CHARS），逐块落盘到
+///   data_root/knowledge/sources/<stem>/part_NNNN.md，返回文件清单，
+///   Agent 按清单逐段 read_file，100% 覆盖全文
+const CHUNK_CHARS: usize = 20000;
+
+/// 二进制文档扩展名（需 parse_document 解析）
+fn is_binary_doc(ext: &str) -> bool {
+    matches!(
+        ext,
+        "pdf" | "docx" | "pptx" | "xlsx" | "xls"
+            | "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "tif" | "tiff"
+    )
+}
+
+/// 读取学习资料，返回 (全文或空, 分块文件清单, 总字符数)
+/// - 全文可直接注入时返回空清单
+/// - 分块时返回按序排列的 part 文件绝对路径
+async fn load_study_material(
+    file_path: &str,
+    stem: &str,
+) -> Result<(String, Vec<std::path::PathBuf>, usize), String> {
+    let ext = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // 1) 读入：二进制走 parse_document，文本走 read_to_string
+    let content = if is_binary_doc(&ext) {
+        match crate::tools::liteparse::parse_document_text(file_path).await {
+            Ok(text) => text,
+            Err(e) => {
+                // 解析失败（如 pdfium 缺失）：退回文本读取，若仍失败则报错
+                tracing::warn!("[learn] parse_document 解析 {file_path} 失败: {e}");
+                std::fs::read_to_string(file_path).unwrap_or_default()
+            }
+        }
+    } else {
+        std::fs::read_to_string(file_path).map_err(|e| format!("读取文件失败: {file_path}（{e}）"))?
+    };
+
+    let total_chars = content.chars().count();
+    if total_chars <= 24000 {
+        return Ok((content, Vec::new(), total_chars));
+    }
+
+    // 2) 大文件：按行分块落盘
+    let dir = crate::knowledge::sources_dir().join(stem);
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建分段目录失败: {e}"))?;
+
+    let mut parts: Vec<std::path::PathBuf> = Vec::new();
+    let mut buf = String::new();
+    let mut buf_chars = 0usize;
+    let mut part_no = 0usize;
+
+    for line in content.lines() {
+        let line_chars = line.chars().count() + 1; // +1 换行
+        if buf_chars + line_chars > CHUNK_CHARS && !buf.is_empty() {
+            part_no += 1;
+            let p = dir.join(format!("part_{part_no:04}.md"));
+            std::fs::write(&p, &buf).map_err(|e| format!("写入分段文件失败: {e}"))?;
+            parts.push(p);
+            buf.clear();
+            buf_chars = 0;
+        }
+        buf.push_str(line);
+        buf.push('\n');
+        buf_chars += line_chars;
+    }
+    if !buf.is_empty() {
+        part_no += 1;
+        let p = dir.join(format!("part_{part_no:04}.md"));
+        std::fs::write(&p, &buf).map_err(|e| format!("写入分段文件失败: {e}"))?;
+        parts.push(p);
+    }
+
+    tracing::info!(
+        "[learn] 大文件 {file_path} 已分 {part_no} 段落盘到 {}（{total_chars} 字符）",
+        dir.display()
+    );
+    Ok((String::new(), parts, total_chars))
+}
+
 impl SessionRouter {
     pub fn new(
         dispatcher: Option<ToolDispatcher>,
@@ -484,8 +576,19 @@ impl SessionRouter {
                     let d_stem = std::path::Path::new(&file_path)
                         .file_name().and_then(|s| s.to_str()).unwrap_or("study").to_string();
                     let fc = files.len();
-                    let fl = files.iter().map(|f| format!("  {f}")).collect::<Vec<_>>().join("\n");
-                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件后，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。\n\n===== 文件列表 =====\n{fl}");
+                    // 按扩展名标注每个文件的读取方式：二进制→parse_document，文本→read_file 分批
+                    let fl: Vec<String> = files.iter().map(|f| {
+                        let ext = std::path::Path::new(f)
+                            .extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        let method = if is_binary_doc(&ext) {
+                            "parse_document(file_path=...)"
+                        } else {
+                            "read_file(path=...) 分段读取"
+                        };
+                        format!("  {f}\n    → {method}")
+                    }).collect();
+                    let fl = fl.join("\n");
+                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件（按标注方式），大文本文件用 read_file 分段读完，再用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。\n\n===== 文件列表（含读取方式）=====\n{fl}");
                     let d_notice = format!("📚 学习模式：{d_stem}（目录 {fc} 个文件）\n正在遍历并构建知识库…");
                     (d_stem, d_kickoff, d_notice)
                 } else if m.is_file() {
@@ -502,17 +605,40 @@ impl SessionRouter {
                             (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"))
                         }
                         None => {
-                            let content = std::fs::read_to_string(&file_path).unwrap_or_default();
-                            let total_lines = content.lines().count();
-                            let content_block = if content.chars().count() <= 24000 {
+                            // 大文件分段管线：二进制→parse_document，文本→read_to_string，
+                            // 超限内容分段落盘到 data_root/knowledge/sources/<stem>/
+                            let (content, parts, total_chars) = match load_study_material(&file_path, &stem).await {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    let reply = format!("⚠ 读取学习资料失败: {e}");
+                                    self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+                                    return;
+                                }
+                            };
+
+                            let content_block = if parts.is_empty() {
+                                // 小文件：全文注入
                                 format!("\n\n===== 文件内容（{file_path}）=====\n{content}")
                             } else {
-                                let preview: String = content.lines().take(80).collect::<Vec<_>>().join("\n");
-                                format!("\n\n===== 文件预览（前 80 行 / 共 {total_lines} 行）=====\n{preview}\n…\n【文件较大】请先用 read_file(path=\"{file_path}\", range=\"81-400\") 等分批读完全文，再抽取知识点建库。")
+                                // 大文件：给出分块清单 + 强制读取指令
+                                let part_lines: Vec<String> = parts.iter().enumerate()
+                                    .map(|(i, p)| format!("  第{}段: read_file(path=\"{}\")", i + 1, p.display()))
+                                    .collect();
+                                format!(
+                                    "\n\n【文件较大】已分段落盘（共 {} 字符，{} 段）。必须按顺序用 read_file 逐段读完，一段都不能遗漏：\n{}\n\n全部读完后，综合所有段的内容抽取 8-40 个知识点，用 kb_create 一次性建库。",
+                                    total_chars,
+                                    parts.len(),
+                                    part_lines.join("\n")
+                                )
                             };
                             let hint = if rest_hint.is_empty() { String::new() } else { format!("用户补充要求：{rest_hint}。") };
                             let kickoff = format!("[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。{content_block}");
-                            (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取并构建知识库…"))
+                            let notice = if parts.is_empty() {
+                                format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取并构建知识库…")
+                            } else {
+                                format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，大文件已分 {n} 段）\n正在读取并构建知识库…", n = parts.len())
+                            };
+                            (stem.clone(), kickoff, notice)
                         }
                     }
                 } else {

@@ -1,0 +1,94 @@
+<svg viewBox="0 0 680 540" width="100%" role="img"><title>RHermes /learn 大文件处理：当前问题 vs 分段方案</title><desc>上半部分展示当前一次性加载导致内容丢失的链路；下半部分展示分段读取+分段建库的改进方案。</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<style>.t{font:13px sans-serif;fill:#2C2C2A}.ts{font:12px sans-serif;fill:#888780}.th{font:14px sans-serif;font-weight:500;fill:#2C2C2A}.tg{font:11px sans-serif;fill:#791F1F}</style>
+</defs>
+
+<rect x="24" y="16" width="632" height="225" rx="12" fill="#FCEBEB" stroke="#E24B4A" stroke-width="0.5"/>
+<text class="th" x="36" y="36" fill="#791F1F">当前：一次性加载 → 内容丢失</text>
+
+<rect x="48" y="56" width="150" height="56" rx="8" fill="#F7C1C1" stroke="#E24B4A" stroke-width="0.5"/>
+<text class="th" x="123" y="78" text-anchor="middle" dominant-baseline="central">/learn file</text>
+<text class="ts" x="123" y="96" text-anchor="middle" dominant-baseline="central">router.rs L505</text>
+
+<path d="M198 84 L236 84" fill="none" stroke="#A32D2D" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="238" y="56" width="160" height="56" rx="8" fill="#F7C1C1" stroke="#E24B4A" stroke-width="0.5"/>
+<text class="th" x="318" y="76" text-anchor="middle" dominant-baseline="central">read_to_string</text>
+<text class="ts" x="318" y="94" text-anchor="middle" dominant-baseline="central">二进制 .pptx → Err</text>
+<text class="ts" x="318" y="108" text-anchor="middle" dominant-baseline="central">unwrap_or_default = 空</text>
+
+<path d="M398 84 L436 84" fill="none" stroke="#A32D2D" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="438" y="56" width="190" height="56" rx="8" fill="#F7C1C1" stroke="#E24B4A" stroke-width="0.5"/>
+<text class="th" x="533" y="76" text-anchor="middle" dominant-baseline="central">content_block</text>
+<text class="ts" x="533" y="94" text-anchor="middle" dominant-baseline="central">≤24000字 注入全文</text>
+<text class="ts" x="533" y="108" text-anchor="middle" dominant-baseline="central">&gt;24000 仅前80行+提示</text>
+
+<path d="M533 112 L533 150" fill="none" stroke="#A32D2D" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="438" y="152" width="190" height="56" rx="8" fill="#F09595" stroke="#A32D2D" stroke-width="0.5"/>
+<text class="th" x="533" y="174" text-anchor="middle" dominant-baseline="central" fill="#501313">kickoff 注入</text>
+<text class="ts" x="533" y="192" text-anchor="middle" dominant-baseline="central" fill="#791F1F">让模型自己 read_file 分批</text>
+
+<path d="M438 180 L300 180" fill="none" stroke="#A32D2D" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+
+<rect x="120" y="152" width="178" height="56" rx="8" fill="#F7C1C1" stroke="#E24B4A" stroke-width="0.5"/>
+<text class="th" x="209" y="172" text-anchor="middle" dominant-baseline="central">模型自行决定</text>
+<text class="ts" x="209" y="190" text-anchor="middle" dominant-baseline="central">读不读/读几段/漏不漏</text>
+
+<text class="tg" x="48" y="226">⚠ 三处丢失：① 二进制文件读到空  ② &gt;24000字仅前80行  ③ 依赖模型自觉分批，无强制</text>
+
+<rect x="24" y="260" width="632" height="265" rx="12" fill="#E1F5EE" stroke="#1D9E75" stroke-width="0.5"/>
+<text class="th" x="36" y="280" fill="#085041">改进：分段读取 + 分段建库（确定性管线）</text>
+
+<rect x="48" y="300" width="120" height="52" rx="8" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<text class="th" x="108" y="320" text-anchor="middle" dominant-baseline="central">/learn file</text>
+<text class="ts" x="108" y="338" text-anchor="middle" dominant-baseline="central">识别扩展名</text>
+
+<path d="M168 326 L196 326" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="198" y="300" width="150" height="52" rx="8" fill="#5DCAA5" stroke="#0F6E56" stroke-width="0.5"/>
+<text class="th" x="273" y="320" text-anchor="middle" dominant-baseline="central">分块器</text>
+<text class="ts" x="273" y="338" text-anchor="middle" dominant-baseline="central">文本/Office 二分支</text>
+
+<path d="M348 326 L376 326" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<g>
+<rect x="378" y="296" width="125" height="30" rx="6" fill="#E1F5EE" stroke="#1D9E75" stroke-width="0.5"/>
+<text class="ts" x="440" y="311" text-anchor="middle" dominant-baseline="central">chunk₁ read_file range</text>
+<rect x="378" y="330" width="125" height="30" rx="6" fill="#E1F5EE" stroke="#1D9E75" stroke-width="0.5"/>
+<text class="ts" x="440" y="345" text-anchor="middle" dominant-baseline="central">chunk₂ read_file range</text>
+<rect x="378" y="364" width="125" height="22" rx="6" fill="#E1F5EE" stroke="#1D9E75" stroke-width="0.5"/>
+<text class="ts" x="440" y="375" text-anchor="middle" dominant-baseline="central">…chunkₙ</text>
+</g>
+
+<path d="M503 326 L540 326" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="542" y="300" width="86" height="52" rx="8" fill="#5DCAA5" stroke="#0F6E56" stroke-width="0.5"/>
+<text class="th" x="585" y="320" text-anchor="middle" dominant-baseline="central">汇总</text>
+<text class="ts" x="585" y="338" text-anchor="middle" dominant-baseline="central">全量片段</text>
+
+<path d="M585 352 L585 392" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="470" y="394" width="230" height="52" rx="8" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<text class="th" x="585" y="414" text-anchor="middle" dominant-baseline="central">kb_create 一次性建库</text>
+<text class="ts" x="585" y="432" text-anchor="middle" dominant-baseline="central">含全部片段内容</text>
+
+<path d="M470 420 L430 420" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="250" y="394" width="178" height="52" rx="8" fill="#9FE1CB" stroke="#1D9E75" stroke-width="0.5"/>
+<text class="th" x="339" y="414" text-anchor="middle" dominant-baseline="central">kb_graph + kb_learn</text>
+<text class="ts" x="339" y="432" text-anchor="middle" dominant-baseline="central">图谱 + 开始教学</text>
+
+<path d="M250 420 L210 420" fill="none" stroke="#0F6E56" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<rect x="48" y="394" width="160" height="52" rx="8" fill="#5DCAA5" stroke="#0F6E56" stroke-width="0.5"/>
+<text class="th" x="128" y="414" text-anchor="middle" dominant-baseline="central">教学循环</text>
+<text class="ts" x="128" y="432" text-anchor="middle" dominant-baseline="central">一段一问 + EMA</text>
+
+<text class="ts" x="48" y="476" fill="#085041">✓ 二进制走 parse_document(page_range)  ✓ 文本按行分块 100% 覆盖  ✓ 汇总后一次建库</text>
+<text class="ts" x="48" y="496" fill="#085041">✓ 超 context 上限时落临时文件，kb_create 从文件读  ✓ 不依赖模型自觉</text>
+</svg>

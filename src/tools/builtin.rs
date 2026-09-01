@@ -352,12 +352,18 @@ impl Tool for ReadFile {
         let path = get_string_arg(&args, "path")?;
 
         // 安全检查: 工作目录边界（读取也需限制）
+        // 额外放行 data_root（home/）——知识库落盘资料（sources/）、图谱、bento 等应用自有数据
         let ws = GLOBAL_WORKSPACE.get().expect("GLOBAL_WORKSPACE 未初始化");
         let abs = if Path::new(&path).is_absolute() { path.clone() }
             else { format!("{}/{}", ws.trim_end_matches('/'), path) };
         let normalized = abs.replace('\\', "/").to_lowercase();
         let ws_norm = ws.to_lowercase();
-        if !normalized.starts_with(&ws_norm) {
+        let home_norm = crate::core::PathManager::detect()
+            .data_root()
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_lowercase();
+        if !normalized.starts_with(&ws_norm) && !normalized.starts_with(&home_norm) {
             return Err(ToolError::ExecutionFailed(format!("⛔ 路径 '{path}' 超出工作目录 '{ws}'")));
         }
         if is_protected_path(&path) {
@@ -1968,6 +1974,7 @@ pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
         .register(crate::tools::liteparse::ScreenshotDocument)
         .register(crate::tools::liteparse::CheckDocumentComplexity)
         .register(crate::tools::KbCreate)
+        .register(crate::tools::KbAppend)
         .register(crate::tools::KbGraph)
         .register(crate::tools::KbLearn)
         .register(crate::tools::KbQuiz)
@@ -2035,6 +2042,60 @@ impl Tool for KbCreate {
 
         Ok(format!(
             "知识库 '{topic}' 创建成功：{n} 个知识点，{e_ok} 条关系（跳过 {e_skip} 条无效）。用 kb_graph 生成图谱，kb_learn 开始学习。"
+        ))
+    }
+}
+
+/// 向已有知识库追加知识点（分段建库用）
+///
+/// 大文件/多文件学习场景：Agent 逐段阅读后分批追加节点，
+/// 全部追加完成后再 kb_graph 出图、kb_learn 开始教学。
+pub struct KbAppend;
+
+#[async_trait::async_trait]
+impl Tool for KbAppend {
+    fn name(&self) -> String { "kb_append".into() }
+    fn description(&self) -> String {
+        "向已有知识库追加知识点（分段建库）。参数: topic(库名，须已存在), nodes(JSON数组[{name,summary}]), edges(JSON数组[{from,to,relation}])。重复节点自动跳过。".into()
+    }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![
+            ParamDef::new("topic", ParamType::String, "知识库名称（须已存在）", true),
+            ParamDef::new("nodes", ParamType::String, "节点JSON数组", true),
+            ParamDef::new("edges", ParamType::String, "边JSON数组", false),
+        ]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        use crate::knowledge as kb;
+        let topic = str_arg(&args, "topic")?;
+        let nodes_json = str_arg(&args, "nodes")?;
+
+        let nodes: Vec<kb::store::NodeIn> = serde_json::from_str(&nodes_json)
+            .map_err(|e| ToolError::InvalidParam(format!("nodes JSON 解析失败: {e}")))?;
+        if nodes.is_empty() {
+            return Err(ToolError::InvalidParam("nodes 不能为空".into()));
+        }
+        let edges: Vec<kb::store::EdgeIn> = match args.get("edges").and_then(|v| v.as_str()) {
+            Some(ej) => serde_json::from_str(ej)
+                .map_err(|e| ToolError::InvalidParam(format!("edges JSON 解析失败: {e}")))?,
+            None => Vec::new(),
+        };
+
+        let conn = kb::open_db().map_err(|e| ToolError::ExecutionFailed(format!("打开知识库失败: {e}")))?;
+        let tid = kb::store::topic_id(&conn, &topic)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+            .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在，请先用 kb_create 创建")))?
+        ;
+        let n = kb::store::add_nodes(&conn, tid, &nodes)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let (e_ok, e_skip) = kb::store::add_edges(&conn, tid, &edges)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        kb::store::recompute_layers(&conn, tid)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+        Ok(format!(
+            "知识库 '{topic}' 追加成功：新增 {n} 个知识点（重复跳过），{e_ok} 条关系（跳过 {e_skip} 条无效）。"
         ))
     }
 }
@@ -2545,8 +2606,9 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry(&crate::core::Config::default());
-        assert_eq!(reg.len(), 31);
+        assert_eq!(reg.len(), 32);
         assert!(reg.get("kb_create").is_some());
+        assert!(reg.get("kb_append").is_some());
         assert!(reg.get("kb_graph").is_some());
         assert!(reg.get("kb_learn").is_some());
         assert!(reg.get("kb_quiz").is_some());
