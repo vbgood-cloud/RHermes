@@ -93,6 +93,21 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
+/// 建库校验：返回指定知识库当前的节点总数（库不存在返回 0）
+fn kb_build_check(name: &str) -> usize {
+    use crate::knowledge as kb;
+    kb::open_db().ok()
+        .and_then(|c| kb::store::topic_id(&c, name).ok().flatten())
+        .and_then(|tid| kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok()))
+        .map(|s| s.total_nodes)
+        .unwrap_or(0)
+}
+
+/// 建库重试上限
+const KB_BUILD_MAX_RETRIES: usize = 3;
+/// 建库成功最低节点数（kickoff 要求 8-40 个，取宽松阈值避免误判）
+const KB_BUILD_MIN_NODES: usize = 5;
+
 /// 读取学习资料，返回 (全文或空, 分块文件清单, 总字符数)
 /// - 全文可直接注入时返回空清单
 /// - 分块时返回按序排列的 part 文件绝对路径
@@ -569,7 +584,8 @@ impl SessionRouter {
             || std::path::Path::new(&first_token).exists();
 
         use crate::knowledge as kb;
-        let (name, kickoff, user_notice) = if looks_like_file {
+        // (库名, kickoff 指令, 用户提示, 是否需要建库校验重试)
+        let (name, kickoff, user_notice, need_build_check): (String, String, String, bool) = if looks_like_file {
             let file_path = if first_token.starts_with("~/") {
                 let home = std::env::var("HOME").unwrap_or_default();
                 first_token.replacen("~", &home, 1)
@@ -609,9 +625,9 @@ impl SessionRouter {
                         format!("  {f}\n    → {method}")
                     }).collect();
                     let fl = fl.join("\n");
-                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件（按标注方式），大文本文件用 read_file 分段读完，再用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。\n\n===== 文件列表（含读取方式）=====\n{fl}");
+                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件（按标注方式），大文本文件用 read_file 分段读完，再用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。\n建库纪律：kb_create 必须成功，若调用失败（参数不合法/输出被截断等）必须分析原因修正后重新调用，直到建库成功，禁止放弃；内容过长时先用 kb_create 建核心骨架（8-15 个节点），再用 kb_append(topic=\"{d_stem}\", nodes=..., edges=...) 分批追加剩余节点。\n注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。\n\n===== 文件列表（含读取方式）=====\n{fl}");
                     let d_notice = format!("📚 学习模式：{d_stem}（目录 {fc} 个文件）\n正在遍历并构建知识库…");
-                    (d_stem, d_kickoff, d_notice)
+                    (d_stem, d_kickoff, d_notice, true)
                 } else if m.is_file() {
                     let size_kb = m.len() / 1024;
                     let stem = std::path::Path::new(&file_path)
@@ -623,7 +639,7 @@ impl SessionRouter {
                             let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
                             let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
                             let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
-                            (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"))
+                            (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"), false)
                         }
                         None => {
                             // 大文件分段管线：二进制→parse_document，文本→read_to_string，
@@ -653,13 +669,13 @@ impl SessionRouter {
                                 )
                             };
                             let hint = if rest_hint.is_empty() { String::new() } else { format!("用户补充要求：{rest_hint}。") };
-                            let kickoff = format!("[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。{content_block}");
+                            let kickoff = format!("[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。\n建库纪律：kb_create 必须成功，若调用失败（参数不合法/输出被截断等）必须分析原因修正后重新调用，直到建库成功，禁止放弃；内容过长时先用 kb_create 建核心骨架（8-15 个节点），再用 kb_append(topic=\"{stem}\", nodes=..., edges=...) 分批追加剩余节点。\n注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。{content_block}");
                             let notice = if parts.is_empty() {
                                 format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取并构建知识库…")
                             } else {
                                 format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，大文件已分 {n} 段）\n正在读取并构建知识库…", n = parts.len())
                             };
-                            (stem.clone(), kickoff, notice)
+                            (stem.clone(), kickoff, notice, true)
                         }
                     }
                 } else {
@@ -682,12 +698,12 @@ impl SessionRouter {
                     let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
                     let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
                     let kickoff = format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
-                    (name.clone(), kickoff, format!("📚 学习模式：{name}{progress}\n正在载入下一个知识点…"))
+                    (name.clone(), kickoff, format!("📚 学习模式：{name}{progress}\n正在载入下一个知识点…"), false)
                 }
                 None => {
                     let hint = if topic_hint.is_empty() { String::new() } else { format!("用户主题提示：{topic_hint}。") };
                     let kickoff = format!("[学习模式·新建] 知识库「{name}」尚不存在。{hint}请询问用户想学的具体主题或资料路径，然后按 knowledge-base-tutor 技能用 kb_create 建库（节点规模由内容决定），kb_graph 出图后开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
-                    (name.clone(), kickoff, format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"))
+                    (name.clone(), kickoff, format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"), false)
                 }
             }
         };
@@ -733,6 +749,32 @@ impl SessionRouter {
         if let Some(session) = self.sessions.get_mut(&key) {
             session.enter_kb_mode(&name);
             session.handle_message(&kickoff).await;
+
+            // 建库闭环校验：文件/目录建库完成后查库确认是否真的建成，
+            // 未建成则注入系统重试消息，直到建库成功（最多 KB_BUILD_MAX_RETRIES 次）
+            if need_build_check {
+                for attempt in 1..=KB_BUILD_MAX_RETRIES {
+                    let node_count = kb_build_check(&name);
+                    if node_count >= KB_BUILD_MIN_NODES {
+                        break;
+                    }
+                    if attempt == KB_BUILD_MAX_RETRIES {
+                        let reply = format!(
+                            "⚠ 建库仍未成功（自动重试 {} 次后「{name}」只有 {node_count} 个知识点）。\n可再发一次 /learn <文件路径> 重试，或用 /learn {name} 手动指导建库。",
+                            KB_BUILD_MAX_RETRIES - 1
+                        );
+                        self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+                        break;
+                    }
+                    tracing::warn!(
+                        "[learn] 建库校验未通过（第 {attempt} 次）：「{name}」当前 {node_count} 个节点，注入重试指令"
+                    );
+                    let retry_kickoff = format!(
+                        "[系统] 建库校验未通过：知识库「{name}」尚未成功创建（当前仅 {node_count} 个知识点，要求至少 {KB_BUILD_MIN_NODES} 个）。这是第 {attempt}/{KB_BUILD_MAX_RETRIES} 次重试，必须完成建库，禁止放弃。\n请重新执行建库：重新通读资料，用 kb_create 建库。若上次因内容过长导致输出截断，先用 kb_create 只建核心骨架（8-15 个节点），再用 kb_append(topic=\"{name}\", nodes=..., edges=...) 分批追加剩余节点。\n建库成功后 kb_graph 出图并开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。"
+                    );
+                    session.handle_message(&retry_kickoff).await;
+                }
+            }
         } else {
             let reply = "⚠ 会话未就绪，请稍后再试".to_string();
             self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
