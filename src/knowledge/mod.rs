@@ -47,6 +47,14 @@ pub fn sources_dir() -> PathBuf {
     d
 }
 
+/// 知识库导出文件目录（data_root/knowledge/exports/）
+/// /learn export 产出的 .kb.json 落盘到这里
+pub fn exports_dir() -> PathBuf {
+    let d = crate::core::PathManager::detect().data_root().join("knowledge").join("exports");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
 /// 工具注册（在 builtin_registry 中调用）
 pub fn kb_tools() -> Vec<std::sync::Arc<dyn crate::tools::Tool>> {
     vec![

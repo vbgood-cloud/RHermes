@@ -1,0 +1,78 @@
+<svg viewBox="0 0 680 340" width="100%" role="img" font-family="ui-sans-serif, system-ui, 'Microsoft YaHei', sans-serif" xmlns="http://www.w3.org/2000/svg">
+  <title>/learn 知识库导出与导入数据流</title>
+  <desc>导出：命令经 router 拦截调用 export_topic 从 kb.db 六张表序列化为 JSON 文件；导入：读文件校验后经 import_topic 写回数据库并生成报告</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <text x="40" y="34" font-size="15" font-weight="500" fill="#2C2C2A">/learn 知识库导出与导入 — 数据流</text>
+
+  <rect x="40" y="52" width="600" height="104" rx="16" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text x="56" y="71" font-size="12" font-weight="500" fill="#27500A">导出 export</text>
+
+  <g>
+    <rect x="52" y="80" width="126" height="52" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+    <text x="115" y="102" font-size="13" font-weight="500" fill="#27500A" text-anchor="middle" dominant-baseline="central">/learn export</text>
+    <text x="115" y="120" font-size="12" fill="#3B6D11" text-anchor="middle" dominant-baseline="central">名称 · --kb 纯库</text>
+  </g>
+  <line x1="178" y1="106" x2="196" y2="106" stroke="#3B6D11" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="202" y="80" width="126" height="52" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+    <text x="265" y="102" font-size="13" font-weight="500" fill="#27500A" text-anchor="middle" dominant-baseline="central">router.rs 拦截</text>
+    <text x="265" y="120" font-size="12" fill="#3B6D11" text-anchor="middle" dominant-baseline="central">纯本地 · 零 token</text>
+  </g>
+  <line x1="328" y1="106" x2="346" y2="106" stroke="#3B6D11" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="352" y="80" width="126" height="52" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+    <text x="415" y="102" font-size="13" font-weight="500" fill="#27500A" text-anchor="middle" dominant-baseline="central">export_topic()</text>
+    <text x="415" y="120" font-size="12" fill="#3B6D11" text-anchor="middle" dominant-baseline="central">kb.db 读 6 张表</text>
+  </g>
+  <line x1="478" y1="106" x2="496" y2="106" stroke="#3B6D11" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="502" y="80" width="126" height="52" rx="8" fill="#EAF3DE" stroke="#3B6D11" stroke-width="0.5"/>
+    <text x="565" y="102" font-size="13" font-weight="500" fill="#27500A" text-anchor="middle" dominant-baseline="central">名称.kb.json</text>
+    <text x="565" y="120" font-size="12" fill="#3B6D11" text-anchor="middle" dominant-baseline="central">exports/ · 时间戳</text>
+  </g>
+
+  <text x="56" y="148" font-size="12" fill="#5F5E5A">默认：库＋学习记录（掌握度 · 测验史 · 会话）　　--kb：只导库结构（节点 · 关系 · 层级）</text>
+
+  <line x1="565" y1="134" x2="565" y2="238" stroke="#5F5E5A" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrow)"/>
+  <text x="550" y="178" font-size="13" font-weight="500" fill="#444441" text-anchor="end">同一 .kb.json</text>
+  <text x="550" y="194" font-size="12" fill="#5F5E5A" text-anchor="end">备份 · 换机 · 分享</text>
+
+  <rect x="40" y="216" width="600" height="104" rx="16" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text x="56" y="235" font-size="12" font-weight="500" fill="#0C447C">导入 import</text>
+
+  <g>
+    <rect x="52" y="244" width="126" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+    <text x="115" y="266" font-size="13" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">/learn import</text>
+    <text x="115" y="284" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">路径 · --as 新名</text>
+  </g>
+  <line x1="178" y1="270" x2="196" y2="270" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="202" y="244" width="126" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+    <text x="265" y="266" font-size="13" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">读文件 · 校验</text>
+    <text x="265" y="284" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">format · version</text>
+  </g>
+  <line x1="328" y1="270" x2="346" y2="270" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="352" y="244" width="126" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+    <text x="415" y="266" font-size="13" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">import_topic()</text>
+    <text x="415" y="284" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">写回 kb.db · 重算层级</text>
+  </g>
+  <line x1="478" y1="270" x2="496" y2="270" stroke="#185FA5" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <g>
+    <rect x="502" y="244" width="126" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+    <text x="565" y="266" font-size="13" font-weight="500" fill="#0C447C" text-anchor="middle" dominant-baseline="central">导入报告</text>
+    <text x="565" y="284" font-size="12" fill="#185FA5" text-anchor="middle" dominant-baseline="central">/learn 名称 续学</text>
+  </g>
+
+  <text x="56" y="312" font-size="12" fill="#5F5E5A">目标库不存在→完整还原；已存在→报错（--as 换名导入）；无效边自动跳过并计数</text>
+</svg>

@@ -1,6 +1,10 @@
 //! 构建脚本 — 嵌入 Windows 资源（图标 + 版本信息）
 
 fn main() {
+    // 受限环境逃生门：设 RH_SKIP_WINRESOURCE=1 跳过资源编译（正常构建/CI 不受影响）
+    if std::env::var("RH_SKIP_WINRESOURCE").as_deref() == Ok("1") {
+        return;
+    }
     // 在 Windows 上嵌入图标和版本信息
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
         let mut res = winresource::WindowsResource::new();

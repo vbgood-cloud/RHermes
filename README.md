@@ -6,7 +6,7 @@
 
 [![Rust 2024](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.2-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
+[![Version](https://img.shields.io/badge/version-0.7.3-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
 
 不满足于"又一个 AI 助手"。DeepSeek 前缀缓存压到极限、工具并行调度榨干 IO、自进化技能让 Agent 越长越强——用 Rust 写的，就该零妥协。
 
@@ -144,7 +144,7 @@ DEEPSEEK_API_KEY=sk-your-key
 
 | 指标 | 值 |
 |------|:---|
-| 版本 | v0.7.2 |
+| 版本 | v0.7.3 |
 | 文件数 | 87 .rs（~34,500 行） |
 | 内置工具 | 25 + MCP 动态扩展 + Wasm 插件 |
 | 单元测试 | 267 个全过 |

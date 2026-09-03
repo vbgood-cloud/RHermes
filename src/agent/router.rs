@@ -86,6 +86,13 @@ fn is_binary_doc(ext: &str) -> bool {
     )
 }
 
+/// 清洗文件名：保留字母/数字/汉字和 - _，其余替换为下划线
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect()
+}
+
 /// 读取学习资料，返回 (全文或空, 分块文件清单, 总字符数)
 /// - 全文可直接注入时返回空清单
 /// - 分块时返回按序排列的 part 文件绝对路径
@@ -535,8 +542,22 @@ impl SessionRouter {
             return;
         }
 
+        // /learn export / 导出：导出知识库（纯本地数据操作，不经过 LLM）
+        if arg == "export" || arg == "导出" || arg.starts_with("export ") || arg.starts_with("导出 ") {
+            let reply = self.handle_kb_export_command(&arg);
+            self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+            return;
+        }
+
+        // /learn import / 导入：导入 .kb.json 导出文件
+        if arg == "import" || arg == "导入" || arg.starts_with("import ") || arg.starts_with("导入 ") {
+            let reply = self.handle_kb_import_command(&arg);
+            self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+            return;
+        }
+
         if arg.is_empty() {
-            let reply = "用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /stop — 退出学习模式\n  /summary — 阶段总结（不退出，随时可用）";
+            let reply = "用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /learn export <名称> [--kb] — 导出知识库（默认含学习记录；--kb 只导库结构）\n  /learn import <路径> [--as 新名] — 导入知识库导出文件\n  /stop — 退出学习模式\n  /summary — 阶段总结（不退出，随时可用）";
             self.reply_to_channel(&inbound.channel, &inbound.chat_id, reply).await;
             return;
         }
@@ -715,6 +736,125 @@ impl SessionRouter {
         } else {
             let reply = "⚠ 会话未就绪，请稍后再试".to_string();
             self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+        }
+    }
+
+    /// /learn export <名称> [--kb]：导出知识库为 .kb.json（纯本地操作，零 token）
+    fn handle_kb_export_command(&self, arg: &str) -> String {
+        use crate::knowledge as kb;
+
+        // 解析参数：名称（可含空格）+ 可选 --kb 标记（位置不限）
+        let rest = arg.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+        let mut name_parts: Vec<&str> = Vec::new();
+        let mut kb_only = false;
+        for t in rest.split_whitespace() {
+            if t == "--kb" || t == "--kb-only" {
+                kb_only = true;
+            } else {
+                name_parts.push(t);
+            }
+        }
+        let name = name_parts.join(" ");
+        if name.is_empty() {
+            return "用法：/learn export <名称> [--kb]\n  默认导出库＋学习记录（掌握度/测验史/会话）；--kb 只导库结构，适合分享他人从零学习".to_string();
+        }
+
+        let conn = match kb::open_db() {
+            Ok(c) => c,
+            Err(e) => return format!("⚠ 知识库打开失败: {e}"),
+        };
+        let tid = match kb::store::topic_id(&conn, &name) {
+            Ok(Some(tid)) => tid,
+            Ok(None) => return format!("⚠ 知识库「{name}」不存在。/learn list 查看已有库。"),
+            Err(e) => return format!("⚠ 查询失败: {e}"),
+        };
+        let data = match kb::store::export_topic(&conn, tid, !kb_only) {
+            Ok(d) => d,
+            Err(e) => return format!("⚠ 导出失败: {e}"),
+        };
+        let json = match serde_json::to_string_pretty(&data) {
+            Ok(j) => j,
+            Err(e) => return format!("⚠ 序列化失败: {e}"),
+        };
+        let ts = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+        let path = kb::exports_dir().join(format!("{}-{ts}.kb.json", sanitize_filename(&name)));
+        if let Err(e) = std::fs::write(&path, json) {
+            return format!("⚠ 写入导出文件失败: {e}");
+        }
+
+        let n = data.graph.nodes.len();
+        let e = data.graph.edges.len();
+        if kb_only {
+            format!(
+                "📦 导出完成：「{name}」纯库模式\n   知识点 {n} 个 · 关系 {e} 条\n   文件：{}\n   分享给他人从零学习；用 /learn import <路径> 导入",
+                path.display()
+            )
+        } else {
+            let l = data.learning.as_ref();
+            let quiz = l.map(|x| x.quiz_log.len()).unwrap_or(0);
+            let steps = l.map(|x| x.sessions.len()).unwrap_or(0);
+            format!(
+                "📦 导出完成：「{name}」完整版（含学习记录）\n   知识点 {n} 个 · 关系 {e} 条 · 测验记录 {quiz} 条 · 学习会话 {steps} 次\n   文件：{}\n   备份/换机：拷贝此文件到新机器，/learn import <路径> 导入后进度无损续接",
+                path.display()
+            )
+        }
+    }
+
+    /// /learn import <路径> [--as 新名]：导入 .kb.json 导出文件（纯本地操作，零 token）
+    fn handle_kb_import_command(&self, arg: &str) -> String {
+        use crate::knowledge as kb;
+
+        // 解析参数：文件路径 + 可选 --as 新名
+        let rest = arg.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+        let mut tokens = rest.split_whitespace();
+        let mut path_parts: Vec<&str> = Vec::new();
+        let mut new_name: Option<String> = None;
+        while let Some(t) = tokens.next() {
+            if t == "--as" {
+                new_name = tokens.next().map(|s| s.to_string());
+            } else {
+                path_parts.push(t);
+            }
+        }
+        let path_raw = path_parts.join(" ");
+        if path_raw.is_empty() {
+            return "用法：/learn import <文件路径> [--as 新名]\n  导入 .kb.json 导出文件；目标库已存在时用 --as 换名导入".to_string();
+        }
+        let file_path = if path_raw.starts_with("~/") {
+            let home = std::env::var("HOME").unwrap_or_default();
+            path_raw.replacen("~", &home, 1)
+        } else {
+            path_raw
+        };
+
+        let text = match std::fs::read_to_string(&file_path) {
+            Ok(t) => t,
+            Err(e) => return format!("⚠ 读取导出文件失败: {file_path}（{e}）"),
+        };
+        let data: kb::store::KbExport = match serde_json::from_str(&text) {
+            Ok(d) => d,
+            Err(e) => return format!("⚠ 不是有效的知识库导出文件（{file_path}）: {e}"),
+        };
+        let conn = match kb::open_db() {
+            Ok(c) => c,
+            Err(e) => return format!("⚠ 知识库打开失败: {e}"),
+        };
+        match kb::store::import_topic(&conn, &data, new_name.as_deref()) {
+            Ok(rep) => {
+                let mut lines = format!(
+                    "✅ 导入成功：「{}」\n   知识点 {} 个 · 关系 {} 条（跳过 {}）",
+                    rep.topic, rep.nodes_imported, rep.edges_ok, rep.edges_skipped
+                );
+                if rep.with_learning {
+                    lines.push_str(&format!(
+                        "\n   学习记录已还原：测验 {} 条 · 会话 {} 次",
+                        rep.quiz_log_imported, rep.sessions_imported
+                    ));
+                }
+                lines.push_str(&format!("\n   输入 /learn {} 开始学习", rep.topic));
+                lines
+            }
+            Err(e) => format!("⚠ 导入失败: {e}"),
         }
     }
 
