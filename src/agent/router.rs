@@ -107,6 +107,39 @@ fn kb_build_check(name: &str) -> usize {
 const KB_BUILD_MAX_RETRIES: usize = 3;
 /// 建库成功最低节点数（kickoff 要求 8-40 个，取宽松阈值避免误判）
 const KB_BUILD_MIN_NODES: usize = 5;
+/// 建库心跳间隔（秒）：建库执行期间每分钟推送一次进度，让用户知道库还在建
+const KB_BUILD_HEARTBEAT_SECS: u64 = 60;
+
+/// 启动建库进度心跳：建库执行期间每分钟向通道推送一次实时进度
+/// （查库取当前节点数；TUI 通道本身有实时工具进度显示，由调用方跳过）
+fn spawn_build_heartbeat(
+    channel_mgr: Arc<ChannelManager>,
+    channel: String,
+    chat_id: String,
+    name: String,
+    done: Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    tokio::spawn(async move {
+        let mut minutes = 0u32;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(KB_BUILD_HEARTBEAT_SECS)).await;
+            if done.load(Ordering::Relaxed) {
+                break;
+            }
+            minutes += 1;
+            let nodes = kb_build_check(&name);
+            let text = if nodes >= KB_BUILD_MIN_NODES {
+                format!("🔨 「{name}」建库进行中：已建 {nodes} 个知识点，仍在补充完善…（已运行 {minutes} 分钟）")
+            } else {
+                format!("⏳ 「{name}」正在阅读资料并抽取知识点…（已运行 {minutes} 分钟）")
+            };
+            if let Some(ch) = channel_mgr.get(&channel) {
+                let _ = ch.send_message(&chat_id, &text).await;
+            }
+        }
+    });
+}
 
 /// 读取学习资料，返回 (全文或空, 分块文件清单, 总字符数)
 /// - 全文可直接注入时返回空清单
@@ -748,6 +781,20 @@ impl SessionRouter {
         self.reply_to_channel(&inbound.channel, &inbound.chat_id, &user_notice).await;
         if let Some(session) = self.sessions.get_mut(&key) {
             session.enter_kb_mode(&name);
+
+            // 建库心跳：kickoff + 重试循环全程，每分钟向通道推送进度
+            // （TUI 通道本身有实时工具进度显示，跳过）
+            let hb_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            if need_build_check && inbound.channel != "tui" {
+                spawn_build_heartbeat(
+                    self.channel_mgr.clone(),
+                    inbound.channel.clone(),
+                    inbound.chat_id.clone(),
+                    name.clone(),
+                    hb_done.clone(),
+                );
+            }
+
             session.handle_message(&kickoff).await;
 
             // 建库闭环校验：文件/目录建库完成后查库确认是否真的建成，
@@ -775,6 +822,9 @@ impl SessionRouter {
                     session.handle_message(&retry_kickoff).await;
                 }
             }
+
+            // 建库流程结束（成功/重试完毕），停止心跳
+            hb_done.store(true, std::sync::atomic::Ordering::Relaxed);
         } else {
             let reply = "⚠ 会话未就绪，请稍后再试".to_string();
             self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
