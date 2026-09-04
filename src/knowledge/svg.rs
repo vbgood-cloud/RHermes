@@ -14,6 +14,8 @@ use super::store::{mastery_stage, stage_name, GraphSnapshot, KbStats};
 
 const STAGE_COLORS: [&str; 4] = ["#9ca3af", "#fbbf24", "#4ade80", "#16a34a"];
 const STAGE_BG: [&str; 4] = ["#f3f4f6", "#fef9c3", "#dcfce7", "#bbf7d0"];
+// 节点卡片是浅色底（STAGE_BG），文字必须用深色以保证可读性（对比度 ≥ 4.5:1）
+const STAGE_TEXT: [&str; 4] = ["#475569", "#854d0e", "#166534", "#14532d"];
 const NODE_W: f64 = 170.0;
 const NODE_H: f64 = 54.0;
 
@@ -46,8 +48,8 @@ pub fn build_svg(snapshot: &GraphSnapshot, stats: &KbStats) -> String {
 .node:hover text {{ font-weight: 700; }}
 .edge {{ stroke:#475569; stroke-width:1.6; fill:none; marker-end:url(#arrow); opacity:.85; }}
 .rel {{ font-size:9px; fill:#94a3b8; }}
-.nname {{ font-size:13px; fill:#e2e8f0; text-anchor:middle; dominant-baseline:middle; }}
-.nmastery {{ font-size:10px; text-anchor:middle; dominant-baseline:middle; }}
+.nname {{ font-size:13px; fill:#1e293b; font-weight:600; text-anchor:middle; dominant-baseline:middle; }}
+.nmastery {{ font-size:10px; font-weight:600; text-anchor:middle; dominant-baseline:middle; }}
 .title {{ font-size:18px; fill:#f8fafc; font-weight:700; }}
 .subtitle {{ font-size:11px; fill:#94a3b8; }}
 .bar-bg {{ fill:#1e293b; rx:6; }}
@@ -89,6 +91,7 @@ pub fn build_svg(snapshot: &GraphSnapshot, stats: &KbStats) -> String {
         let stage = mastery_stage(n.mastery);
         let color = STAGE_COLORS[stage as usize];
         let bg = STAGE_BG[stage as usize];
+        let text_color = STAGE_TEXT[stage as usize];
         let label = escape(&n.name);
         let summary = escape(&n.summary);
         let stage_txt = stage_name(stage);
@@ -98,12 +101,12 @@ pub fn build_svg(snapshot: &GraphSnapshot, stats: &KbStats) -> String {
         let _ = writeln!(s, "<rect x='{x:.0}' y='{y:.0}' width='{NODE_W:.0}' height='{NODE_H:.0}' rx='10' fill='{bg}' stroke='{color}' opacity='0.95'/>");
         // 掌握度进度条（节点内底部）
         let inner_w = NODE_W - 16.0;
-        let _ = writeln!(s, "<rect x='{:.0}' y='{:.0}' width='{inner_w:.0}' height='5' rx='2.5' fill='#cbd5e1' opacity='0.55'/>", x + 8.0, y + NODE_H - 11.0);
+        let _ = writeln!(s, "<rect x='{:.0}' y='{:.0}' width='{inner_w:.0}' height='5' rx='2.5' fill='#64748b' opacity='0.4'/>", x + 8.0, y + NODE_H - 11.0);
         let _ = writeln!(s, "<rect x='{:.0}' y='{:.0}' width='{:.0}' height='5' rx='2.5' fill='{color}'/>", x + 8.0, y + NODE_H - 11.0, inner_w * n.mastery as f64 / 100.0);
         // 名称（过长截断到 ~10 个汉字宽）
         let name_disp = truncate_cn(&n.name, 12);
         let _ = writeln!(s, "<text x='{:.0}' y='{:.0}' class='nname'>{}</text>", x + NODE_W / 2.0, y + 20.0, escape(&name_disp));
-        let _ = writeln!(s, "<text x='{:.0}' y='{:.0}' class='nmastery' fill='{color}'>{} · {}%</text>",
+        let _ = writeln!(s, "<text x='{:.0}' y='{:.0}' class='nmastery' fill='{text_color}'>{} · {}%</text>",
             x + NODE_W / 2.0, y + 36.0, stage_txt, n.mastery);
         let _ = writeln!(s, "</g>");
     }
@@ -185,6 +188,11 @@ mod tests {
         assert!(svg.contains("#9ca3af")); // 灰
         assert!(svg.contains("#fbbf24")); // 黄
         assert!(svg.contains("#16a34a")); // 亮绿
+        // 深色文字（可读性）：节点名 + 四档掌握度文字
+        assert!(svg.contains("#1e293b")); // 节点名深色
+        assert!(svg.contains("#475569")); // 未学习文字
+        assert!(svg.contains("#854d0e")); // 初识文字
+        assert!(!svg.contains("#e2e8f0")); // 旧的近白文字色应已移除
     }
 
     #[test]

@@ -222,6 +222,36 @@ pub fn log_session(conn: &Connection, tid: i64, node_name: &str) -> rusqlite::Re
     Ok(())
 }
 
+/// 复位某知识库的学习进度：掌握度/复习/测验计数归零，清空测验史与会话记录。
+/// 保留知识结构（topics/nodes/edges）不变。返回 (节点数, 测验记录数, 会话数)。
+pub fn reset_topic_progress(conn: &Connection, tid: i64) -> rusqlite::Result<(usize, usize, usize)> {
+    let nodes: usize = conn.query_row(
+        "SELECT COUNT(*) FROM nodes WHERE topic_id = ?1",
+        params![tid],
+        |r| r.get(0),
+    )?;
+    let quiz: usize = conn.query_row(
+        "SELECT COUNT(*) FROM quiz_log WHERE node_id IN (SELECT id FROM nodes WHERE topic_id = ?1)",
+        params![tid],
+        |r| r.get(0),
+    )?;
+    let sessions: usize = conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE topic_id = ?1",
+        params![tid],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "UPDATE nodes SET mastery = 0, review_count = 0, quiz_count = 0, last_review = NULL WHERE topic_id = ?1",
+        params![tid],
+    )?;
+    conn.execute(
+        "DELETE FROM quiz_log WHERE node_id IN (SELECT id FROM nodes WHERE topic_id = ?1)",
+        params![tid],
+    )?;
+    conn.execute("DELETE FROM sessions WHERE topic_id = ?1", params![tid])?;
+    Ok((nodes, quiz, sessions))
+}
+
 /// 记录测验结果并 EMA 更新掌握度。
 /// 返回 (新掌握度, 是否生效)。24h 内同节点取最高分（防刷分）。
 pub fn record_quiz(
@@ -832,6 +862,40 @@ mod tests {
         assert_eq!(s.total_nodes, 2);
         assert_eq!(s.lit_nodes, 0);
         assert_eq!(s.avg_mastery, 0);
+    }
+
+    #[test]
+    fn test_reset_progress() {
+        let conn = test_db();
+        let tid = sample(&conn);
+        // 制造学习记录：掌握度 + 测验史 + 学习会话
+        let node_id: i64 = conn
+            .query_row(
+                "SELECT id FROM nodes WHERE topic_id = ?1 AND name = '基础'",
+                params![tid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        record_quiz(&conn, node_id, 80, "q", "a").unwrap();
+        log_session(&conn, tid, "基础").unwrap();
+
+        // 复位前：有进度
+        let s0 = stats(&conn, tid).unwrap();
+        assert_eq!(s0.lit_nodes, 1);
+
+        // 复位
+        let (nodes, quiz, sessions) = reset_topic_progress(&conn, tid).unwrap();
+        assert_eq!(nodes, 2); // 结构保留
+        assert_eq!(quiz, 1);
+        assert_eq!(sessions, 1);
+
+        // 复位后：进度归零，结构仍在
+        let s1 = stats(&conn, tid).unwrap();
+        assert_eq!(s1.total_nodes, 2); // 节点数不变
+        assert_eq!(s1.lit_nodes, 0);
+        assert_eq!(s1.avg_mastery, 0);
+        let snap = snapshot(&conn, tid).unwrap();
+        assert_eq!(snap.edges.len(), 1); // 关系保留
     }
 
     #[test]

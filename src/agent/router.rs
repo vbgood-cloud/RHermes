@@ -604,8 +604,15 @@ impl SessionRouter {
             return;
         }
 
+        // /learn reset <名称> / 复位：清空学习进度（纯本地操作，零 token）
+        if arg == "reset" || arg == "复位" || arg.starts_with("reset ") || arg.starts_with("复位 ") {
+            let reply = self.handle_kb_reset_command(&arg);
+            self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+            return;
+        }
+
         if arg.is_empty() {
-            let reply = "用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /learn export <名称> [--kb] — 导出知识库（默认含学习记录；--kb 只导库结构）\n  /learn import <路径> [--as 新名] — 导入知识库导出文件\n  /stop — 退出学习模式\n  /summary — 阶段总结（不退出，随时可用）";
+            let reply = "用法：\n  /learn <文件路径> — 从文件内容建库学习\n  /learn <名称> [主题提示] — 继续或创建知识库\n  /learn list — 列出所有知识库\n  /learn export <名称> [--kb] — 导出知识库（默认含学习记录；--kb 只导库结构）\n  /learn import <路径> [--as 新名] — 导入知识库导出文件\n  /learn reset <名称> — 复位学习进度（清空掌握度/测验史，保留知识点）\n  /stop — 退出学习模式\n  /summary — 阶段总结（不退出，随时可用）";
             self.reply_to_channel(&inbound.channel, &inbound.chat_id, reply).await;
             return;
         }
@@ -671,7 +678,7 @@ impl SessionRouter {
                         Some(tid) => {
                             let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
                             let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
-                            let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
+                            let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始持续教学：讲完一个知识点立即用 kb_quiz 出题判分，判分后不要询问用户是否继续，直接 kb_learn 取下一个，循环到全部节点掌握度 ≥80%（kb_learn 会返回学习完成）或用户 /stop 停止。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
                             (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"), false)
                         }
                         None => {
@@ -730,7 +737,7 @@ impl SessionRouter {
                 Some(tid) => {
                     let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
                     let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
-                    let kickoff = format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
+                    let kickoff = format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始持续教学：讲完一个知识点立即用 kb_quiz 出题判分，判分后不要询问用户是否继续，直接 kb_learn 取下一个，循环到全部节点掌握度 ≥80%（kb_learn 会返回学习完成）或用户 /stop 停止。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
                     (name.clone(), kickoff, format!("📚 学习模式：{name}{progress}\n正在载入下一个知识点…"), false)
                 }
                 None => {
@@ -947,6 +954,33 @@ impl SessionRouter {
                 lines
             }
             Err(e) => format!("⚠ 导入失败: {e}"),
+        }
+    }
+
+    /// /learn reset <名称>：复位学习进度（清空掌握度/测验史/会话，保留知识结构）
+    fn handle_kb_reset_command(&self, arg: &str) -> String {
+        use crate::knowledge as kb;
+
+        let rest = arg.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+        let name = rest.trim();
+        if name.is_empty() {
+            return "用法：/learn reset <名称>\n  复位该知识库的学习进度（掌握度/测验史/学习会话归零），知识点与关系保留。".to_string();
+        }
+
+        let conn = match kb::open_db() {
+            Ok(c) => c,
+            Err(e) => return format!("⚠ 知识库打开失败: {e}"),
+        };
+        let tid = match kb::store::topic_id(&conn, name) {
+            Ok(Some(tid)) => tid,
+            Ok(None) => return format!("⚠ 知识库「{name}」不存在。/learn list 查看已有库。"),
+            Err(e) => return format!("⚠ 查询失败: {e}"),
+        };
+        match kb::store::reset_topic_progress(&conn, tid) {
+            Ok((nodes, quiz, sessions)) => format!(
+                "✅ 学习进度已复位：「{name}」\n   保留知识点 {nodes} 个（结构不变）\n   已清除测验记录 {quiz} 条 · 学习会话 {sessions} 次\n   掌握度全部归零。输入 /learn {name} 从头开始学习。"
+            ),
+            Err(e) => format!("⚠ 复位失败: {e}"),
         }
     }
 

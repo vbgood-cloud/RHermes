@@ -1980,6 +1980,7 @@ pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
         .register(crate::tools::KbQuiz)
         .register(crate::tools::KbStatsTool)
         .register(crate::tools::KbList)
+        .register(crate::tools::KbReset)
 }
 
 // ---------------------------------------------------------------------------
@@ -2201,7 +2202,7 @@ impl Tool for KbLearn {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         Ok(format!(
-            "【学习节点】{}（层L{}，当前掌握度 {}%）\n【摘要】{}\n【前置】{}\n【后续】{}\n---\n请就以上知识点向用户讲解（一段一问），讲完用 kb_quiz 出题验证。",
+            "【学习节点】{}（层L{}，当前掌握度 {}%）\n【摘要】{}\n【前置】{}\n【后续】{}\n---\n【持续教学】请就以上知识点向用户讲解（一段一问），讲完立即用 kb_quiz 出题并判分。判分后不要询问用户是否继续，直接调用 kb_learn 取下一个知识点继续讲；如此循环，直到 kb_learn 返回「学习完成」或用户明确喊停。",
             node.name, node.layer, node.mastery,
             if node.summary.is_empty() { "（无预置摘要，请根据主题上下文讲解）" } else { &node.summary },
             if prereq.is_empty() { "无".to_string() } else { prereq.join("、") },
@@ -2266,9 +2267,9 @@ impl Tool for KbQuiz {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
         let stage = kb::store::stage_name(kb::store::mastery_stage(mastery));
         if applied {
-            Ok(format!("已记录：'{node_name}' 掌握度 -> {mastery}%（{stage}）。继续 kb_learn 学下一个，或 kb_graph 看图谱变化。"))
+            Ok(format!("已记录：'{node_name}' 掌握度 -> {mastery}%（{stage}）。\n【持续教学】不要询问用户是否继续，立即调用 kb_learn(topic=\"{topic}\") 取下一个知识点继续讲，直到全部掌握（kb_learn 返回「学习完成」）或用户喊停。"))
         } else {
-            Ok(format!("今日该节点已有更高分，本次不计入。'{node_name}' 掌握度保持 {mastery}%（{stage}）。"))
+            Ok(format!("今日该节点已有更高分，本次不计入。'{node_name}' 掌握度保持 {mastery}%（{stage}）。\n【持续教学】继续调用 kb_learn(topic=\"{topic}\") 取下一个知识点讲解。"))
         }
     }
 }
@@ -2330,6 +2331,34 @@ impl Tool for KbList {
             format!("- {name}（来源 {source}）：{lit}/{total} 点亮 · 平均掌握 {avg}%")
         }).collect();
         Ok(lines.join("\n"))
+    }
+}
+
+/// 复位学习进度：清空掌握度/测验史/会话，保留知识结构
+pub struct KbReset;
+
+#[async_trait::async_trait]
+impl Tool for KbReset {
+    fn name(&self) -> String { "kb_reset".into() }
+    fn description(&self) -> String {
+        "复位知识库学习进度：掌握度/复习次数归零，清空测验记录与学习会话，保留知识点与关系结构。参数: topic。用于重新从头学习。".into()
+    }
+    fn parallel_safe(&self) -> bool { false }
+    fn parameters(&self) -> Vec<ParamDef> {
+        vec![ParamDef::new("topic", ParamType::String, "知识库名称", true)]
+    }
+    async fn execute(&self, args: Value) -> Result<String, ToolError> {
+        use crate::knowledge as kb;
+        let topic = str_arg(&args, "topic")?;
+        let conn = kb::open_db().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let tid = kb::store::topic_id(&conn, &topic)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+            .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在")))?;
+        let (nodes, quiz, sessions) = kb::store::reset_topic_progress(&conn, tid)
+            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        Ok(format!(
+            "✅ 学习进度已复位：「{topic}」\n   保留知识点 {nodes} 个（结构不变）\n   已清除测验记录 {quiz} 条 · 学习会话 {sessions} 次\n   掌握度全部归零，可用 kb_learn 从头开始学习。"
+        ))
     }
 }
 
@@ -2606,7 +2635,7 @@ mod tests {
     #[test]
     fn test_builtin_registry() {
         let reg = builtin_registry(&crate::core::Config::default());
-        assert_eq!(reg.len(), 32);
+        assert_eq!(reg.len(), 33);
         assert!(reg.get("kb_create").is_some());
         assert!(reg.get("kb_append").is_some());
         assert!(reg.get("kb_graph").is_some());
@@ -2614,6 +2643,7 @@ mod tests {
         assert!(reg.get("kb_quiz").is_some());
         assert!(reg.get("kb_stats").is_some());
         assert!(reg.get("kb_list").is_some());
+        assert!(reg.get("kb_reset").is_some());
         assert!(reg.get("read_pdf").is_some());
         assert!(reg.get("skill_manage").is_some());
         assert!(reg.get("memory").is_some());
