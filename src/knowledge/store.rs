@@ -2,16 +2,27 @@
 //!
 //! SQLite 存储：topics / nodes / edges / quiz_log / sessions / question_bank(预留)
 //! 掌握度模型：EMA 更新（新测验权重 60%）+ 24h 防刷分
+//! 遗忘曲线：指数衰减 `retention = 2^(-Δt/S)`，S 为记忆半衰期（天），随复习质量倍增
 
 use std::collections::HashMap;
 use std::path::Path;
 
+use chrono::{NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// 导出文件格式标识
 pub const EXPORT_FORMAT: &str = "rhermes-kb";
-/// 导出文件格式版本（当前 v1）
-pub const EXPORT_VERSION: u32 = 1;
+/// 导出文件格式版本（v2 新增 stability/next_review_at 字段，向后兼容 v1）
+pub const EXPORT_VERSION: u32 = 2;
+
+/// 复习红线默认值（effective 低于此触发到期复习）；可通过 config.toml 的 `[knowledge].review_floor` 覆盖
+pub const REVIEW_FLOOR_DEFAULT: i64 = 60;
+/// 记忆半衰期初值（天）
+pub const S_INIT: f64 = 1.0;
+/// 半衰期钳制下界（天）
+pub const S_MIN: f64 = 0.5;
+/// 半衰期钳制上界（天）
+pub const S_MAX: f64 = 180.0;
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS topics (
@@ -30,6 +41,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     review_count INTEGER DEFAULT 0,
     quiz_count INTEGER DEFAULT 0,
     last_review TEXT,
+    stability REAL DEFAULT 1.0,
+    next_review_at TEXT,
     UNIQUE(topic_id, name)
 );
 CREATE TABLE IF NOT EXISTS edges (
@@ -76,7 +89,31 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     }
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
+    migrate(&conn)?;
     Ok(conn)
+}
+
+/// 一次性迁移（PRAGMA user_version 跟踪）。
+/// v1: nodes 表新增 stability / next_review_at；按 review_count 回填 stability。
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if v < 1 {
+        // 新增列（幂等：重复执行会被 SQLite 报错，但幂等语义通过 PRAGMA 守护）
+        let _ = conn.execute("ALTER TABLE nodes ADD COLUMN stability REAL DEFAULT 1.0", []);
+        let _ = conn.execute("ALTER TABLE nodes ADD COLUMN next_review_at TEXT", []);
+        // 回填 stability：复习次数越多半衰期越长（power(2, rc-1)，钳制 [0.5, 180]）
+        let _ = conn.execute(
+            "UPDATE nodes SET stability = MAX(0.5, MIN(180.0, power(2, MAX(0, review_count - 1)))) WHERE review_count > 0",
+            [],
+        );
+        // 回填 next_review_at：last_review + stability 天（信息性字段，用于显示「下次复习」）
+        let _ = conn.execute(
+            "UPDATE nodes SET next_review_at = datetime(last_review, '+' || CAST(ROUND(stability) AS INTEGER) || ' days') WHERE last_review IS NOT NULL",
+            [],
+        );
+        conn.execute("PRAGMA user_version = 1", [])?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -106,9 +143,15 @@ pub struct NodeRow {
     pub name: String,
     pub summary: String,
     pub layer: i64,
-    pub mastery: i64,
+    pub mastery: i64,             // 历史掌握度（EMA，测验时更新，不衰减）
     pub review_count: i64,
     pub quiz_count: i64,
+    /// 记忆半衰期（天），默认 1.0
+    pub stability: f64,
+    /// 距上次复习的整天数（None = 从未复习）
+    pub last_review: Option<String>,
+    /// 当前有效掌握度 = mastery × 2^(-Δt/stability)，在 snapshot/row_to_node 时按当前时间计算
+    pub effective_mastery: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +166,60 @@ pub struct GraphSnapshot {
     pub topic: String,
     pub nodes: Vec<NodeRow>,
     pub edges: Vec<EdgeRow>,
+}
+
+// ---------------------------------------------------------------------------
+// 遗忘曲线辅助（纯函数，便于单测）
+// ---------------------------------------------------------------------------
+
+/// 艾宾浩斯保持率：`2^(-Δt/S)`，S = 记忆半衰期（天）。
+/// Δt ≤ 0 视为 1.0（刚复习或未来时间，防御性）。
+/// S ≤ 0 视为 0（异常值）。
+pub fn retention(stability: f64, days_since: f64) -> f64 {
+    if stability <= 0.0 { return 0.0; }
+    if days_since <= 0.0 { return 1.0; }
+    0.5_f64.powf(days_since / stability)
+}
+
+/// 解析 SQLite `datetime('now')` 格式（`YYYY-MM-DD HH:MM:SS`）为 UTC naive。
+fn parse_sqlite_dt(s: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%d %H:%M:%S").ok()
+}
+
+/// 当前时间距 `last_review` 的整天数（向下取整）。None = 从未复习或解析失败。
+pub fn days_since_now(last_review: Option<&str>) -> Option<i64> {
+    let s = last_review?;
+    let lr = parse_sqlite_dt(s)?;
+    let now = Utc::now().naive_utc();
+    let secs = (now - lr).num_seconds();
+    if secs <= 0 { return Some(0); }
+    Some((secs as f64 / 86400.0).floor() as i64)
+}
+
+/// 计算有效掌握度：未学返回 0；从未复习（last_review=None）或今天刚复习返回 mastery；
+/// 否则 `round(mastery * 2^(-Δt/S))` 钳制 [0, 100]。
+pub fn compute_effective(mastery: i64, stability: f64, last_review: Option<&str>) -> i64 {
+    if mastery <= 0 { return 0; }
+    let days = match days_since_now(last_review) {
+        Some(d) if d > 0 => d as f64,
+        _ => return mastery,
+    };
+    let r = retention(stability, days);
+    let eff = (mastery as f64 * r).round() as i64;
+    eff.clamp(0, 100)
+}
+
+/// 测验得分 → 半衰期增长因子
+fn stability_factor(score: i64) -> f64 {
+    if score >= 90 { 2.5 }
+    else if score >= 70 { 2.0 }
+    else if score >= 50 { 1.5 }
+    else { 0.7 }
+}
+
+/// 按因子更新稳定性并钳制到 [S_MIN, S_MAX]
+pub fn next_stability(current: f64, score: i64) -> f64 {
+    (current * stability_factor(score)).clamp(S_MIN, S_MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -201,16 +298,93 @@ pub fn recompute_layers(conn: &Connection, tid: i64) -> rusqlite::Result<()> {
 // 学习与测验
 // ---------------------------------------------------------------------------
 
-/// 选取下一个该学的节点：layer ASC → mastery ASC → review_count ASC → id ASC
-pub fn next_node(conn: &Connection, tid: i64) -> rusqlite::Result<Option<NodeRow>> {
-    conn.query_row(
-        "SELECT id, name, summary, layer, mastery, review_count, quiz_count FROM nodes
-         WHERE topic_id = ?1 AND mastery < 80
-         ORDER BY layer ASC, mastery ASC, review_count ASC, id ASC LIMIT 1",
-        params![tid],
-        row_to_node,
-    )
-    .optional()
+/// 选点结果：节点 + 是否到期复习轮 + 衰减信息
+#[derive(Debug, Clone)]
+pub struct NextNode {
+    pub node: NodeRow,
+    /// true = 到期复习（effective < review_floor），Agent 应先提问检验而非重新讲解
+    pub is_review: bool,
+    /// 距上次复习的整天数（未学过为 None）
+    pub days_since: Option<i64>,
+    /// 当前有效掌握度（= mastery × 2^(-Δt/S)）
+    pub effective_mastery: i64,
+}
+
+/// 选取下一个该学的节点。
+/// 调度优先级：① 到期复习（effective < review_floor，effective 升序）
+/// → ② 未学（mastery=0，layer/id 升序）
+/// → ③ 薄弱巩固（60 ≤ effective < 80，effective 升序）
+/// → ④ None（全部 effective ≥80，学习完成；遗忘随时间让节点重新掉入①）
+pub fn next_node(conn: &Connection, tid: i64, review_floor: i64) -> rusqlite::Result<Option<NextNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+         FROM nodes WHERE topic_id = ?1",
+    )?;
+    let nodes: Vec<NodeRow> = stmt.query_map(params![tid], row_to_node)?.filter_map(|r| r.ok()).collect();
+
+    // ① 到期复习
+    let mut due: Vec<&NodeRow> = nodes.iter().filter(|n| n.mastery > 0 && n.effective_mastery < review_floor).collect();
+    if let Some(n) = pick_due(&mut due) {
+        return Ok(Some(build_next(n, true, review_floor)));
+    }
+
+    // ② 未学
+    let mut new_nodes: Vec<&NodeRow> = nodes.iter().filter(|n| n.mastery == 0).collect();
+    if let Some(n) = pick_new(&mut new_nodes) {
+        return Ok(Some(build_next(n, false, review_floor)));
+    }
+
+    // ③ 薄弱巩固
+    let mut weak: Vec<&NodeRow> = nodes.iter().filter(|n| n.mastery > 0 && n.effective_mastery >= review_floor && n.effective_mastery < 80).collect();
+    if let Some(n) = pick_due(&mut weak) {
+        return Ok(Some(build_next(n, false, review_floor)));
+    }
+
+    Ok(None)
+}
+
+/// 按名称取节点（含到期状态与有效掌握度；用户点名学习/复习时使用）
+pub fn find_node(conn: &Connection, tid: i64, name: &str, review_floor: i64) -> rusqlite::Result<Option<NextNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+         FROM nodes WHERE topic_id = ?1 AND name = ?2",
+    )?;
+    let n: Option<NodeRow> = stmt.query_row(params![tid, name], row_to_node).ok();
+    Ok(n.map(|n| {
+        let eff = n.effective_mastery;
+        let is_review = n.mastery > 0 && eff < review_floor;
+        let days_since = if n.mastery > 0 { days_since_now(n.last_review.as_deref()) } else { None };
+        NextNode { node: n, is_review, days_since, effective_mastery: eff }
+    }))
+}
+
+/// 当前到期该复习的节点数（统计与进度提示用）
+pub fn due_review_count(conn: &Connection, tid: i64, review_floor: i64) -> rusqlite::Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+         FROM nodes WHERE topic_id = ?1",
+    )?;
+    let count = stmt
+        .query_map(params![tid], row_to_node)?
+        .filter_map(|r| r.ok())
+        .filter(|n| n.mastery > 0 && n.effective_mastery < review_floor)
+        .count();
+    Ok(count)
+}
+
+fn pick_due<'a>(v: &mut Vec<&'a NodeRow>) -> Option<&'a NodeRow> {
+    v.sort_by_key(|n| n.effective_mastery);
+    v.first().copied()
+}
+
+fn pick_new<'a>(v: &mut Vec<&'a NodeRow>) -> Option<&'a NodeRow> {
+    v.sort_by(|a, b| a.layer.cmp(&b.layer).then(a.id.cmp(&b.id)));
+    v.first().copied()
+}
+
+fn build_next(n: &NodeRow, is_review: bool, _review_floor: i64) -> NextNode {
+    let days_since = if n.mastery > 0 { days_since_now(n.last_review.as_deref()) } else { None };
+    NextNode { node: n.clone(), is_review, days_since, effective_mastery: n.effective_mastery }
 }
 
 /// 记录一次学习（session 步数）
@@ -241,7 +415,8 @@ pub fn reset_topic_progress(conn: &Connection, tid: i64) -> rusqlite::Result<(us
         |r| r.get(0),
     )?;
     conn.execute(
-        "UPDATE nodes SET mastery = 0, review_count = 0, quiz_count = 0, last_review = NULL WHERE topic_id = ?1",
+        "UPDATE nodes SET mastery = 0, review_count = 0, quiz_count = 0, last_review = NULL,
+         stability = 1.0, next_review_at = NULL WHERE topic_id = ?1",
         params![tid],
     )?;
     conn.execute(
@@ -252,7 +427,7 @@ pub fn reset_topic_progress(conn: &Connection, tid: i64) -> rusqlite::Result<(us
     Ok((nodes, quiz, sessions))
 }
 
-/// 记录测验结果并 EMA 更新掌握度。
+/// 记录测验结果并 EMA 更新掌握度；同时按得分档次更新稳定性 S 并设置下次复习时间。
 /// 返回 (新掌握度, 是否生效)。24h 内同节点取最高分（防刷分）。
 pub fn record_quiz(
     conn: &Connection,
@@ -277,20 +452,24 @@ pub fn record_quiz(
         }
     }
 
-    let old: (i64, i64) = conn.query_row(
-        "SELECT mastery, review_count FROM nodes WHERE id = ?1",
+    let old: (i64, i64, f64) = conn.query_row(
+        "SELECT mastery, review_count, stability FROM nodes WHERE id = ?1",
         params![node_id],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?)),
     )?;
     let new_mastery = if old.1 == 0 {
         score
     } else {
         (old.0 * 40 + score * 60) / 100
     };
+    let new_stability = next_stability(old.2, score);
+    let s_int = new_stability.round() as i64;
     conn.execute(
         "UPDATE nodes SET mastery = ?1, review_count = review_count + 1,
-         quiz_count = quiz_count + 1, last_review = datetime('now') WHERE id = ?2",
-        params![new_mastery, node_id],
+         quiz_count = quiz_count + 1, last_review = datetime('now'),
+         stability = ?2, next_review_at = datetime('now', '+' || ?3 || ' days')
+         WHERE id = ?4",
+        params![new_mastery, new_stability, s_int, node_id],
     )?;
     conn.execute(
         "INSERT INTO quiz_log (node_id, question, answer, score) VALUES (?1,?2,?3,?4)",
@@ -322,21 +501,28 @@ pub fn draw_questions(conn: &Connection, node_id: i64, count: usize) -> rusqlite
 // ---------------------------------------------------------------------------
 
 fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
+    let mastery: i64 = r.get(4)?;
+    let stability: f64 = r.get(7).unwrap_or(S_INIT);
+    let last_review: Option<String> = r.get(8)?;
+    let effective_mastery = compute_effective(mastery, stability, last_review.as_deref());
     Ok(NodeRow {
         id: r.get(0)?,
         name: r.get(1)?,
         summary: r.get(2)?,
         layer: r.get(3)?,
-        mastery: r.get(4)?,
+        mastery,
         review_count: r.get(5)?,
         quiz_count: r.get(6)?,
+        stability,
+        last_review,
+        effective_mastery,
     })
 }
 
 pub fn snapshot(conn: &Connection, tid: i64) -> rusqlite::Result<GraphSnapshot> {
     let topic: String = conn.query_row("SELECT name FROM topics WHERE id = ?1", params![tid], |r| r.get(0))?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, summary, layer, mastery, review_count, quiz_count
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
          FROM nodes WHERE topic_id = ?1 ORDER BY layer ASC, id ASC",
     )?;
     let nodes: Vec<NodeRow> = stmt.query_map(params![tid], row_to_node)?.filter_map(|r| r.ok()).collect();
@@ -358,24 +544,26 @@ pub fn snapshot(conn: &Connection, tid: i64) -> rusqlite::Result<GraphSnapshot> 
 pub struct KbStats {
     pub topic: String,
     pub total_nodes: usize,
-    pub lit_nodes: usize,       // mastery > 0
-    pub mastered_nodes: usize,  // mastery >= 80
-    pub avg_mastery: i64,       // 全部节点均值
+    pub lit_nodes: usize,             // mastery > 0（曾学过的节点数，不衰减）
+    pub mastered_nodes: usize,        // effective >= 80（当前仍达标的节点数）
+    pub avg_mastery: i64,             // 当前有效掌握度均值（会随遗忘下降）
+    pub avg_retention: i64,           // 平均记忆保持率（0-100）
     pub quiz_total: i64,
     pub quiz_avg: i64,
     pub learn_steps: i64,
     pub today_steps: i64,
-    pub weakest: Vec<(String, i64)>, // 点亮节点中最弱 3 个
+    pub weakest: Vec<(String, i64)>,  // 有效掌握度 <80 中最弱 3 个
     pub quiz_today: i64,
+    pub due_reviews: usize,           // 到期该复习的节点数（effective < review_floor）
+    pub due_review_names: Vec<(String, i64)>, // 到期复习清单前 5（名, effective）
 }
 
-pub fn stats(conn: &Connection, tid: i64) -> rusqlite::Result<KbStats> {
+pub fn stats(conn: &Connection, tid: i64, review_floor: i64) -> rusqlite::Result<KbStats> {
     let topic: String = conn.query_row("SELECT name FROM topics WHERE id = ?1", params![tid], |r| r.get(0))?;
-    let (total, lit, mastered, avg): (i64, i64, i64, f64) = conn.query_row(
-        "SELECT COUNT(*), SUM(mastery > 0), SUM(mastery >= 80), IFNULL(AVG(mastery), 0)
-         FROM nodes WHERE topic_id = ?1",
+    let (total, lit): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), SUM(mastery > 0) FROM nodes WHERE topic_id = ?1",
         params![tid],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0), r.get::<_, Option<i64>>(2)?.unwrap_or(0), r.get::<_, f64>(3)?)),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
     )?;
     let (quiz_total, quiz_avg): (i64, f64) = conn.query_row(
         "SELECT COUNT(*), IFNULL(AVG(q.score), 0) FROM quiz_log q
@@ -395,27 +583,64 @@ pub fn stats(conn: &Connection, tid: i64) -> rusqlite::Result<KbStats> {
         |r| r.get(0),
     )?;
 
+    let due_reviews = due_review_count(conn, tid, review_floor)?;
+
+    // 加载全量节点（row_to_node 已计算 effective_mastery）
     let mut stmt = conn.prepare(
-        "SELECT name, mastery FROM nodes WHERE topic_id = ?1 AND mastery > 0 AND mastery < 80
-         ORDER BY mastery ASC LIMIT 3",
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+         FROM nodes WHERE topic_id = ?1",
     )?;
-    let weakest: Vec<(String, i64)> = stmt
-        .query_map(params![tid], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
+    let all_nodes: Vec<NodeRow> = stmt.query_map(params![tid], row_to_node)?.filter_map(|r| r.ok()).collect();
+
+    let mastered = all_nodes.iter().filter(|n| n.mastery > 0 && n.effective_mastery >= 80).count();
+    let avg_eff = if all_nodes.is_empty() {
+        0.0
+    } else {
+        all_nodes.iter().map(|n| n.effective_mastery as f64).sum::<f64>() / all_nodes.len() as f64
+    };
+    let avg_retention_pct = if all_nodes.is_empty() {
+        0
+    } else {
+        let sum_r: f64 = all_nodes.iter().map(|n| {
+            if n.mastery == 0 {
+                0.0
+            } else {
+                let days = days_since_now(n.last_review.as_deref()).unwrap_or(0) as f64;
+                retention(n.stability, days)
+            }
+        }).sum();
+        ((sum_r / all_nodes.len() as f64) * 100.0).round() as i64
+    };
+
+    // 到期复习清单（effective 升序取前 5）
+    let mut due_nodes: Vec<&NodeRow> = all_nodes.iter()
+        .filter(|n| n.mastery > 0 && n.effective_mastery < review_floor).collect();
+    due_nodes.sort_by_key(|n| n.effective_mastery);
+    let due_review_names: Vec<(String, i64)> = due_nodes.iter().take(5)
+        .map(|n| (n.name.clone(), n.effective_mastery)).collect();
+
+    // 薄弱（effective <80）按 effective 升序取前 3
+    let mut weak_nodes: Vec<&NodeRow> = all_nodes.iter()
+        .filter(|n| n.mastery > 0 && n.effective_mastery < 80).collect();
+    weak_nodes.sort_by_key(|n| n.effective_mastery);
+    let weakest: Vec<(String, i64)> = weak_nodes.iter().take(3)
+        .map(|n| (n.name.clone(), n.effective_mastery)).collect();
 
     Ok(KbStats {
         topic,
         total_nodes: total as usize,
         lit_nodes: lit as usize,
-        mastered_nodes: mastered as usize,
-        avg_mastery: avg.round() as i64,
+        mastered_nodes: mastered,
+        avg_mastery: avg_eff.round() as i64,
+        avg_retention: avg_retention_pct,
         quiz_total,
         quiz_avg: quiz_avg.round() as i64,
         learn_steps: steps,
         today_steps,
         weakest,
         quiz_today,
+        due_reviews,
+        due_review_names,
     })
 }
 
@@ -533,6 +758,12 @@ pub struct LearnNodeOut {
     pub review_count: i64,
     pub quiz_count: i64,
     pub last_review: Option<String>,
+    /// 记忆半衰期（天）；v1 旧文件无此字段时默认 1.0
+    #[serde(default)]
+    pub stability: Option<f64>,
+    /// 预计下次复习时间（信息性）；v1 旧文件无此字段时为 None
+    #[serde(default)]
+    pub next_review_at: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -593,7 +824,8 @@ pub fn export_topic(conn: &Connection, tid: i64, with_learning: bool) -> rusqlit
 
     let learning = if with_learning {
         let mut stmt = conn.prepare(
-            "SELECT name, mastery, review_count, quiz_count, last_review FROM nodes WHERE topic_id = ?1 ORDER BY id ASC",
+            "SELECT name, mastery, review_count, quiz_count, last_review, stability, next_review_at
+             FROM nodes WHERE topic_id = ?1 ORDER BY id ASC",
         )?;
         let lnodes: Vec<LearnNodeOut> = stmt
             .query_map(params![tid], |r| {
@@ -603,6 +835,8 @@ pub fn export_topic(conn: &Connection, tid: i64, with_learning: bool) -> rusqlit
                     review_count: r.get(2)?,
                     quiz_count: r.get(3)?,
                     last_review: r.get(4)?,
+                    stability: r.get(5)?,
+                    next_review_at: r.get(6)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -720,8 +954,9 @@ pub fn import_topic(
         let nid = tx.last_insert_rowid();
         if let Some(ln) = learn.get(&node.name) {
             let _ = tx.execute(
-                "UPDATE nodes SET mastery = ?1, review_count = ?2, quiz_count = ?3, last_review = ?4 WHERE id = ?5",
-                params![ln.mastery, ln.review_count, ln.quiz_count, ln.last_review, nid],
+                "UPDATE nodes SET mastery = ?1, review_count = ?2, quiz_count = ?3, last_review = ?4,
+                 stability = COALESCE(?5, 1.0), next_review_at = ?6 WHERE id = ?7",
+                params![ln.mastery, ln.review_count, ln.quiz_count, ln.last_review, ln.stability, ln.next_review_at, nid],
             );
         }
         report.nodes_imported += 1;
@@ -829,8 +1064,102 @@ mod tests {
     fn test_next_node_order() {
         let conn = test_db();
         let tid = sample(&conn);
-        let n = next_node(&conn, tid).unwrap().unwrap();
-        assert_eq!(n.name, "基础"); // layer 0 优先
+        let n = next_node(&conn, tid, 60).unwrap().unwrap();
+        assert_eq!(n.node.name, "基础"); // layer 0 优先
+        assert!(!n.is_review); // 未学习节点不是复习轮
+    }
+
+    #[test]
+    fn test_due_review_scheduling() {
+        let conn = test_db();
+        let tid = sample(&conn);
+        let base: i64 = conn
+            .query_row("SELECT id FROM nodes WHERE topic_id = ?1 AND name = '基础'", params![tid], |r| r.get(0))
+            .unwrap();
+        let adv: i64 = conn
+            .query_row("SELECT id FROM nodes WHERE topic_id = ?1 AND name = '进阶'", params![tid], |r| r.get(0))
+            .unwrap();
+
+        // 基础已达标（85）今日刚复习 → effective=85 > 60 未到期，应继续学新点「进阶」
+        conn.execute(
+            "UPDATE nodes SET mastery = 85, review_count = 1, quiz_count = 1, last_review = datetime('now'),
+             stability = 1.0 WHERE id = ?1",
+            params![base],
+        )
+        .unwrap();
+        let n = next_node(&conn, tid, 60).unwrap().unwrap();
+        assert_eq!(n.node.name, "进阶");
+        assert!(!n.is_review);
+
+        // 基础改为 8 天前复习 → effective = 85 × 2^(-8/1) ≈ 0.3 < 60 → 到期
+        conn.execute("UPDATE nodes SET last_review = datetime('now','-8 day') WHERE id = ?1", params![base]).unwrap();
+        let n = next_node(&conn, tid, 60).unwrap().unwrap();
+        assert_eq!(n.node.name, "基础");
+        assert!(n.is_review);
+        assert!(n.days_since.unwrap() >= 8);
+
+        // 进阶也达标（90）但复习 2 次（stability=2），12 天前复习 → effective=90×2^(-12/2)≈5.6 < 60 到期
+        conn.execute(
+            "UPDATE nodes SET mastery = 90, review_count = 2, quiz_count = 2, last_review = datetime('now','-12 day'),
+             stability = 2.0 WHERE id = ?1",
+            params![adv],
+        )
+        .unwrap();
+        let n = next_node(&conn, tid, 60).unwrap().unwrap();
+        assert_eq!(n.node.name, "基础");
+        assert!(n.is_review);
+
+        assert_eq!(due_review_count(&conn, tid, 60).unwrap(), 2);
+    }
+
+    #[test]
+    fn test_stability_growth_and_decay() {
+        let conn = test_db();
+        let tid = sample(&conn);
+        let base: i64 = conn
+            .query_row("SELECT id FROM nodes WHERE topic_id = ?1 AND name = '基础'", params![tid], |r| r.get(0))
+            .unwrap();
+        // 用严格递增分数避开 24h 防刷分（每日最高分生效）
+        let (_m, applied) = record_quiz(&conn, base, 30, "q", "a").unwrap(); // <50
+        assert!(applied);
+        let s: f64 = conn.query_row("SELECT stability FROM nodes WHERE id = ?1", params![base], |r| r.get(0)).unwrap();
+        assert!((s - 0.7).abs() < 0.01, "<50 应 ×0.7（1.0×0.7=0.7），得 {s}");
+
+        let (_m, applied) = record_quiz(&conn, base, 80, "q", "a").unwrap(); // 70-89
+        assert!(applied);
+        let s: f64 = conn.query_row("SELECT stability FROM nodes WHERE id = ?1", params![base], |r| r.get(0)).unwrap();
+        assert!((s - 1.4).abs() < 0.01, "70-89 应 ×2.0（0.7×2.0=1.4），得 {s}");
+
+        let (_m, applied) = record_quiz(&conn, base, 95, "q", "a").unwrap(); // ≥90
+        assert!(applied);
+        let s: f64 = conn.query_row("SELECT stability FROM nodes WHERE id = ?1", params![base], |r| r.get(0)).unwrap();
+        assert!((s - 3.5).abs() < 0.01, "≥90 应 ×2.5（1.4×2.5=3.5），得 {s}");
+
+        // 保持率与有效掌握度
+        let r0 = retention(2.0, 0.0);
+        assert!((r0 - 1.0).abs() < 0.001);
+        let r1 = retention(2.0, 2.0);
+        assert!((r1 - 0.5).abs() < 0.001, "半衰期 2 天，2 天后保持率应为 0.5");
+        let r7 = retention(7.0, 7.0);
+        assert!((r7 - 0.5).abs() < 0.001, "半衰期 7 天，7 天后保持率应为 0.5");
+
+        // mastery=80, S=1.0, 1 天前 → effective = 80 × 2^(-1/1) = 40 < 60 到期
+        conn.execute("UPDATE nodes SET mastery = 80, stability = 1.0, last_review = datetime('now','-1 day') WHERE id = ?1", params![base]).unwrap();
+        assert_eq!(due_review_count(&conn, tid, 60).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_retention_decay() {
+        // 纯函数测试：retention 公式
+        assert!((retention(1.0, 0.0) - 1.0).abs() < 0.001);
+        assert!((retention(1.0, 1.0) - 0.5).abs() < 0.001);
+        assert!((retention(2.0, 2.0) - 0.5).abs() < 0.001);
+        assert!(retention(0.0, 1.0) < 0.001);
+        // 钳制
+        let s = next_stability(100.0, 95);
+        assert!(s <= S_MAX, "stability 不应超过 S_MAX");
+        let s = next_stability(0.3, 30);
+        assert!(s >= S_MIN, "stability 不应低于 S_MIN");
     }
 
     #[test]
@@ -858,7 +1187,7 @@ mod tests {
     fn test_stats() {
         let conn = test_db();
         let tid = sample(&conn);
-        let s = stats(&conn, tid).unwrap();
+        let s = stats(&conn, tid, 60).unwrap();
         assert_eq!(s.total_nodes, 2);
         assert_eq!(s.lit_nodes, 0);
         assert_eq!(s.avg_mastery, 0);
@@ -880,7 +1209,7 @@ mod tests {
         log_session(&conn, tid, "基础").unwrap();
 
         // 复位前：有进度
-        let s0 = stats(&conn, tid).unwrap();
+        let s0 = stats(&conn, tid, 60).unwrap();
         assert_eq!(s0.lit_nodes, 1);
 
         // 复位
@@ -890,7 +1219,7 @@ mod tests {
         assert_eq!(sessions, 1);
 
         // 复位后：进度归零，结构仍在
-        let s1 = stats(&conn, tid).unwrap();
+        let s1 = stats(&conn, tid, 60).unwrap();
         assert_eq!(s1.total_nodes, 2); // 节点数不变
         assert_eq!(s1.lit_nodes, 0);
         assert_eq!(s1.avg_mastery, 0);
@@ -924,7 +1253,7 @@ mod tests {
         // 完整导出
         let data = export_topic(&conn, tid, true).unwrap();
         assert_eq!(data.format, "rhermes-kb");
-        assert_eq!(data.version, 1);
+        assert_eq!(data.version, EXPORT_VERSION);
         assert_eq!(data.graph.nodes.len(), 2);
         assert_eq!(data.graph.edges.len(), 1);
         let learning = data.learning.as_ref().expect("完整导出应含学习记录");

@@ -117,6 +117,7 @@ mod tests {
                 .map(|(n, l)| NodeRow {
                     id: 0, name: n.to_string(), summary: String::new(),
                     layer: *l, mastery: 0, review_count: 0, quiz_count: 0,
+                    stability: 1.0, last_review: None, effective_mastery: 0,
                 })
                 .collect(),
             edges: edges

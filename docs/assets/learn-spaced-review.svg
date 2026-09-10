@@ -1,0 +1,97 @@
+<svg viewBox="0 0 680 480" width="100%" role="img"><title>RHermes /learn 遗忘曲线：指数衰减 retention = 2^(-Δt/S)</title>
+<desc>横轴为距上次复习天数 Δt，纵轴为当前保留率 retention；蓝色曲线 stability=1（半衰期 1 天），橙色曲线 stability=10（半衰期 10 天）；灰色横线为复习红线 review_floor=60%；红线以下节点自动变浅并进入复习队列。</desc>
+<defs>
+<style>
+.th{font:14px sans-serif;font-weight:500}
+.ts{font:12px sans-serif}
+.tn{font:11px sans-serif}
+</style>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M0,0 L10,5 L0,10 Z" fill="#5C5C58"/>
+</marker>
+</defs>
+
+<!-- 标题 -->
+<text class="th" x="24" y="30" fill="#2C2C2A">遗忘曲线：retention = 2^(-Δt / S)</text>
+<text class="ts" x="24" y="48" fill="#5C5C58">stability S 随测验分数动态伸缩；effective_mastery = mastery × retention</text>
+
+<!-- 坐标轴容器 -->
+<g transform="translate(64,84)">
+<!-- 背景网格 -->
+<rect x="0" y="0" width="540" height="280" fill="#FAFAFA" stroke="#E0E0DC" stroke-width="0.5"/>
+
+<!-- 网格横线 -->
+<line x1="0" y1="0" x2="540" y2="0" stroke="#E8E8E4" stroke-width="0.5"/>
+<line x1="0" y1="56" x2="540" y2="56" stroke="#E8E8E4" stroke-width="0.5"/>
+<line x1="0" y1="112" x2="540" y2="112" stroke="#E8E8E4" stroke-width="0.5"/>
+<line x1="0" y1="168" x2="540" y2="168" stroke="#E8E8E4" stroke-width="0.5"/>
+<line x1="0" y1="224" x2="540" y2="224" stroke="#E8E8E4" stroke-width="0.5"/>
+<line x1="0" y1="280" x2="540" y2="280" stroke="#C0C0BC" stroke-width="1"/>
+
+<!-- Y 轴刻度 -->
+<text class="tn" x="-8" y="4" text-anchor="end" fill="#5C5C58">100%</text>
+<text class="tn" x="-8" y="60" text-anchor="end" fill="#5C5C58">80%</text>
+<text class="tn" x="-8" y="116" text-anchor="end" fill="#5C5C58">60%</text>
+<text class="tn" x="-8" y="172" text-anchor="end" fill="#5C5C58">40%</text>
+<text class="tn" x="-8" y="228" text-anchor="end" fill="#5C5C58">20%</text>
+<text class="tn" x="-8" y="284" text-anchor="end" fill="#5C5C58">0%</text>
+
+<!-- X 轴刻度 -->
+<text class="tn" x="0" y="296" text-anchor="middle" fill="#5C5C58">0 天</text>
+<text class="tn" x="108" y="296" text-anchor="middle" fill="#5C5C58">3 天</text>
+<text class="tn" x="216" y="296" text-anchor="middle" fill="#5C5C58">7 天</text>
+<text class="tn" x="324" y="296" text-anchor="middle" fill="#5C5C58">14 天</text>
+<text class="tn" x="432" y="296" text-anchor="middle" fill="#5C5C58">30 天</text>
+<text class="tn" x="540" y="296" text-anchor="middle" fill="#5C5C58">60 天</text>
+
+<!-- 复习红线 review_floor = 60% -->
+<line x1="0" y1="112" x2="540" y2="112" stroke="#C73E1D" stroke-width="1.5" stroke-dasharray="6,4"/>
+<text class="tn" x="546" y="116" fill="#C73E1D">review_floor = 60%（可配置）</text>
+
+<!-- 半衰期标记 S=1 -->
+<line x1="0" y1="280" x2="0" y2="0" stroke="#185FA5" stroke-width="2"/>
+<circle cx="0" cy="0" r="4" fill="#185FA5"/>
+<!-- S=1 衰减曲线：retention = 2^(-x/1), x in [0, 30]
+   y(像素) = 280 - retention*280
+   x(像素) = (天/60)*540
+   sample: x=0->ret=1.0 y=0; x=3->ret=0.125 y=245; x=7->ret=0.008 y=278; x=14->ret≈0 y=280 -->
+<path d="M 0,0 L 27,210 L 54,245 L 81,261 L 108,270 L 162,278 L 216,280 L 270,280 L 324,280 L 378,280 L 432,280 L 486,280 L 540,280"
+   fill="none" stroke="#185FA5" stroke-width="2.5"/>
+<circle cx="27" cy="210" r="3" fill="#185FA5"/>
+<circle cx="108" cy="270" r="3" fill="#185FA5"/>
+
+<!-- S=1 标签 -->
+<text class="tn" x="36" y="200" fill="#185FA5" font-weight="600">S=1 天（半衰期 1 天）</text>
+<text class="tn" x="36" y="216" fill="#185FA5">3 天后仅剩 12.5%</text>
+
+<!-- 半衰期标记 S=10 -->
+<!-- S=10 衰减曲线：retention = 2^(-x/10)
+   x=0->1.0 y=0; x=3->0.901 y=28; x=7->0.708 y=82; x=14->0.501 y=140; x=30->0.25 y=210; x=60->0.0625 y=262 -->
+<path d="M 0,0 L 27,28 L 54,55 L 81,68 L 108,82 L 162,112 L 216,140 L 270,168 L 324,196 L 378,210 L 432,232 L 486,250 L 540,262"
+   fill="none" stroke="#BA7517" stroke-width="2.5"/>
+<circle cx="162" cy="112" r="3" fill="#BA7517"/>
+<circle cx="324" cy="196" r="3" fill="#BA7517"/>
+<circle cx="486" cy="250" r="3" fill="#BA7517"/>
+
+<!-- S=10 标签 -->
+<text class="tn" x="378" y="56" fill="#BA7517" font-weight="600">S=10 天（半衰期 10 天）</text>
+<text class="tn" x="378" y="72" fill="#BA7517">14 天仍记 50%</text>
+
+<!-- Y 轴标签 -->
+<text class="ts" x="-44" y="140" fill="#5C5C58" transform="rotate(-90 -44 140)" text-anchor="middle">retention</text>
+<!-- X 轴标签 -->
+<text class="ts" x="270" y="320" fill="#5C5C58" text-anchor="middle">距上次复习天数 Δt</text>
+</g>
+
+<!-- 图例 -->
+<rect x="24" y="384" width="632" height="80" rx="8" fill="#F4F4F0" stroke="#E0E0DC" stroke-width="0.5"/>
+<text class="th" x="36" y="404" fill="#2C2C2A">调度优先级（next_node）</text>
+<rect x="36" y="416" width="12" height="12" rx="2" fill="#C73E1D"/>
+<text class="tn" x="54" y="427" fill="#2C2C2A">① 到期复习：effective &lt; floor（最遗忘优先）</text>
+<rect x="320" y="416" width="12" height="12" rx="2" fill="#185FA5"/>
+<text class="tn" x="338" y="427" fill="#2C2C2A">② 未学过（mastery=0）</text>
+<rect x="36" y="440" width="12" height="12" rx="2" fill="#EF9F27"/>
+<text class="tn" x="54" y="451" fill="#2C2C2A">③ 弱巩固（60 ≤ effective &lt; 80）</text>
+<rect x="320" y="440" width="12" height="12" rx="2" fill="#3D7D3D"/>
+<text class="tn" x="338" y="451" fill="#2C2C2A">④ 学习完成（effective ≥ 80）</text>
+</svg>

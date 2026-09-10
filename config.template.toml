@@ -70,6 +70,12 @@ default_provider = "local_llm"
 # 安全工作目录（Agent 文件操作限制在此目录下，空=不限制）
 workspace = ""
 
+# ── 知识库学习配置（遗忘曲线）──
+[knowledge]
+# 有效掌握度低于此值即触发复习（0-100，默认 60）
+# effective = mastery × 2^(-Δt/稳定性)，effective < review_floor → 到期复习
+review_floor = 60
+
 # ── Provider Pool 配置（熔断器）──
 [provider_pool]
 # 熔断器阈值：连续失败 N 次后断开

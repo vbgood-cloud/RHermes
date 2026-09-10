@@ -144,12 +144,15 @@ mod tests {
             lit_nodes: 24,
             mastered_nodes: 15,
             avg_mastery: 61,
+            avg_retention: 72,
             quiz_total: 42,
             quiz_avg: 91,
             learn_steps: 38,
             today_steps: 5,
             weakest: vec![("Select宏".into(), 22), ("Pin/Unpin".into(), 41)],
             quiz_today: 6,
+            due_reviews: 3,
+            due_review_names: vec![("Select宏".into(), 22)],
         }
     }
 

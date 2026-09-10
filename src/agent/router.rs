@@ -98,7 +98,7 @@ fn kb_build_check(name: &str) -> usize {
     use crate::knowledge as kb;
     kb::open_db().ok()
         .and_then(|c| kb::store::topic_id(&c, name).ok().flatten())
-        .and_then(|tid| kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok()))
+        .and_then(|tid| kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid, kb::store::REVIEW_FLOOR_DEFAULT).ok()))
         .map(|s| s.total_nodes)
         .unwrap_or(0)
 }
@@ -676,8 +676,8 @@ impl SessionRouter {
 
                     match kb::open_db().and_then(|c| kb::store::topic_id(&c, &stem)).ok().flatten() {
                         Some(tid) => {
-                            let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
-                            let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
+                            let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid, kb::store::REVIEW_FLOOR_DEFAULT).ok());
+                            let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%{}）", s.lit_nodes, s.total_nodes, s.avg_mastery, if s.due_reviews > 0 { format!(" · 待复习 {} 个", s.due_reviews) } else { String::new() })).unwrap_or_default();
                             let kickoff = format!("[学习模式·继续] 知识库「{stem}」{progress}。请用 kb_learn(topic=\"{stem}\") 取下一个知识点开始持续教学：讲完一个知识点立即用 kb_quiz 出题判分，判分后不要询问用户是否继续，直接 kb_learn 取下一个，循环到全部节点掌握度 ≥80%（kb_learn 会返回学习完成）或用户 /stop 停止。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
                             (stem.clone(), kickoff, format!("📚 学习模式：{stem}（来源文件 {size_kb}KB，已有进度，继续学习）"), false)
                         }
@@ -735,8 +735,8 @@ impl SessionRouter {
             let topic_hint = parts.next().unwrap_or("").trim().to_string();
             match kb::open_db().and_then(|c| kb::store::topic_id(&c, &name)).ok().flatten() {
                 Some(tid) => {
-                    let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid).ok());
-                    let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%）", s.lit_nodes, s.total_nodes, s.avg_mastery)).unwrap_or_default();
+                    let st = kb::open_db().ok().and_then(|c| kb::store::stats(&c, tid, kb::store::REVIEW_FLOOR_DEFAULT).ok());
+                    let progress = st.map(|s| format!("（已点亮 {}/{} 节点 · 平均掌握度 {}%{}）", s.lit_nodes, s.total_nodes, s.avg_mastery, if s.due_reviews > 0 { format!(" · 待复习 {} 个", s.due_reviews) } else { String::new() })).unwrap_or_default();
                     let kickoff = format!("[学习模式·继续] 知识库「{name}」{progress}。请用 kb_learn(topic=\"{name}\") 取下一个知识点开始持续教学：讲完一个知识点立即用 kb_quiz 出题判分，判分后不要询问用户是否继续，直接 kb_learn 取下一个，循环到全部节点掌握度 ≥80%（kb_learn 会返回学习完成）或用户 /stop 停止。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
                     (name.clone(), kickoff, format!("📚 学习模式：{name}{progress}\n正在载入下一个知识点…"), false)
                 }

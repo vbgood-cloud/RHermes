@@ -88,26 +88,38 @@ pub fn build_svg(snapshot: &GraphSnapshot, stats: &KbStats) -> String {
     // ── 节点 ──
     for n in &snapshot.nodes {
         let Some((x, y)) = positions.get(&n.name) else { continue };
-        let stage = mastery_stage(n.mastery);
+        // 用有效掌握度（mastery × 2^(-Δt/稳定性)）决定阶段与颜色，遗忘后自动降档变浅
+        let stage = mastery_stage(n.effective_mastery);
         let color = STAGE_COLORS[stage as usize];
         let bg = STAGE_BG[stage as usize];
         let text_color = STAGE_TEXT[stage as usize];
         let label = escape(&n.name);
         let summary = escape(&n.summary);
         let stage_txt = stage_name(stage);
-        let title = format!("【{}】{}（掌握度 {}% · {}）\n{}", stage_txt, n.name, n.mastery, stage_txt, n.summary);
+        // 标题同时显示历史掌握度与当前有效掌握度，遗忘时清晰可见
+        let title = if n.effective_mastery != n.mastery {
+            format!("【{}】{}（当前有效 {}% · 历史 {}%）\n{}", stage_txt, n.name, n.effective_mastery, n.mastery, n.summary)
+        } else {
+            format!("【{}】{}（掌握度 {}% · {}）\n{}", stage_txt, n.name, n.mastery, stage_txt, n.summary)
+        };
         let _ = writeln!(s, "<g class='node'>");
         let _ = writeln!(s, "<title>{}</title>", escape(&title));
         let _ = writeln!(s, "<rect x='{x:.0}' y='{y:.0}' width='{NODE_W:.0}' height='{NODE_H:.0}' rx='10' fill='{bg}' stroke='{color}' opacity='0.95'/>");
-        // 掌握度进度条（节点内底部）
+        // 有效掌握度进度条
         let inner_w = NODE_W - 16.0;
         let _ = writeln!(s, "<rect x='{:.0}' y='{:.0}' width='{inner_w:.0}' height='5' rx='2.5' fill='#64748b' opacity='0.4'/>", x + 8.0, y + NODE_H - 11.0);
-        let _ = writeln!(s, "<rect x='{:.0}' y='{:.0}' width='{:.0}' height='5' rx='2.5' fill='{color}'/>", x + 8.0, y + NODE_H - 11.0, inner_w * n.mastery as f64 / 100.0);
-        // 名称（过长截断到 ~10 个汉字宽）
+        let _ = writeln!(s, "<rect x='{:.0}' y='{:.0}' width='{:.0}' height='5' rx='2.5' fill='{color}'/>", x + 8.0, y + NODE_H - 11.0, inner_w * n.effective_mastery as f64 / 100.0);
+        // 名称
         let name_disp = truncate_cn(&n.name, 12);
         let _ = writeln!(s, "<text x='{:.0}' y='{:.0}' class='nname'>{}</text>", x + NODE_W / 2.0, y + 20.0, escape(&name_disp));
-        let _ = writeln!(s, "<text x='{:.0}' y='{:.0}' class='nmastery' fill='{text_color}'>{} · {}%</text>",
-            x + NODE_W / 2.0, y + 36.0, stage_txt, n.mastery);
+        // 阶段文字 + 有效掌握度（用有效值以与颜色一致）
+        let mastery_disp = if n.effective_mastery != n.mastery {
+            format!("{} · {}% (原 {}%)", stage_txt, n.effective_mastery, n.mastery)
+        } else {
+            format!("{} · {}%", stage_txt, n.effective_mastery)
+        };
+        let _ = writeln!(s, "<text x='{:.0}' y='{:.0}' class='nmastery' fill='{text_color}'>{}</text>",
+            x + NODE_W / 2.0, y + 36.0, escape(&mastery_disp));
         let _ = writeln!(s, "</g>");
     }
 
@@ -143,9 +155,9 @@ mod tests {
         GraphSnapshot {
             topic: "测试库".into(),
             nodes: vec![
-                NodeRow { id: 1, name: "基础概念".into(), summary: "底层知识".into(), layer: 0, mastery: 0, review_count: 0, quiz_count: 0 },
-                NodeRow { id: 2, name: "中级主题".into(), summary: "中间层".into(), layer: 1, mastery: 35, review_count: 1, quiz_count: 1 },
-                NodeRow { id: 3, name: "高级应用".into(), summary: "顶层".into(), layer: 2, mastery: 90, review_count: 3, quiz_count: 3 },
+                NodeRow { id: 1, name: "基础概念".into(), summary: "底层知识".into(), layer: 0, mastery: 0, review_count: 0, quiz_count: 0, stability: 1.0, last_review: None, effective_mastery: 0 },
+                NodeRow { id: 2, name: "中级主题".into(), summary: "中间层".into(), layer: 1, mastery: 35, review_count: 1, quiz_count: 1, stability: 1.0, last_review: None, effective_mastery: 35 },
+                NodeRow { id: 3, name: "高级应用".into(), summary: "顶层".into(), layer: 2, mastery: 90, review_count: 3, quiz_count: 3, stability: 1.0, last_review: None, effective_mastery: 90 },
             ],
             edges: vec![
                 EdgeRow { from: "基础概念".into(), to: "中级主题".into(), relation: "依赖".into() },
@@ -161,12 +173,15 @@ mod tests {
             lit_nodes: 2,
             mastered_nodes: 1,
             avg_mastery: 41,
+            avg_retention: 100,
             quiz_total: 4,
             quiz_avg: 72,
             learn_steps: 5,
             today_steps: 1,
             weakest: vec![("中级主题".into(), 35)],
             quiz_today: 2,
+            due_reviews: 0,
+            due_review_names: vec![],
         }
     }
 
@@ -225,5 +240,19 @@ mod tests {
         assert!(content.starts_with("<!DOCTYPE html>"));
         assert!(content.contains("<svg"));
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn test_svg_auto_fade_on_decay() {
+        // 高级应用历史 mastery=90 但 effective=40（遗忘后）→ 阶段降为「初识」黄色
+        let mut s = snap();
+        s.nodes[2].effective_mastery = 40; // 历史仍是 90
+        let svg = build_svg(&s, &st());
+        // 黄色（#fbbf24）= 初识档；绿色（#16a34a）= 精通档
+        // rect 的 fill 应是黄色背景 #fef9c3，而非精通档 #bbf7d0
+        assert!(svg.contains("#fbbf24"), "effective=40 应渲染黄色边框");
+        assert!(svg.contains("#fef9c3"), "effective=40 应渲染黄色背景");
+        // mastery 文字应同时显示当前值与历史值
+        assert!(svg.contains("原 90%"), "标题应标注历史 90%");
     }
 }

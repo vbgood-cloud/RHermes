@@ -1975,10 +1975,10 @@ pub fn builtin_registry(config: &crate::core::Config) -> ToolRegistry {
         .register(crate::tools::liteparse::CheckDocumentComplexity)
         .register(crate::tools::KbCreate)
         .register(crate::tools::KbAppend)
-        .register(crate::tools::KbGraph)
-        .register(crate::tools::KbLearn)
+        .register(crate::tools::KbGraph::new(config.knowledge.review_floor))
+        .register(crate::tools::KbLearn::new(config.knowledge.review_floor))
         .register(crate::tools::KbQuiz)
-        .register(crate::tools::KbStatsTool)
+        .register(crate::tools::KbStatsTool::new(config.knowledge.review_floor))
         .register(crate::tools::KbList)
         .register(crate::tools::KbReset)
 }
@@ -2102,13 +2102,19 @@ impl Tool for KbAppend {
 }
 
 /// 生成图谱（浏览器 HTML）+ 返回终端概览
-pub struct KbGraph;
+pub struct KbGraph {
+    pub review_floor: i64,
+}
+
+impl KbGraph {
+    pub fn new(review_floor: i64) -> Self { Self { review_floor } }
+}
 
 #[async_trait::async_trait]
 impl Tool for KbGraph {
     fn name(&self) -> String { "kb_graph".into() }
     fn description(&self) -> String {
-        "生成知识图谱（SVG HTML，浏览器查看）。参数: topic。返回文件路径+进度概览。节点颜色: 灰=未学习/黄=初识/浅绿=掌握中/亮绿=精通。".into()
+        "生成知识图谱（SVG HTML，浏览器查看）。参数: topic。返回文件路径+进度概览。节点颜色按当前有效掌握度（遗忘后自动降档变浅）：灰=未学习/黄=初识/浅绿=掌握中/亮绿=精通。".into()
     }
     fn parallel_safe(&self) -> bool { true }
     fn parameters(&self) -> Vec<ParamDef> {
@@ -2123,7 +2129,7 @@ impl Tool for KbGraph {
             .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在，先 kb_create")))?;
 
         let snap = kb::store::snapshot(&conn, tid).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
-        let st = kb::store::stats(&conn, tid).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let st = kb::store::stats(&conn, tid, self.review_floor).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         let mut path = kb::graphs_dir();
         path.push(format!("{}.html", sanitize_filename(&topic)));
@@ -2131,8 +2137,9 @@ impl Tool for KbGraph {
             .map_err(|e| ToolError::ExecutionFailed(format!("图谱渲染失败: {e}")))?;
 
         let mut overview = format!(
-            "图谱已生成 -> {}\n学习进度 {}/{} 节点点亮 · 平均掌握度 {}%\n",
-            path.display(), st.lit_nodes, st.total_nodes, st.avg_mastery
+            "图谱已生成 -> {}\n学习进度 {}/{} 节点点亮 · 平均掌握度 {}%{}\n",
+            path.display(), st.lit_nodes, st.total_nodes, st.avg_mastery,
+            if st.due_reviews > 0 { format!(" · 待复习 {} 个", st.due_reviews) } else { String::new() }
         );
         let mut by_layer: Vec<(i64, Vec<&kb::store::NodeRow>)> = Vec::new();
         for node in &snap.nodes {
@@ -2156,13 +2163,19 @@ impl Tool for KbGraph {
 }
 
 /// 学习会话：返回下一个该学的节点（拓扑序+薄弱优先）+ 上下文
-pub struct KbLearn;
+pub struct KbLearn {
+    pub review_floor: i64,
+}
+
+impl KbLearn {
+    pub fn new(review_floor: i64) -> Self { Self { review_floor } }
+}
 
 #[async_trait::async_trait]
 impl Tool for KbLearn {
     fn name(&self) -> String { "kb_learn".into() }
     fn description(&self) -> String {
-        "学习一个知识点。参数: topic, node(可选，默认自动选下一个: 基础层优先+掌握度最低优先)。返回节点摘要+前置/后续关联，Agent 据此讲解后用 kb_quiz 验证。".into()
+        "学习一个知识点。参数: topic, node(可选，默认自动选下一个)。调度：① 到期复习（effective < review_floor，effective 升序）→ ② 未学（layer/id 升序）→ ③ 薄弱巩固（effective<80 升序）。返回节点摘要+前置/后续关联+学习或复习轮标记，Agent 据此讲解或检验后用 kb_quiz 验证。".into()
     }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
@@ -2179,31 +2192,45 @@ impl Tool for KbLearn {
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
             .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在")))?;
 
-        let node = match args.get("node").and_then(|v| v.as_str()) {
-            Some(n) => {
-                let row: Option<kb::store::NodeRow> = conn.query_row(
-                    "SELECT id, name, summary, layer, mastery, review_count, quiz_count FROM nodes WHERE topic_id = ?1 AND name = ?2",
-                    rusqlite::params![tid, n],
-                    |r| Ok(kb::store::NodeRow {
-                        id: r.get(0)?, name: r.get(1)?, summary: r.get(2)?,
-                        layer: r.get(3)?, mastery: r.get(4)?, review_count: r.get(5)?, quiz_count: r.get(6)?,
-                    }),
-                ).optional().map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
-                row.ok_or_else(|| ToolError::InvalidParam(format!("节点 '{n}' 不存在")))?
-            }
-            None => kb::store::next_node(&conn, tid)
+        let picked = match args.get("node").and_then(|v| v.as_str()) {
+            Some(n) => kb::store::find_node(&conn, tid, n, self.review_floor)
                 .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
-                .ok_or_else(|| ToolError::ExecutionFailed("全部节点掌握度已达 80%+，学习完成！用 kb_stats 看战绩".into()))?,
+                .ok_or_else(|| ToolError::InvalidParam(format!("节点 '{n}' 不存在")))?,
+            None => kb::store::next_node(&conn, tid, self.review_floor)
+                .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
+                .ok_or_else(|| ToolError::ExecutionFailed(format!("全部节点有效掌握 ≥ {}，学习完成！用 kb_stats 看战绩", self.review_floor)))?,
         };
+        let node = &picked.node;
 
         let (prereq, next) = kb::store::node_context(&conn, tid, &node.name)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
-        kb::store::log_session(&conn, tid, &node.name)
-            .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        // 复习轮不重复计入学习步数（步数只统计新学推进）
+        if !picked.is_review {
+            kb::store::log_session(&conn, tid, &node.name)
+                .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        }
+
+        let head = if picked.is_review {
+            format!(
+                "【复习轮·到期】{}（层L{}，当前有效 {}% · 历史 {}%，上次复习 {} 天前）",
+                node.name, node.layer, picked.effective_mastery, node.mastery, picked.days_since.unwrap_or(0)
+            )
+        } else if node.mastery > 0 {
+            format!(
+                "【学习节点】{}（层L{}，当前有效 {}% · 历史 {}%）",
+                node.name, node.layer, picked.effective_mastery, node.mastery
+            )
+        } else {
+            format!("【学习节点】{}（层L{}，当前有效 {}%）", node.name, node.layer, picked.effective_mastery)
+        };
+        let tail = if picked.is_review {
+            "【复习要求】该知识点已达标但记忆已衰减，请勿重复讲授。就易错点/关键原理向用户提出 1 个检验性问题，待用户作答后判定 score 并用 kb_quiz 回填；判分后不要询问用户是否继续，直接调用 kb_learn 取下一个知识点，直到 kb_learn 返回「学习完成」或用户明确喊停。"
+        } else {
+            "【持续教学】请就以上知识点向用户讲解（一段一问），讲完立即用 kb_quiz 出题并判分。判分后不要询问用户是否继续，直接调用 kb_learn 取下一个知识点继续讲；如此循环，直到 kb_learn 返回「学习完成」或用户明确喊停。"
+        };
 
         Ok(format!(
-            "【学习节点】{}（层L{}，当前掌握度 {}%）\n【摘要】{}\n【前置】{}\n【后续】{}\n---\n【持续教学】请就以上知识点向用户讲解（一段一问），讲完立即用 kb_quiz 出题并判分。判分后不要询问用户是否继续，直接调用 kb_learn 取下一个知识点继续讲；如此循环，直到 kb_learn 返回「学习完成」或用户明确喊停。",
-            node.name, node.layer, node.mastery,
+            "{head}\n【摘要】{}\n【前置】{}\n【后续】{}\n---\n{tail}",
             if node.summary.is_empty() { "（无预置摘要，请根据主题上下文讲解）" } else { &node.summary },
             if prereq.is_empty() { "无".to_string() } else { prereq.join("、") },
             if next.is_empty() { "无".to_string() } else { next.join("、") },
@@ -2275,13 +2302,19 @@ impl Tool for KbQuiz {
 }
 
 /// 学习统计（终端 Bento / HTML Bento）
-pub struct KbStatsTool;
+pub struct KbStatsTool {
+    pub review_floor: i64,
+}
+
+impl KbStatsTool {
+    pub fn new(review_floor: i64) -> Self { Self { review_floor } }
+}
 
 #[async_trait::async_trait]
 impl Tool for KbStatsTool {
     fn name(&self) -> String { "kb_stats".into() }
     fn description(&self) -> String {
-        "学习统计。参数: topic, html(true=生成浏览器Bento面板)。终端默认输出 Bento 风格战绩。".into()
+        "学习统计。参数: topic, html(true=生成浏览器Bento面板)。终端默认输出 Bento 风格战绩，含遗忘曲线相关字段（有效掌握度均值、平均保持率、到期复习清单）。".into()
     }
     fn parallel_safe(&self) -> bool { true }
     fn parameters(&self) -> Vec<ParamDef> {
@@ -2297,9 +2330,18 @@ impl Tool for KbStatsTool {
         let tid = kb::store::topic_id(&conn, &topic)
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?
             .ok_or_else(|| ToolError::InvalidParam(format!("知识库 '{topic}' 不存在")))?;
-        let st = kb::store::stats(&conn, tid).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+        let st = kb::store::stats(&conn, tid, self.review_floor).map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
         let mut out = kb::bento::render_terminal(&st);
+        if st.due_reviews > 0 {
+            out.push_str(&format!("\n🔁 到期该复习：{} 个节点（effective < {}，kb_learn 会优先安排）", st.due_reviews, self.review_floor));
+            if !st.due_review_names.is_empty() {
+                let lines: Vec<String> = st.due_review_names.iter().map(|(n, e)| format!("  · {} (有效 {}%)", n, e)).collect();
+                out.push_str(&format!("\n{}", lines.join("\n")));
+            }
+        }
+        out.push_str(&format!("\n📈 遗忘曲线：平均有效掌握 {}% · 平均记忆保持率 {}% · 复习红线 {}",
+            st.avg_mastery, st.avg_retention, self.review_floor));
         if args.get("html").and_then(|v| v.as_bool()).unwrap_or(false) {
             let mut path = kb::bento_dir();
             path.push(format!("{}.html", sanitize_filename(&topic)));

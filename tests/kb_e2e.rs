@@ -17,6 +17,7 @@ fn setup() {
 async fn kb_full_workflow() {
     setup();
     use serde_json::json;
+    use rhermes::knowledge::store::REVIEW_FLOOR_DEFAULT;
     use rhermes::tools::{KbCreate, KbGraph, KbLearn, KbList, KbQuiz, KbStatsTool, Tool};
 
     let topic = format!("e2e测试库{}", std::process::id());
@@ -30,8 +31,12 @@ async fn kb_full_workflow() {
     assert!(out.contains("5 个知识点"), "建库: {out}");
     assert!(out.contains("4 条关系"), "{out}");
 
+    let learn_tool = KbLearn::new(REVIEW_FLOOR_DEFAULT);
+    let graph_tool = KbGraph::new(REVIEW_FLOOR_DEFAULT);
+    let stats_tool = KbStatsTool::new(REVIEW_FLOOR_DEFAULT);
+
     // 2. 学习（自动选点：应为 L0 变量与类型）
-    let learn = KbLearn.execute(json!({"topic": topic})).await.unwrap();
+    let learn = learn_tool.execute(json!({"topic": topic})).await.unwrap();
     assert!(learn.contains("变量与类型"), "应选基础层: {learn}");
     assert!(learn.contains("所有权"), "应显示后续: {learn}");
 
@@ -43,22 +48,22 @@ async fn kb_full_workflow() {
     assert!(quiz.contains("90%"), "{quiz}");
 
     // 4. 再学（应为 所有权 L1）
-    let learn2 = KbLearn.execute(json!({"topic": topic})).await.unwrap();
+    let learn2 = learn_tool.execute(json!({"topic": topic})).await.unwrap();
     assert!(learn2.contains("所有权"), "第二点应为所有权: {learn2}");
 
     // 5. 图谱
-    let graph = KbGraph.execute(json!({"topic": topic})).await.unwrap();
+    let graph = graph_tool.execute(json!({"topic": topic})).await.unwrap();
     assert!(graph.contains("图谱已生成"), "{graph}");
     assert!(graph.contains("1/5"), "点亮1个: {graph}");
     assert!(graph.contains("L0"), "{graph}");
 
     // 6. 统计（终端 Bento）
-    let stats = KbStatsTool.execute(json!({"topic": topic})).await.unwrap();
+    let stats = stats_tool.execute(json!({"topic": topic})).await.unwrap();
     assert!(stats.contains("总掌握度"), "{stats}");
     assert!(stats.contains("18%"), "5节点一个90%: {stats}"); // 90/5=18
 
     // 7. 统计 HTML
-    let stats2 = KbStatsTool.execute(json!({"topic": topic, "html": true})).await.unwrap();
+    let stats2 = stats_tool.execute(json!({"topic": topic, "html": true})).await.unwrap();
     assert!(stats2.contains("Bento 面板 ->"), "{stats2}");
 
     // 8. 列表

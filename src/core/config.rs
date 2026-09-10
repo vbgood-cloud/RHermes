@@ -99,6 +99,9 @@ pub struct Config {
     /// LiteParse 文档解析配置
     #[serde(default)]
     pub liteparse: LiteParseSettings,
+    /// 知识库学习配置（遗忘曲线参数）
+    #[serde(default)]
+    pub knowledge: KnowledgeConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -848,6 +851,7 @@ impl Default for Config {
             proxy: ProxyConfig::default(),
             edu: EduConfig::default(),
             liteparse: LiteParseSettings::default(),
+            knowledge: KnowledgeConfig::default(),
         }
     }
 }
@@ -1641,6 +1645,7 @@ mod tests {
             proxy: ProxyConfig::default(),
             edu: EduConfig::default(),
             liteparse: LiteParseSettings::default(),
+            knowledge: KnowledgeConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();
@@ -1803,6 +1808,24 @@ impl Default for LiteParseSettings {
         }
     }
 }
+
+/// 知识库学习配置（遗忘曲线参数）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeConfig {
+    /// 有效掌握度低于此值即触发复习（0-100，默认 60）。
+    /// 与 `mastery * 2^(-Δt/S)` 比较：effective < review_floor → 到期。
+    /// 调大 → 更早复习（要求更高保持率）；调小 → 容忍更多衰减。
+    #[serde(default = "default_review_floor")]
+    pub review_floor: i64,
+}
+
+impl Default for KnowledgeConfig {
+    fn default() -> Self {
+        Self { review_floor: default_review_floor() }
+    }
+}
+
+fn default_review_floor() -> i64 { 60 }
 
 #[cfg(test)]
 mod edu_tests {

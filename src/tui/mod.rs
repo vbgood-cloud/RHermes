@@ -657,7 +657,8 @@ impl App {
                 let _ = tx.send(AppCommand::EnterLearnMode(name.clone(), topic_hint.clone()));
                 Ok(match exists {
                     Some(tid) => {
-                        let st = kb::store::stats(&conn, tid).map_err(|e| e.to_string())?;
+                        let review_floor = self.current_config.as_ref().map(|c| c.knowledge.review_floor).unwrap_or(kb::store::REVIEW_FLOOR_DEFAULT);
+                        let st = kb::store::stats(&conn, tid, review_floor).map_err(|e| e.to_string())?;
                         format!("📚 学习模式：{name}（已点亮 {}/{} · 平均 {}%）\n正在载入下一个知识点…", st.lit_nodes, st.total_nodes, st.avg_mastery)
                     }
                     None => format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"),

@@ -60,10 +60,10 @@ pub fn kb_tools() -> Vec<std::sync::Arc<dyn crate::tools::Tool>> {
     vec![
         std::sync::Arc::new(crate::tools::KbCreate),
         std::sync::Arc::new(crate::tools::KbAppend),
-        std::sync::Arc::new(crate::tools::KbGraph),
-        std::sync::Arc::new(crate::tools::KbLearn),
+        std::sync::Arc::new(crate::tools::KbGraph::new(crate::knowledge::store::REVIEW_FLOOR_DEFAULT)),
+        std::sync::Arc::new(crate::tools::KbLearn::new(crate::knowledge::store::REVIEW_FLOOR_DEFAULT)),
         std::sync::Arc::new(crate::tools::KbQuiz),
-        std::sync::Arc::new(crate::tools::KbStatsTool),
+        std::sync::Arc::new(crate::tools::KbStatsTool::new(crate::knowledge::store::REVIEW_FLOOR_DEFAULT)),
         std::sync::Arc::new(crate::tools::KbList),
     ]
 }
