@@ -118,6 +118,7 @@ mod tests {
                     id: 0, name: n.to_string(), summary: String::new(),
                     layer: *l, mastery: 0, review_count: 0, quiz_count: 0,
                     stability: 1.0, last_review: None, effective_mastery: 0,
+                    easiness: 2.5,
                 })
                 .collect(),
             edges: edges

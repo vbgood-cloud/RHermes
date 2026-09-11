@@ -2175,7 +2175,7 @@ impl KbLearn {
 impl Tool for KbLearn {
     fn name(&self) -> String { "kb_learn".into() }
     fn description(&self) -> String {
-        "学习一个知识点。参数: topic, node(可选，默认自动选下一个)。调度：① 到期复习（effective < review_floor，effective 升序）→ ② 未学（layer/id 升序）→ ③ 薄弱巩固（effective<80 升序）。返回节点摘要+前置/后续关联+学习或复习轮标记，Agent 据此讲解或检验后用 kb_quiz 验证。".into()
+        "学习一个知识点。参数: topic, node(可选，默认自动选下一个)。调度：① 到期复习（effective < review_floor，effective 升序）→ ② 未学（layer/id 升序）→ ③ 薄弱巩固（effective<80 升序）。返回节点摘要+前置/后续关联+学习或复习轮标记+难度 EF（1.3–2.8，越低越难，可据此调整讲解深度），Agent 据此讲解或检验后用 kb_quiz 验证。".into()
     }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
@@ -2212,13 +2212,14 @@ impl Tool for KbLearn {
 
         let head = if picked.is_review {
             format!(
-                "【复习轮·到期】{}（层L{}，当前有效 {}% · 历史 {}%，上次复习 {} 天前）",
-                node.name, node.layer, picked.effective_mastery, node.mastery, picked.days_since.unwrap_or(0)
+                "【复习轮·到期】{}（层L{}，当前有效 {}% · 历史 {}%，上次复习 {} 天前，难度 EF {:.1}）",
+                node.name, node.layer, picked.effective_mastery, node.mastery,
+                picked.days_since.unwrap_or(0), node.easiness
             )
         } else if node.mastery > 0 {
             format!(
-                "【学习节点】{}（层L{}，当前有效 {}% · 历史 {}%）",
-                node.name, node.layer, picked.effective_mastery, node.mastery
+                "【学习节点】{}（层L{}，当前有效 {}% · 历史 {}%，难度 EF {:.1}）",
+                node.name, node.layer, picked.effective_mastery, node.mastery, node.easiness
             )
         } else {
             format!("【学习节点】{}（层L{}，当前有效 {}%）", node.name, node.layer, picked.effective_mastery)

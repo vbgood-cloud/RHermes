@@ -155,9 +155,9 @@ mod tests {
         GraphSnapshot {
             topic: "测试库".into(),
             nodes: vec![
-                NodeRow { id: 1, name: "基础概念".into(), summary: "底层知识".into(), layer: 0, mastery: 0, review_count: 0, quiz_count: 0, stability: 1.0, last_review: None, effective_mastery: 0 },
-                NodeRow { id: 2, name: "中级主题".into(), summary: "中间层".into(), layer: 1, mastery: 35, review_count: 1, quiz_count: 1, stability: 1.0, last_review: None, effective_mastery: 35 },
-                NodeRow { id: 3, name: "高级应用".into(), summary: "顶层".into(), layer: 2, mastery: 90, review_count: 3, quiz_count: 3, stability: 1.0, last_review: None, effective_mastery: 90 },
+                NodeRow { id: 1, name: "基础概念".into(), summary: "底层知识".into(), layer: 0, mastery: 0, review_count: 0, quiz_count: 0, stability: 1.0, last_review: None, effective_mastery: 0, easiness: 2.5 },
+                NodeRow { id: 2, name: "中级主题".into(), summary: "中间层".into(), layer: 1, mastery: 35, review_count: 1, quiz_count: 1, stability: 1.0, last_review: None, effective_mastery: 35, easiness: 2.5 },
+                NodeRow { id: 3, name: "高级应用".into(), summary: "顶层".into(), layer: 2, mastery: 90, review_count: 3, quiz_count: 3, stability: 1.0, last_review: None, effective_mastery: 90, easiness: 2.5 },
             ],
             edges: vec![
                 EdgeRow { from: "基础概念".into(), to: "中级主题".into(), relation: "依赖".into() },

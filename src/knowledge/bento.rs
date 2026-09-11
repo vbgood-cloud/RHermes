@@ -48,6 +48,18 @@ pub fn render_terminal(stats: &KbStats) -> String {
         stats.learn_steps, stats.today_steps, truncate(&weakest, 14));
     let _ = writeln!(s, "│   累计讲解次数       │  今日测验 {} 次  │  （掌握<80%）    │", stats.quiz_today);
     let _ = writeln!(s, "{BOLD}╰──────────────────────┴────────────────┴────────────────╯{RESET}");
+
+    // 待复习 / 保持率摘要（框线外单行，避免撑破三列宽度）
+    let due_line = if stats.due_reviews == 0 {
+        format!("{GRAY}⏰ 暂无到期复习{RESET} · 平均保持率 {CYAN}{}%{RESET}", stats.avg_retention)
+    } else {
+        let urgent = stats.due_review_names.first()
+            .map(|(n, m)| format!(" · 最紧急 {}（{}%）", truncate(n, 12), m))
+            .unwrap_or_default();
+        format!("{YELLOW}⏰ 待复习 {} 个{RESET}{urgent} · 平均保持率 {CYAN}{}%{RESET}",
+            stats.due_reviews, stats.avg_retention)
+    };
+    let _ = writeln!(s, "{due_line}");
     s
 }
 
@@ -64,6 +76,13 @@ fn build_bento_html(stats: &KbStats) -> String {
     } else {
         stats.weakest.iter().map(|(n, m)| format!("{n}（{m}%）")).collect::<Vec<_>>().join("、")
     };
+    let due_sub = if stats.due_reviews == 0 {
+        "暂无到期复习".to_string()
+    } else {
+        stats.due_review_names.first()
+            .map(|(n, m)| format!("最紧急 {n}（{m}%）"))
+            .unwrap_or_else(|| "尚无清单".to_string())
+    };
     let mastery_color = match stats.avg_mastery {
         80..=100 => "#22c55e",
         50..=79 => "#06b6d4",
@@ -76,7 +95,7 @@ fn build_bento_html(stats: &KbStats) -> String {
 <head><meta charset="utf-8"><title>{topic} · 学习战绩</title>
 <style>
 body{{margin:0;background:#0f172a;display:flex;justify-content:center;align-items:center;min-height:100vh;font-family:system-ui,'Noto Sans SC',sans-serif}}
-.grid{{display:grid;grid-template-columns:repeat(3,220px);grid-auto-rows:150px;gap:14px;padding:24px}}
+.grid{{display:grid;grid-template-columns:repeat(4,220px);grid-auto-rows:150px;gap:14px;padding:24px}}
 .cell{{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:18px;display:flex;flex-direction:column;justify-content:center}}
 .label{{color:#94a3b8;font-size:12px;margin-bottom:8px}}
 .value{{color:#f8fafc;font-size:34px;font-weight:700}}
@@ -96,6 +115,8 @@ h1{{color:#f8fafc;text-align:center;font-size:18px;margin:0 0 4px}}
   <div class="cell"><div class="label">⏱ 学习步数</div><div class="value">{steps}</div><div class="sub">每次讲解+验证记 1 步</div></div>
   <div class="cell"><div class="label">📅 今日</div><div class="value">{today} 步</div><div class="sub">保持节奏，持续点亮</div></div>
   <div class="cell"><div class="label">⚠ 待攻克（掌握&lt;80%）</div><div class="weak">{weakest}</div></div>
+  <div class="cell"><div class="label">⏰ 待复习</div><div class="value">{due} 个</div><div class="sub">{due_sub}</div></div>
+  <div class="cell"><div class="label">💧 平均保持率</div><div class="value">{ret}%</div><div class="sub">记忆衰减后的整体留存</div></div>
 </div>
 </div>
 </body></html>
@@ -113,6 +134,9 @@ h1{{color:#f8fafc;text-align:center;font-size:18px;margin:0 0 4px}}
         steps = stats.learn_steps,
         today = stats.today_steps,
         weakest = escape(&weakest),
+        due = stats.due_reviews,
+        due_sub = escape(&due_sub),
+        ret = stats.avg_retention,
     )
 }
 
@@ -164,6 +188,9 @@ mod tests {
         assert!(out.contains("24/32"));
         assert!(out.contains("Select宏"));
         assert!(out.contains("╰"));
+        // 框线外新增：待复习摘要行
+        assert!(out.contains("待复习 3 个"));
+        assert!(out.contains("平均保持率"));
     }
 
     #[test]
@@ -173,8 +200,13 @@ mod tests {
         render_svg_bento(&st(), &p).unwrap();
         let c = std::fs::read_to_string(&p).unwrap();
         assert!(c.contains("学习战绩"));
-        assert!(c.contains("grid-template-columns:repeat(3,220px)"));
+        // 2×3 → 2×4 网格：新增「待复习」「平均保持率」两格
+        assert!(c.contains("grid-template-columns:repeat(4,220px)"));
         assert!(c.contains("Select宏"));
+        assert!(c.contains("⏰ 待复习"));
+        assert!(c.contains(">3 个<"), "应渲染待复习数量");
+        assert!(c.contains("💧 平均保持率"));
+        assert!(c.contains(">72%<"), "应渲染平均保持率");
         let _ = std::fs::remove_file(&p);
     }
 

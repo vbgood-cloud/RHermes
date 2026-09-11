@@ -12,8 +12,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 /// 导出文件格式标识
 pub const EXPORT_FORMAT: &str = "rhermes-kb";
-/// 导出文件格式版本（v2 新增 stability/next_review_at 字段，向后兼容 v1）
-pub const EXPORT_VERSION: u32 = 2;
+/// 导出文件格式版本（v2 新增 stability/next_review_at；v3 新增 easiness，均向后兼容）
+pub const EXPORT_VERSION: u32 = 3;
 
 /// 复习红线默认值（effective 低于此触发到期复习）；可通过 config.toml 的 `[knowledge].review_floor` 覆盖
 pub const REVIEW_FLOOR_DEFAULT: i64 = 60;
@@ -23,6 +23,12 @@ pub const S_INIT: f64 = 1.0;
 pub const S_MIN: f64 = 0.5;
 /// 半衰期钳制上界（天）
 pub const S_MAX: f64 = 180.0;
+/// SM-2 难度系数（EF）初值；2.5 为中性基准，此时对半衰期增长无额外调制
+pub const EF_INIT: f64 = 2.5;
+/// 难度系数下界（SM-2 原版下限：低于此不再下降）
+pub const EF_MIN: f64 = 1.3;
+/// 难度系数上界（防止难度系数无限膨胀）
+pub const EF_MAX: f64 = 2.8;
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS topics (
@@ -43,6 +49,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     last_review TEXT,
     stability REAL DEFAULT 1.0,
     next_review_at TEXT,
+    easiness REAL DEFAULT 2.5,
     UNIQUE(topic_id, name)
 );
 CREATE TABLE IF NOT EXISTS edges (
@@ -95,6 +102,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
 
 /// 一次性迁移（PRAGMA user_version 跟踪）。
 /// v1: nodes 表新增 stability / next_review_at；按 review_count 回填 stability。
+/// v2: nodes 表新增 easiness（SM-2 难度系数），默认 2.5（中性）。
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v < 1 {
@@ -112,6 +120,11 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [],
         );
         conn.execute("PRAGMA user_version = 1", [])?;
+    }
+    if v < 2 {
+        // v2: 新增 easiness（SM-2 难度系数），旧库默认 2.5（中性，对半衰期无额外调制）
+        let _ = conn.execute("ALTER TABLE nodes ADD COLUMN easiness REAL DEFAULT 2.5", []);
+        conn.execute("PRAGMA user_version = 2", [])?;
     }
     Ok(())
 }
@@ -152,6 +165,8 @@ pub struct NodeRow {
     pub last_review: Option<String>,
     /// 当前有效掌握度 = mastery × 2^(-Δt/stability)，在 snapshot/row_to_node 时按当前时间计算
     pub effective_mastery: i64,
+    /// SM-2 难度系数（1.3–2.8，初值 2.5），只调制半衰期的增长率，不直接决定间隔
+    pub easiness: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -217,9 +232,23 @@ fn stability_factor(score: i64) -> f64 {
     else { 0.7 }
 }
 
-/// 按因子更新稳定性并钳制到 [S_MIN, S_MAX]
-pub fn next_stability(current: f64, score: i64) -> f64 {
-    (current * stability_factor(score)).clamp(S_MIN, S_MAX)
+/// 测验得分 → SM-2 质量分 q（0–5，100 分制按 20 分一档折算，四舍五入）
+pub fn quality(score: i64) -> i64 {
+    (score.clamp(0, 100) as f64 / 20.0).round() as i64
+}
+
+/// SM-2 难度系数递推：`EF' = EF + 0.1 - (5-q)(0.08 + 0.02(5-q))`，钳制 [EF_MIN, EF_MAX]。
+/// q=5 → +0.10（变简单）；q=4 → 0；q=3 → -0.14；q=0 → -0.80（变难）。
+pub fn next_easiness(current: f64, score: i64) -> f64 {
+    let d = (5 - quality(score)) as f64;
+    (current + 0.1 - d * (0.08 + 0.02 * d)).clamp(EF_MIN, EF_MAX)
+}
+
+/// 按「分档增长因子 × EF 难度乘数」更新半衰期并钳制到 [S_MIN, S_MAX]。
+/// EF 以 EF_INIT(2.5) 为中性：EF=2.5 时乘数为 1，行为与引入 EF 前完全一致（向后兼容锚点）。
+pub fn next_stability(current: f64, score: i64, easiness: f64) -> f64 {
+    let ef_mult = (easiness / EF_INIT).clamp(0.5, 1.2);
+    (current * stability_factor(score) * ef_mult).clamp(S_MIN, S_MAX)
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +346,7 @@ pub struct NextNode {
 /// → ④ None（全部 effective ≥80，学习完成；遗忘随时间让节点重新掉入①）
 pub fn next_node(conn: &Connection, tid: i64, review_floor: i64) -> rusqlite::Result<Option<NextNode>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review, easiness
          FROM nodes WHERE topic_id = ?1",
     )?;
     let nodes: Vec<NodeRow> = stmt.query_map(params![tid], row_to_node)?.filter_map(|r| r.ok()).collect();
@@ -346,7 +375,7 @@ pub fn next_node(conn: &Connection, tid: i64, review_floor: i64) -> rusqlite::Re
 /// 按名称取节点（含到期状态与有效掌握度；用户点名学习/复习时使用）
 pub fn find_node(conn: &Connection, tid: i64, name: &str, review_floor: i64) -> rusqlite::Result<Option<NextNode>> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review, easiness
          FROM nodes WHERE topic_id = ?1 AND name = ?2",
     )?;
     let n: Option<NodeRow> = stmt.query_row(params![tid, name], row_to_node).ok();
@@ -361,7 +390,7 @@ pub fn find_node(conn: &Connection, tid: i64, name: &str, review_floor: i64) -> 
 /// 当前到期该复习的节点数（统计与进度提示用）
 pub fn due_review_count(conn: &Connection, tid: i64, review_floor: i64) -> rusqlite::Result<usize> {
     let mut stmt = conn.prepare(
-        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review, easiness
          FROM nodes WHERE topic_id = ?1",
     )?;
     let count = stmt
@@ -416,7 +445,7 @@ pub fn reset_topic_progress(conn: &Connection, tid: i64) -> rusqlite::Result<(us
     )?;
     conn.execute(
         "UPDATE nodes SET mastery = 0, review_count = 0, quiz_count = 0, last_review = NULL,
-         stability = 1.0, next_review_at = NULL WHERE topic_id = ?1",
+         stability = 1.0, next_review_at = NULL, easiness = 2.5 WHERE topic_id = ?1",
         params![tid],
     )?;
     conn.execute(
@@ -452,24 +481,25 @@ pub fn record_quiz(
         }
     }
 
-    let old: (i64, i64, f64) = conn.query_row(
-        "SELECT mastery, review_count, stability FROM nodes WHERE id = ?1",
+    let old: (i64, i64, f64, f64) = conn.query_row(
+        "SELECT mastery, review_count, stability, easiness FROM nodes WHERE id = ?1",
         params![node_id],
-        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?)),
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, f64>(2)?, r.get::<_, f64>(3)?)),
     )?;
     let new_mastery = if old.1 == 0 {
         score
     } else {
         (old.0 * 40 + score * 60) / 100
     };
-    let new_stability = next_stability(old.2, score);
+    let new_stability = next_stability(old.2, score, old.3);
+    let new_easiness = next_easiness(old.3, score);
     let s_int = new_stability.round() as i64;
     conn.execute(
         "UPDATE nodes SET mastery = ?1, review_count = review_count + 1,
          quiz_count = quiz_count + 1, last_review = datetime('now'),
-         stability = ?2, next_review_at = datetime('now', '+' || ?3 || ' days')
-         WHERE id = ?4",
-        params![new_mastery, new_stability, s_int, node_id],
+         stability = ?2, next_review_at = datetime('now', '+' || ?3 || ' days'), easiness = ?4
+         WHERE id = ?5",
+        params![new_mastery, new_stability, s_int, new_easiness, node_id],
     )?;
     conn.execute(
         "INSERT INTO quiz_log (node_id, question, answer, score) VALUES (?1,?2,?3,?4)",
@@ -504,6 +534,7 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
     let mastery: i64 = r.get(4)?;
     let stability: f64 = r.get(7).unwrap_or(S_INIT);
     let last_review: Option<String> = r.get(8)?;
+    let easiness: f64 = r.get(9).unwrap_or(EF_INIT);
     let effective_mastery = compute_effective(mastery, stability, last_review.as_deref());
     Ok(NodeRow {
         id: r.get(0)?,
@@ -516,13 +547,14 @@ fn row_to_node(r: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
         stability,
         last_review,
         effective_mastery,
+        easiness,
     })
 }
 
 pub fn snapshot(conn: &Connection, tid: i64) -> rusqlite::Result<GraphSnapshot> {
     let topic: String = conn.query_row("SELECT name FROM topics WHERE id = ?1", params![tid], |r| r.get(0))?;
     let mut stmt = conn.prepare(
-        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review, easiness
          FROM nodes WHERE topic_id = ?1 ORDER BY layer ASC, id ASC",
     )?;
     let nodes: Vec<NodeRow> = stmt.query_map(params![tid], row_to_node)?.filter_map(|r| r.ok()).collect();
@@ -587,7 +619,7 @@ pub fn stats(conn: &Connection, tid: i64, review_floor: i64) -> rusqlite::Result
 
     // 加载全量节点（row_to_node 已计算 effective_mastery）
     let mut stmt = conn.prepare(
-        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review
+        "SELECT id, name, summary, layer, mastery, review_count, quiz_count, stability, last_review, easiness
          FROM nodes WHERE topic_id = ?1",
     )?;
     let all_nodes: Vec<NodeRow> = stmt.query_map(params![tid], row_to_node)?.filter_map(|r| r.ok()).collect();
@@ -764,6 +796,9 @@ pub struct LearnNodeOut {
     /// 预计下次复习时间（信息性）；v1 旧文件无此字段时为 None
     #[serde(default)]
     pub next_review_at: Option<String>,
+    /// SM-2 难度系数；v3 之前的旧文件无此字段时回退 2.5（中性）
+    #[serde(default)]
+    pub easiness: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -824,7 +859,7 @@ pub fn export_topic(conn: &Connection, tid: i64, with_learning: bool) -> rusqlit
 
     let learning = if with_learning {
         let mut stmt = conn.prepare(
-            "SELECT name, mastery, review_count, quiz_count, last_review, stability, next_review_at
+            "SELECT name, mastery, review_count, quiz_count, last_review, stability, next_review_at, easiness
              FROM nodes WHERE topic_id = ?1 ORDER BY id ASC",
         )?;
         let lnodes: Vec<LearnNodeOut> = stmt
@@ -837,6 +872,7 @@ pub fn export_topic(conn: &Connection, tid: i64, with_learning: bool) -> rusqlit
                     last_review: r.get(4)?,
                     stability: r.get(5)?,
                     next_review_at: r.get(6)?,
+                    easiness: r.get(7)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -955,8 +991,9 @@ pub fn import_topic(
         if let Some(ln) = learn.get(&node.name) {
             let _ = tx.execute(
                 "UPDATE nodes SET mastery = ?1, review_count = ?2, quiz_count = ?3, last_review = ?4,
-                 stability = COALESCE(?5, 1.0), next_review_at = ?6 WHERE id = ?7",
-                params![ln.mastery, ln.review_count, ln.quiz_count, ln.last_review, ln.stability, ln.next_review_at, nid],
+                 stability = COALESCE(?5, 1.0), next_review_at = ?6, easiness = COALESCE(?7, 2.5)
+                 WHERE id = ?8",
+                params![ln.mastery, ln.review_count, ln.quiz_count, ln.last_review, ln.stability, ln.next_review_at, ln.easiness, nid],
             );
         }
         report.nodes_imported += 1;
@@ -1120,20 +1157,29 @@ mod tests {
             .query_row("SELECT id FROM nodes WHERE topic_id = ?1 AND name = '基础'", params![tid], |r| r.get(0))
             .unwrap();
         // 用严格递增分数避开 24h 防刷分（每日最高分生效）
+        // 第 1 次测验前 EF 仍为中性 2.5 → 难度乘数 1.0，与引入 EF 前行为完全一致
         let (_m, applied) = record_quiz(&conn, base, 30, "q", "a").unwrap(); // <50
         assert!(applied);
         let s: f64 = conn.query_row("SELECT stability FROM nodes WHERE id = ?1", params![base], |r| r.get(0)).unwrap();
-        assert!((s - 0.7).abs() < 0.01, "<50 应 ×0.7（1.0×0.7=0.7），得 {s}");
+        assert!((s - 0.7).abs() < 0.01, "<50 应 ×0.7（1.0×0.7×1.0=0.7），得 {s}");
+        // 30 分 → q=2 → EF 由 2.5 降到 2.18，之后难度乘数 2.18/2.5=0.872 作用于稳定性
+        let ef: f64 = conn.query_row("SELECT easiness FROM nodes WHERE id = ?1", params![base], |r| r.get(0)).unwrap();
+        assert!((ef - 2.18).abs() < 1e-9, "30 分后 EF 应为 2.18，得 {ef}");
 
         let (_m, applied) = record_quiz(&conn, base, 80, "q", "a").unwrap(); // 70-89
         assert!(applied);
         let s: f64 = conn.query_row("SELECT stability FROM nodes WHERE id = ?1", params![base], |r| r.get(0)).unwrap();
-        assert!((s - 1.4).abs() < 0.01, "70-89 应 ×2.0（0.7×2.0=1.4），得 {s}");
+        // 0.7 × 2.0（70-89 档）× 0.872（EF 乘数）≈ 1.2208
+        assert!((s - 1.2208).abs() < 0.01, "70-89 档 ×2.0 经 EF(2.18) 调制（0.7×2.0×0.872≈1.2208），得 {s}");
+        // 80 分 → q=4 → EF 不变（仍 2.18）
+        let ef: f64 = conn.query_row("SELECT easiness FROM nodes WHERE id = ?1", params![base], |r| r.get(0)).unwrap();
+        assert!((ef - 2.18).abs() < 1e-9, "80 分后 EF 维持 2.18，得 {ef}");
 
         let (_m, applied) = record_quiz(&conn, base, 95, "q", "a").unwrap(); // ≥90
         assert!(applied);
         let s: f64 = conn.query_row("SELECT stability FROM nodes WHERE id = ?1", params![base], |r| r.get(0)).unwrap();
-        assert!((s - 3.5).abs() < 0.01, "≥90 应 ×2.5（1.4×2.5=3.5），得 {s}");
+        // 1.2208 × 2.5（≥90 档）× 0.872 ≈ 2.6613
+        assert!((s - 2.6613).abs() < 0.01, "≥90 档 ×2.5 经 EF(2.18) 调制（1.2208×2.5×0.872≈2.6613），得 {s}");
 
         // 保持率与有效掌握度
         let r0 = retention(2.0, 0.0);
@@ -1155,11 +1201,79 @@ mod tests {
         assert!((retention(1.0, 1.0) - 0.5).abs() < 0.001);
         assert!((retention(2.0, 2.0) - 0.5).abs() < 0.001);
         assert!(retention(0.0, 1.0) < 0.001);
-        // 钳制
-        let s = next_stability(100.0, 95);
+        // 钳制（EF 中性）
+        let s = next_stability(100.0, 95, EF_INIT);
         assert!(s <= S_MAX, "stability 不应超过 S_MAX");
-        let s = next_stability(0.3, 30);
+        let s = next_stability(0.3, 30, EF_INIT);
         assert!(s >= S_MIN, "stability 不应低于 S_MIN");
+    }
+
+    #[test]
+    fn test_sm2_quality_mapping() {
+        assert_eq!(quality(0), 0);
+        assert_eq!(quality(49), 2);  // 2.45 → 2
+        assert_eq!(quality(50), 3);  // 2.5 → 3
+        assert_eq!(quality(70), 4);  // 3.5 → 4
+        assert_eq!(quality(89), 4);  // 4.45 → 4
+        assert_eq!(quality(90), 5);  // 4.5 → 5
+        assert_eq!(quality(100), 5);
+    }
+
+    #[test]
+    fn test_sm2_easiness_recurrence() {
+        // q=5（满分）→ +0.10；q=4 → 0；q=0（全错）→ -0.80
+        assert!((next_easiness(2.5, 100) - 2.6).abs() < 1e-9);
+        assert!((next_easiness(2.5, 80) - 2.5).abs() < 1e-9);
+        assert!((next_easiness(2.5, 0) - 1.7).abs() < 1e-9);
+        // 连续低分不击穿下界
+        let mut ef = EF_INIT;
+        for _ in 0..20 { ef = next_easiness(ef, 0); }
+        assert!((ef - EF_MIN).abs() < 1e-9, "EF 应被钳制在 EF_MIN，实际 {ef}");
+        // 连续满分不突破上界
+        let mut ef = EF_INIT;
+        for _ in 0..20 { ef = next_easiness(ef, 100); }
+        assert!((ef - EF_MAX).abs() < 1e-9, "EF 应被钳制在 EF_MAX，实际 {ef}");
+    }
+
+    #[test]
+    fn test_ef_modulates_stability() {
+        // EF 中性（2.5）时乘数为 1，与引入 EF 前行为完全一致（向后兼容锚点）
+        let neutral = next_stability(4.0, 100, EF_INIT);
+        assert!((neutral - 4.0 * 2.5).abs() < 1e-9, "EF=2.5 时乘数应为 1，实际 {neutral}");
+        // 高 EF（简单）→ 半衰期增长更快；低 EF（难）→ 更慢
+        let easy = next_stability(4.0, 100, EF_MAX);
+        let hard = next_stability(4.0, 100, EF_MIN);
+        assert!(easy > neutral, "EF 高应使半衰期增长更快");
+        assert!(hard < neutral, "EF 低应使半衰期增长更慢");
+    }
+
+    #[test]
+    fn test_record_quiz_updates_easiness() {
+        let conn = test_db();
+        let tid = sample(&conn);
+        let node_id: i64 = conn.query_row(
+            "SELECT id FROM nodes WHERE topic_id = ?1 AND name = '基础'", params![tid], |r| r.get(0),
+        ).unwrap();
+        // 首次满分：S 用旧 EF（中性 2.5）算 → 1.0 × 2.5 × 1 = 2.5；EF 更新 2.5 → 2.6
+        record_quiz(&conn, node_id, 100, "q", "a").unwrap();
+        let (ef, s): (f64, f64) = conn.query_row(
+            "SELECT easiness, stability FROM nodes WHERE id = ?1", params![node_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert!((ef - 2.6).abs() < 1e-9, "首次满分后 EF 应为 2.6，实际 {ef}");
+        assert!((s - 2.5).abs() < 1e-9, "S 应为 1.0 × 2.5 = 2.5，实际 {s}");
+    }
+
+    #[test]
+    fn test_migrate_adds_easiness() {
+        let conn = test_db();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 2, "新建库应迁移到 user_version = 2");
+        let tid = sample(&conn);
+        let ef: f64 = conn.query_row(
+            "SELECT easiness FROM nodes WHERE topic_id = ?1 AND name = '基础'", params![tid], |r| r.get(0),
+        ).unwrap();
+        assert!((ef - EF_INIT).abs() < 1e-9, "新节点 EF 应为中性 2.5，实际 {ef}");
     }
 
     #[test]
