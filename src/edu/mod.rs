@@ -6,11 +6,19 @@
 //! 通用模式（不带 edu 子命令）完全不受影响。
 
 pub mod auth;
+pub mod authz;
+pub mod allowlist;
+pub mod blobs;
 pub mod course;
 pub mod dashboard;
 pub mod e2e_tests;
+pub mod gossip;
+pub mod model;
+pub mod net;
 pub mod p2p;
 pub mod reflection;
+pub mod registrar;
+pub mod runtime;
 pub mod setup;
 pub mod store;
 pub mod teacher;
@@ -101,6 +109,186 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
         "auth" => {
             auth::handle_auth_command(args, &db_path);
         }
+        // ===== P4：教务名单同步（离线 CSV / HTTP 两路）=====
+        "sync" => {
+            // rhermes edu sync <sections.csv> <roster_dir> <工号> <姓名> <学期>
+            // 若首参以 http:// 或 https:// 开头，则走 HttpRegistrar
+            let src = args.first().cloned().unwrap_or_default();
+            if src.is_empty() {
+                println!("用法:");
+                println!("  CSV : rhermes edu sync <sections.csv> <roster_dir> <工号> <姓名> <学期>");
+                println!("  HTTP: rhermes edu sync <https://教务地址> <token> <工号> <姓名> <学期>");
+                return;
+            }
+            let store = match store::EduStore::open(&db_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("❌ {e}");
+                    return;
+                }
+            };
+            let http_mode = src.starts_with("http://") || src.starts_with("https://");
+            let report = if http_mode {
+                let token = args.get(1).cloned().unwrap_or_default();
+                let teacher_no = args.get(2).cloned().unwrap_or_default();
+                let teacher_name = args.get(3).cloned().unwrap_or_default();
+                let term = args.get(4).cloned().unwrap_or_default();
+                if teacher_name.is_empty() {
+                    eprintln!("⚠️ 缺少老师姓名：rhermes edu sync <url> <token> <工号> <姓名> <学期>");
+                    return;
+                }
+                let client = registrar::HttpRegistrar::new(src.clone(), token);
+                match registrar::sync_teacher_sections(
+                    &store, &client, &teacher_no, &teacher_name, &term, "123456",
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("❌ 同步失败: {e}");
+                        return;
+                    }
+                }
+            } else {
+                let roster_dir = args.get(1).cloned().unwrap_or_default();
+                let teacher_no = args.get(2).cloned().unwrap_or_default();
+                let teacher_name = args.get(3).cloned().unwrap_or_default();
+                let term = args.get(4).cloned().unwrap_or_default();
+                if teacher_name.is_empty() || roster_dir.is_empty() {
+                    eprintln!("⚠️ 缺少参数：rhermes edu sync <sections.csv> <roster_dir> <工号> <姓名> <学期>");
+                    return;
+                }
+                let client = registrar::CsvRegistrar::new(src.clone(), roster_dir.clone());
+                match registrar::sync_teacher_sections(
+                    &store, &client, &teacher_no, &teacher_name, &term, "123456",
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("❌ 同步失败: {e}");
+                        return;
+                    }
+                }
+            };
+            println!("✅ 教务同步完成");
+            println!("{}", report.summary());
+        }
+        // ===== P4/R3：撤销成员（轮换 Topic + 广播签名白名单）=====
+        "revoke" => {
+            // rhermes edu revoke <课程码> <班级名> <学号> [原因]
+            let code = args.first().cloned().unwrap_or_default();
+            let class_name = args.get(1).cloned().unwrap_or_default();
+            let student_no = args.get(2).cloned().unwrap_or_default();
+            let reason = args
+                .get(3)
+                .cloned()
+                .unwrap_or_else(|| "教师手动撤销".to_string());
+            if code.is_empty() || class_name.is_empty() || student_no.is_empty() {
+                println!("用法: rhermes edu revoke <课程码> <班级名> <学号> [原因]");
+                return;
+            }
+            let store = match store::EduStore::open(&db_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("❌ {e}");
+                    return;
+                }
+            };
+            let course = match store.get_course(&code) {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    eprintln!("❌ 课程 '{code}' 不存在");
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("❌ {e}");
+                    return;
+                }
+            };
+            let classes = store.get_classes_by_course(course.id).unwrap_or_default();
+            let Some(sec) = classes.iter().find(|c| c.name == class_name) else {
+                eprintln!("❌ 班级 '{class_name}' 不存在");
+                return;
+            };
+            let section_id = sec.id;
+
+            println!("🔄 启动 P2P 节点并执行撤销...");
+            let mut rt = match runtime::TeacherRuntime::start(db_path.clone()).await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("❌ P2P 节点启动失败: {e}");
+                    return;
+                }
+            };
+            match rt.revoke_member(section_id, &student_no, &reason).await {
+                Ok(o) => {
+                    println!("✅ 已撤销 {student_no}");
+                    println!("   Topic 纪元: {} → {}", o.old_epoch, o.new_epoch);
+                    println!("   新 Topic: {}", o.new_topic_id);
+                    println!(
+                        "   撤销前绑定节点: {}",
+                        o.revoked_endpoint.as_deref().unwrap_or("（该生尚未绑定设备）")
+                    );
+                    println!(
+                        "   重新签发白名单: {} 个节点（含老师）",
+                        o.allowlist.entries.len()
+                    );
+                }
+                Err(e) => eprintln!("❌ 撤销失败: {e}"),
+            }
+            let _ = rt.shutdown().await;
+        }
+        // ===== P2：向教学班广播公告（需本机可达）=====
+        "announce" => {
+            // rhermes edu announce <课程码> <班级名> <标题> <正文...>
+            let code = args.first().cloned().unwrap_or_default();
+            let class_name = args.get(1).cloned().unwrap_or_default();
+            let title = args.get(2).cloned().unwrap_or_default();
+            let body = args.get(3..).map(|v| v.join(" ")).unwrap_or_default();
+            if code.is_empty() || class_name.is_empty() || title.is_empty() {
+                println!("用法: rhermes edu announce <课程码> <班级名> <标题> <正文>");
+                return;
+            }
+            let store = match store::EduStore::open(&db_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("❌ {e}");
+                    return;
+                }
+            };
+            let course = match store.get_course(&code) {
+                Ok(Some(c)) => c,
+                Ok(None) => {
+                    eprintln!("❌ 课程 '{code}' 不存在");
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("❌ {e}");
+                    return;
+                }
+            };
+            let classes = store.get_classes_by_course(course.id).unwrap_or_default();
+            let Some(sec) = classes.iter().find(|c| c.name == class_name) else {
+                eprintln!("❌ 班级 '{class_name}' 不存在");
+                return;
+            };
+            let section_id = sec.id;
+            let mut rt = match runtime::TeacherRuntime::start(db_path.clone()).await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("❌ P2P 节点启动失败: {e}");
+                    return;
+                }
+            };
+            // 入班即先广播一次白名单，便于在场学生同步成员表
+            let _ = rt.publish_allowlist(section_id).await;
+            match rt.announce(section_id, &title, &body).await {
+                Ok(_) => println!("✅ 公告已广播到「{class_name}」: {title}"),
+                Err(e) => eprintln!("❌ 广播失败: {e}"),
+            }
+            let _ = rt.shutdown().await;
+        }
         _ => {
             eprintln!("未知的教育子命令: {command}");
             println!();
@@ -108,6 +296,9 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
             println!("  rhermes edu student [auth|login]  学生模式");
             println!("  rhermes edu teacher <init|course|class|lesson|student|list>  教师管理");
             println!("  rhermes edu auth <login|verify>   认证");
+            println!("  rhermes edu sync <csv|url> ...     教务名单同步（P4）");
+            println!("  rhermes edu revoke <课程码> <班级> <学号>  撤销成员并轮换 Topic（P4/R3）");
+            println!("  rhermes edu announce <课程码> <班级> <标题> <正文>  班内广播（P2）");
             println!("  rhermes edu join <课程码>          加入课程");
             println!("  rhermes edu status                 学习状态");
             println!("  rhermes edu courses                可选课程");

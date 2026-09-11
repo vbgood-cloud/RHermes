@@ -6,7 +6,7 @@
 
 [![Rust 2024](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.8-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
+[![Version](https://img.shields.io/badge/version-0.7.9-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
 
 不满足于"又一个 AI 助手"。DeepSeek 前缀缓存压到极限、工具并行调度榨干 IO、自进化技能让 Agent 越长越强——用 Rust 写的，就该零妥协。
 
@@ -144,10 +144,10 @@ DEEPSEEK_API_KEY=sk-your-key
 
 | 指标 | 值 |
 |------|:---|
-| 版本 | v0.7.8 |
-| 文件数 | 92 .rs（~38,400 行） |
+| 版本 | v0.7.9 |
+| 文件数 | 102 .rs（~42,700 行） |
 | 内置工具 | 25 + MCP 动态扩展 + Wasm 插件 |
-| 单元测试 | 307 个全过（含 kb_e2e 集成测试 2 个） |
+| 单元测试 | 347 个全过（含 kb_e2e 集成测试 2 个） |
 | 支持渠道 | TUI / 微信 / 企业微信 / Telegram / QQ / Web |
 | 可执行程序 | rhermes / rhermes-stu / rhermes-teacher 三件套 |
 | AI Provider | DeepSeek / OpenAI / Zhipu / SiliconFlow / Ollama / LM Studio / New API / ... |

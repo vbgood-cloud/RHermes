@@ -7,7 +7,10 @@
 use serde::{Deserialize, Serialize};
 
 /// ALPN 协议标识（教师和学生必须一致）
-const EDU_ALPN: &[u8] = b"rhermes-edu/1";
+///
+/// ⚠️ 这是**旧版单协议**标识，已被 `net::ALPN_AUTH` / `net::ALPN_APP` 的双 ALPN 方案取代。
+/// 保留它仅为兼容既有 `ClassroomMessage` 请求/响应路径（HTTP 降级 / 遗留客户端）。
+pub const EDU_ALPN: &[u8] = b"rhermes-edu/1";
 
 /// 课堂消息类型
 #[derive(Debug, Clone, Serialize, Deserialize)]

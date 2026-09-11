@@ -338,7 +338,10 @@ impl EduStore {
             );"
         )?;
 
-        Ok(Self { db })
+        let store = Self { db };
+        // 幂等迁移：把 edu_classes 语义升级为「教学班(Section)」，并建立成员/设备绑定
+        store.migrate()?;
+        Ok(store)
     }
 
     fn now() -> String {
@@ -514,11 +517,26 @@ impl EduStore {
 impl EduStore {
     pub fn create_class(&self, name: &str, course_id: i64) -> Result<Class, EduError> {
         let now = Self::now();
+        // 决策 1B：教学班必须自带「任课老师 + 独立 Topic 种子」，
+        // 否则迁移之后新建的班会没有 Topic（群组通信直接不可用）。
         self.db.execute(
-            "INSERT INTO edu_classes (name, course_id, created_at) VALUES (?1, ?2, ?3)",
+            "INSERT INTO edu_classes
+                (name, course_id, teacher_id, term, gossip_seed, topic_epoch, created_at)
+             VALUES (?1, ?2,
+                     (SELECT teacher_id FROM edu_courses WHERE id = ?2),
+                     '', randomblob(32), 0, ?3)",
             params![name, course_id, now],
         )?;
         let id = self.db.last_insert_rowid();
+        // 老师自动成为该班成员 —— 与迁移回填保持同一不变量
+        self.db.execute(
+            "INSERT OR IGNORE INTO edu_section_members
+                (section_id, user_id, role, username, display_name, admin_class, authorized, joined_at)
+             SELECT ?1, t.id, 'teacher', t.name, t.name, '', 0, ?2
+             FROM edu_teachers t
+             WHERE t.id = (SELECT teacher_id FROM edu_courses WHERE id = ?3)",
+            params![id, now, course_id],
+        )?;
         Ok(Class {
             id,
             name: name.to_string(),
@@ -749,6 +767,19 @@ impl EduStore {
             params![student_no, name, hash, primary_class_id, now],
         )?;
         let id = self.db.last_insert_rowid();
+        // 决策 1B：学生一旦指定教学班，就必须在 edu_section_members 里留下成员行，
+        // 否则 `bind_endpoint` / `sections_for_student` / `revoke_member` 全部落空
+        // （迁移回填只覆盖老数据，新建学生同样需要）。列取值方式与迁移回填保持一致。
+        if primary_class_id.is_some() {
+            self.db.execute(
+                "INSERT OR IGNORE INTO edu_section_members
+                    (section_id, user_id, role, username, display_name, admin_class, authorized, joined_at)
+                 SELECT ?1, s.id, 'student', s.student_no, s.name,
+                        COALESCE(s.admin_class, ''), 0, ?2
+                 FROM edu_students s WHERE s.id = ?3",
+                params![primary_class_id, now, id],
+            )?;
+        }
         Ok(Student {
             id,
             student_no: student_no.to_string(),
@@ -1325,6 +1356,427 @@ mod teaching_tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 教学班（Section）与成员（Member）— 决策 1B「规范重构」
+// ---------------------------------------------------------------------------
+
+/// 教学班行（`edu_classes` 经语义升级后即为 Section 表）
+#[derive(Debug, Clone)]
+pub struct SectionRow {
+    pub id: i64,
+    pub course_id: i64,
+    pub teacher_id: i64,
+    pub name: String,
+    pub term: String,
+    /// 该教学班独立的 Topic 种子（32 字节）
+    pub gossip_seed: Vec<u8>,
+    pub topic_epoch: u32,
+    pub created_at: String,
+}
+
+/// 学生视角的教学班（含所属课程代码/名称），用于组装 §4.4 的教学班票据
+#[derive(Debug, Clone)]
+pub struct StudentSectionRow {
+    pub section_id: i64,
+    pub section_name: String,
+    pub course_code: String,
+    pub course_name: String,
+    pub gossip_seed: Vec<u8>,
+    pub topic_epoch: u32,
+}
+
+fn row_to_section(r: &rusqlite::Row<'_>) -> rusqlite::Result<SectionRow> {
+    Ok(SectionRow {
+        id: r.get(0)?,
+        course_id: r.get(1)?,
+        teacher_id: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
+        name: r.get(3)?,
+        term: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        gossip_seed: r.get::<_, Option<Vec<u8>>>(5)?.unwrap_or_default(),
+        topic_epoch: r.get::<_, Option<i64>>(6)?.unwrap_or(0) as u32,
+        created_at: r.get(7)?,
+    })
+}
+
+impl EduStore {
+    /// 幂等迁移：`edu_classes` 语义升级为教学班 + 建立成员/设备绑定表。
+    ///
+    /// 走 `PRAGMA user_version`，与 `/learn` 模块同源套路。
+    fn migrate(&self) -> Result<(), EduError> {
+        let v: i64 = self.db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if v >= 1 {
+            return Ok(());
+        }
+
+        // ── v1-a：列扩展（SQLite 的 ADD COLUMN 无 IF NOT EXISTS，重复执行会报错，故整段容错） ──
+        for sql in [
+            "ALTER TABLE edu_classes ADD COLUMN teacher_id INTEGER",
+            "ALTER TABLE edu_classes ADD COLUMN term TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE edu_classes ADD COLUMN gossip_seed BLOB",
+            "ALTER TABLE edu_classes ADD COLUMN topic_epoch INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE edu_students ADD COLUMN endpoint_id TEXT",
+            "ALTER TABLE edu_students ADD COLUMN admin_class TEXT NOT NULL DEFAULT ''",
+        ] {
+            let _ = self.db.execute(sql, []);
+        }
+
+        // 回填任课老师：旧模型里课程绑老师，故教学班的老师 = 其课程的 teacher_id
+        let _ = self.db.execute(
+            "UPDATE edu_classes SET teacher_id =
+                (SELECT c.teacher_id FROM edu_courses c WHERE c.id = edu_classes.course_id)
+             WHERE teacher_id IS NULL",
+            [],
+        );
+
+        // 回填 Topic 种子：每个教学班一个独立 32 字节随机种子
+        let _ = self.db.execute(
+            "UPDATE edu_classes SET gossip_seed = randomblob(32) WHERE gossip_seed IS NULL",
+            [],
+        );
+
+        // ── v1-b：成员表（老师/学生统一，含设备绑定与行政班级） ──
+        self.db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS edu_section_members (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                section_id   INTEGER NOT NULL REFERENCES edu_classes(id) ON DELETE CASCADE,
+                user_id      INTEGER NOT NULL,
+                role         TEXT NOT NULL,
+                username     TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                admin_class  TEXT NOT NULL DEFAULT '',
+                endpoint_id  TEXT,
+                authorized   INTEGER NOT NULL DEFAULT 0,
+                joined_at    TEXT NOT NULL,
+                last_seen_at TEXT,
+                UNIQUE(section_id, role, username)
+             );
+             CREATE INDEX IF NOT EXISTS idx_sec_members_section ON edu_section_members(section_id);
+             CREATE INDEX IF NOT EXISTS idx_sec_members_endpoint ON edu_section_members(endpoint_id);",
+        )?;
+
+        // 回填「老师成员」
+        let _ = self.db.execute(
+            "INSERT OR IGNORE INTO edu_section_members
+                (section_id, user_id, role, username, display_name, admin_class, authorized, joined_at)
+             SELECT cl.id, cl.teacher_id, 'teacher',
+                    COALESCE(t.name, ''), COALESCE(t.name, ''), '', 0, cl.created_at
+             FROM edu_classes cl LEFT JOIN edu_teachers t ON t.id = cl.teacher_id
+             WHERE cl.teacher_id IS NOT NULL",
+            [],
+        );
+
+        // 回填「学生成员」：**只**从 `edu_students.primary_class_id`（该列明确指向
+        // edu_classes.id，语义无歧义）。课程级选课 `edu_enrollments` 无法判断
+        // 学生属于该课程的**哪个**教学班，故意不做猜测，留给教务同步或手工指派。
+        let _ = self.db.execute(
+            "INSERT OR IGNORE INTO edu_section_members
+                (section_id, user_id, role, username, display_name, admin_class, authorized, joined_at)
+             SELECT s.primary_class_id, s.id, 'student', s.student_no, s.name,
+                    COALESCE(s.admin_class, ''), 0, s.created_at
+             FROM edu_students s
+             WHERE s.primary_class_id IS NOT NULL",
+            [],
+        );
+
+        self.db.execute_batch("PRAGMA user_version = 1")?;
+        tracing::info!("edu.db 迁移完成 → user_version=1（教学班 + 成员 + 设备绑定）");
+        Ok(())
+    }
+
+    /// 某老师任教的教学班
+    pub fn sections_by_teacher(&self, teacher_id: i64) -> Result<Vec<SectionRow>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, course_id, teacher_id, name, term, gossip_seed, topic_epoch, created_at
+             FROM edu_classes WHERE teacher_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![teacher_id], row_to_section)?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 单个教学班
+    pub fn get_section(&self, section_id: i64) -> Result<Option<SectionRow>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, course_id, teacher_id, name, term, gossip_seed, topic_epoch, created_at
+             FROM edu_classes WHERE id = ?1",
+        )?;
+        Ok(stmt.query_row(params![section_id], row_to_section).ok())
+    }
+
+    /// 学生所属的全部教学班（用于签发教学班票据）。
+    ///
+    /// 注意：**不**过滤 `authorized` —— 首次认证时成员行已存在但尚未授权，
+    /// 票据正是在认证成功那一刻下发的。
+    pub fn sections_for_student(
+        &self,
+        username: &str,
+    ) -> Result<Vec<StudentSectionRow>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT cl.id, cl.name, c.course_code, c.name, cl.gossip_seed, cl.topic_epoch
+             FROM edu_section_members m
+             JOIN edu_classes cl ON cl.id = m.section_id
+             JOIN edu_courses c  ON c.id = cl.course_id
+             WHERE m.role = 'student' AND m.username = ?1
+             ORDER BY c.course_code, cl.id",
+        )?;
+        let rows = stmt.query_map(params![username], |r| {
+            Ok(StudentSectionRow {
+                section_id: r.get(0)?,
+                section_name: r.get(1)?,
+                course_code: r.get(2)?,
+                course_name: r.get(3)?,
+                gossip_seed: r.get::<_, Option<Vec<u8>>>(4)?.unwrap_or_default(),
+                topic_epoch: r.get::<_, Option<i64>>(5)?.unwrap_or(0) as u32,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 学生的行政班级
+    pub fn admin_class_of(&self, username: &str) -> Result<String, EduError> {
+        let r = self.db.query_row(
+            "SELECT COALESCE(admin_class, '') FROM edu_students WHERE student_no = ?1",
+            params![username],
+            |r| r.get::<_, String>(0),
+        );
+        match r {
+            Ok(s) => Ok(s),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(String::new()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 设备绑定：首次认证成功后把 EndpointId 写入学生与其全部成员行，并标记授权。
+    pub fn bind_endpoint(&self, username: &str, endpoint_id: &str) -> Result<(), EduError> {
+        self.db.execute(
+            "UPDATE edu_students SET endpoint_id = ?1 WHERE student_no = ?2",
+            params![endpoint_id, username],
+        )?;
+        self.db.execute(
+            "UPDATE edu_section_members
+                SET endpoint_id = ?1, authorized = 1, last_seen_at = ?2
+             WHERE role = 'student' AND username = ?3",
+            params![endpoint_id, Self::now(), username],
+        )?;
+        Ok(())
+    }
+
+    /// 新增 / 更新成员 —— **不覆盖** `endpoint_id` 与 `authorized`（保护既有授权状态）。
+    pub fn upsert_section_member(
+        &self,
+        section_id: i64,
+        user_id: i64,
+        role: &str,
+        username: &str,
+        display_name: &str,
+        admin_class: &str,
+    ) -> Result<(), EduError> {
+        self.db.execute(
+            "INSERT OR IGNORE INTO edu_section_members
+                (section_id, user_id, role, username, display_name, admin_class, authorized, joined_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+            params![section_id, user_id, role, username, display_name, admin_class, Self::now()],
+        )?;
+        self.db.execute(
+            "UPDATE edu_section_members
+                SET user_id = ?1, display_name = ?2, admin_class = ?3
+             WHERE section_id = ?4 AND role = ?5 AND username = ?6",
+            params![user_id, display_name, admin_class, section_id, role, username],
+        )?;
+        Ok(())
+    }
+
+    /// 教学班成员列表
+    pub fn list_section_members(
+        &self,
+        section_id: i64,
+    ) -> Result<Vec<crate::edu::model::Member>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT id, section_id, user_id, role, username, display_name, admin_class,
+                    endpoint_id, authorized, joined_at, last_seen_at
+             FROM edu_section_members WHERE section_id = ?1 ORDER BY role, username",
+        )?;
+        let rows = stmt.query_map(params![section_id], |r| {
+            Ok(crate::edu::model::Member {
+                id: r.get(0)?,
+                section_id: r.get(1)?,
+                user_id: r.get(2)?,
+                role: crate::edu::model::MemberRole::parse(&r.get::<_, String>(3)?)
+                    .unwrap_or(crate::edu::model::MemberRole::Student),
+                username: r.get(4)?,
+                display_name: r.get(5)?,
+                admin_class: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                endpoint_id: r.get(7)?,
+                authorized: r.get::<_, i64>(8)? != 0,
+                joined_at: r.get(9)?,
+                last_seen_at: r.get(10)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// 撤销成员授权（清 endpoint 绑定 + 取消 authorized）。返回该学生的 EndpointId（若有）。
+    pub fn revoke_member(&self, section_id: i64, username: &str) -> Result<Option<String>, EduError> {
+        let ep: Option<String> = self
+            .db
+            .query_row(
+                "SELECT endpoint_id FROM edu_section_members
+                 WHERE section_id = ?1 AND username = ?2 AND role = 'student'",
+                params![section_id, username],
+                |r| r.get(0),
+            )
+            .unwrap_or(None);
+        self.db.execute(
+            "UPDATE edu_section_members
+                SET authorized = 0, endpoint_id = NULL
+             WHERE section_id = ?1 AND username = ?2 AND role = 'student'",
+            params![section_id, username],
+        )?;
+        Ok(ep)
+    }
+
+    /// 恢复 / 取消成员授权位（不清 `endpoint_id`）。
+    ///
+    /// 与 `revoke_member` 的区别：`revoke_member` 是「彻底撤销」（清绑定 + 取消授权），
+    /// 本函数只翻转 `authorized` 标志，用于「先停权、保留设备绑定」或「恢复」场景。
+    pub fn set_member_authorized(
+        &self,
+        section_id: i64,
+        username: &str,
+        authorized: bool,
+    ) -> Result<(), EduError> {
+        self.db.execute(
+            "UPDATE edu_section_members SET authorized = ?1
+             WHERE section_id = ?2 AND username = ?3 AND role = 'student'",
+            params![if authorized { 1 } else { 0 }, section_id, username],
+        )?;
+        Ok(())
+    }
+
+    /// Topic 轮换：`topic_epoch += 1`，旧 Topic 立即作废（§5.4 治本方案）。返回新纪元。
+    pub fn rotate_topic_epoch(&self, section_id: i64) -> Result<u32, EduError> {
+        self.db.execute(
+            "UPDATE edu_classes SET topic_epoch = topic_epoch + 1 WHERE id = ?1",
+            params![section_id],
+        )?;
+        let e: i64 = self.db.query_row(
+            "SELECT topic_epoch FROM edu_classes WHERE id = ?1",
+            params![section_id],
+            |r| r.get(0),
+        )?;
+        Ok(e as u32)
+    }
+
+    /// 恢复既有授权：进程启动时预热 `AuthRegistry` 用。
+    /// 返回 (endpoint_id, username, display_name, admin_class, section_id)。
+    pub fn authorized_bindings(
+        &self,
+    ) -> Result<Vec<(String, String, String, String, i64)>, EduError> {
+        let mut stmt = self.db.prepare(
+            "SELECT endpoint_id, username, display_name, admin_class, section_id
+             FROM edu_section_members
+             WHERE role = 'student' AND authorized = 1 AND endpoint_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                r.get::<_, i64>(4)?,
+            ))
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    // -----------------------------------------------------------------------
+    // 教务同步辅助（P4，`src/edu/registrar.rs` 使用）
+    // -----------------------------------------------------------------------
+
+    /// 按姓名查老师。
+    ///
+    /// 教务侧只给「工号 + 姓名」，而 `edu_teachers` 历史表只有 `name` 列，故以姓名对齐。
+    /// 工号若要长期比对，应在后续迁移中为 `edu_teachers` 增加 `teacher_no` 列。
+    pub fn find_teacher_by_name(&self, name: &str) -> Result<Option<Teacher>, EduError> {
+        let r = self.db.query_row(
+            "SELECT id, name, node_id, created_at FROM edu_teachers WHERE name = ?1 LIMIT 1",
+            params![name],
+            |r| {
+                Ok(Teacher {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    node_id: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            },
+        );
+        match r {
+            Ok(t) => Ok(Some(t)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 教务同步：课程按 `course_code` upsert。
+    ///
+    /// 已存在时**只**更新课程名，绝不覆盖 `tools_whitelist` / `allowed_modes`
+    /// —— 那是老师在本班自定义过的教学参数，同步不得冲掉。
+    pub fn upsert_course_by_code(
+        &self,
+        code: &str,
+        name: &str,
+        teacher_id: i64,
+    ) -> Result<i64, EduError> {
+        if let Some(c) = self.get_course(code)? {
+            if !name.is_empty() && c.name != name {
+                self.db.execute(
+                    "UPDATE edu_courses SET name = ?1 WHERE id = ?2",
+                    params![name, c.id],
+                )?;
+            }
+            return Ok(c.id);
+        }
+        Ok(self.create_course(code, name, teacher_id)?.id)
+    }
+
+    /// 教务同步：教学班按业务主键 `(course_id, teacher_id, name, term)` upsert。
+    ///
+    /// ⚠️ **已存在则原样返回 id，绝不写任何列** —— 覆盖 `gossip_seed` / `topic_epoch`
+    /// 会让全班 Topic 静默改变，所有学生瞬间掉线（§5.4）。同步是只读语义。
+    ///
+    /// 返回 `(section_id, created)`：`created = true` 表示本次新建。
+    pub fn upsert_section_by_key(
+        &self,
+        course_id: i64,
+        teacher_id: i64,
+        name: &str,
+        term: &str,
+    ) -> Result<(i64, bool), EduError> {
+        let existing: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT id FROM edu_classes
+                 WHERE course_id = ?1
+                   AND IFNULL(teacher_id, 0) = ?2
+                   AND name = ?3
+                   AND IFNULL(term, '') = ?4
+                 LIMIT 1",
+                params![course_id, teacher_id, name, term],
+                |r| r.get(0),
+            )
+            .unwrap_or(None);
+        if let Some(id) = existing {
+            return Ok((id, false));
+        }
+        self.db.execute(
+            "INSERT INTO edu_classes
+                (name, course_id, teacher_id, term, gossip_seed, topic_epoch, created_at)
+             VALUES (?1, ?2, ?3, ?4, randomblob(32), 0, ?5)",
+            params![name, course_id, teacher_id, term, Self::now()],
+        )?;
+        Ok((self.db.last_insert_rowid(), true))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1551,5 +2003,143 @@ mod tests {
         assert!(store
             .update_class_course_override(class_c.id, course.id, Some("[]"), None, None)
             .is_err());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 教学班 / 成员 / 设备绑定（决策 1B 规范重构）
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+
+    fn setup() -> (tempfile::TempDir, EduStore) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = EduStore::open(tmp.path().join("edu.db")).unwrap();
+        store.create_teacher("张老师", "pw").unwrap();
+        (tmp, store)
+    }
+
+    #[test]
+    fn test_migration_assigns_teacher_and_gossip_seed() {
+        let (_t, store) = setup();
+        let course = store.create_course("CS201", "数据结构", 1).unwrap();
+        let class = store.create_class("数据结构-信工班", course.id).unwrap();
+
+        let sec = store.get_section(class.id).unwrap().unwrap();
+        // 决策 1B：teacher_id 从课程下移到教学班
+        assert_eq!(sec.teacher_id, 1, "教学班的任课老师应回填为课程老师");
+        assert_eq!(sec.name, "数据结构-信工班");
+        assert_eq!(sec.topic_epoch, 0);
+        // 每个教学班必须有独立的 32 字节 Topic 种子
+        assert_eq!(sec.gossip_seed.len(), 32, "gossip_seed 应为 32 字节随机种子");
+
+        // 老师自动成为该班成员
+        let members = store.list_section_members(class.id).unwrap();
+        assert!(
+            members.iter().any(|m| m.role == crate::edu::model::MemberRole::Teacher),
+            "老师应被回填为教学班成员"
+        );
+    }
+
+    #[test]
+    fn test_two_sections_have_distinct_seeds() {
+        let (_t, store) = setup();
+        let course = store.create_course("CS201", "数据结构", 1).unwrap();
+        let a = store.create_class("数据结构-信工班", course.id).unwrap();
+        let b = store.create_class("数据结构-电气班", course.id).unwrap();
+
+        let sa = store.get_section(a.id).unwrap().unwrap();
+        let sb = store.get_section(b.id).unwrap().unwrap();
+        assert_ne!(
+            sa.gossip_seed, sb.gossip_seed,
+            "同一课程下的不同教学班必须有不同 Topic 种子（Topic 隔离）"
+        );
+    }
+
+    #[test]
+    fn test_student_sections_and_device_binding() {
+        let (_t, store) = setup();
+        let course = store.create_course("CS201", "数据结构", 1).unwrap();
+        let class = store.create_class("数据结构-信工班", course.id).unwrap();
+        // 学生挂到该教学班（primary_class_id 明确指向 edu_classes.id）
+        store
+            .create_student("2024001", "张三", "pw", Some(class.id))
+            .unwrap();
+
+        // 认证前：成员行已存在（票据据此签发），但未授权、无 endpoint
+        let secs = store.sections_for_student("2024001").unwrap();
+        assert_eq!(secs.len(), 1);
+        assert_eq!(secs[0].section_id, class.id);
+        assert_eq!(secs[0].course_code, "CS201");
+        assert_eq!(secs[0].gossip_seed.len(), 32);
+
+        // 认证成功后：设备绑定 + 授权
+        store.bind_endpoint("2024001", "AB".repeat(32).as_str()).unwrap();
+        let members = store.list_section_members(class.id).unwrap();
+        let stu = members
+            .iter()
+            .find(|m| m.username == "2024001")
+            .expect("学生应为教学班成员");
+        assert!(stu.authorized, "认证后应标记授权");
+        assert!(stu.endpoint_id.is_some(), "认证后应写入设备绑定");
+
+        // 预热恢复
+        let bindings = store.authorized_bindings().unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].1, "2024001");
+    }
+
+    #[test]
+    fn test_upsert_member_preserves_authorization() {
+        let (_t, store) = setup();
+        let course = store.create_course("CS201", "数据结构", 1).unwrap();
+        let class = store.create_class("数据结构-信工班", course.id).unwrap();
+        store.create_student("2024001", "张三", "pw", Some(class.id)).unwrap();
+        store.bind_endpoint("2024001", "CD".repeat(32).as_str()).unwrap();
+
+        // 教务同步再跑一次（只改姓名/行政班）——不得冲掉 endpoint 与 authorized
+        store
+            .upsert_section_member(class.id, 1, "student", "2024001", "张三丰", "信工2202")
+            .unwrap();
+
+        let m = store
+            .list_section_members(class.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.username == "2024001")
+            .unwrap();
+        assert!(m.authorized, "重新同步不得重置授权状态");
+        assert!(m.endpoint_id.is_some(), "重新同步不得清空设备绑定");
+        assert_eq!(m.display_name, "张三丰", "姓名应被更新");
+        assert_eq!(m.admin_class, "信工2202", "行政班级应被更新");
+    }
+
+    #[test]
+    fn test_rotate_topic_epoch_and_revoke() {
+        let (_t, store) = setup();
+        let course = store.create_course("CS201", "数据结构", 1).unwrap();
+        let class = store.create_class("数据结构-信工班", course.id).unwrap();
+        store.create_student("2024001", "张三", "pw", Some(class.id)).unwrap();
+        store.bind_endpoint("2024001", "EF".repeat(32).as_str()).unwrap();
+
+        // 撤销
+        let ep = store.revoke_member(class.id, "2024001").unwrap();
+        assert!(ep.is_some(), "撤销时应返回被撤销的 EndpointId");
+        let m = store
+            .list_section_members(class.id)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.username == "2024001")
+            .unwrap();
+        assert!(!m.authorized);
+        assert!(m.endpoint_id.is_none());
+        assert_eq!(store.authorized_bindings().unwrap().len(), 0);
+
+        // 轮换 Topic 纪元 → Topic 变化
+        let before = store.get_section(class.id).unwrap().unwrap().topic_epoch;
+        let after = store.rotate_topic_epoch(class.id).unwrap();
+        assert_eq!(after, before + 1, "轮换后纪元应 +1");
     }
 }

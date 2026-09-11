@@ -1,6 +1,6 @@
 [package]
 name = "rhermes"
-version = "0.7.8"
+version = "0.7.9"
 edition = "2024"
 description = "Reasonix 的省 Token 肌肉 + Hermes 的自进化大脑 + Rust 的零开销骨架"
 authors = ["RHermes Contributors"]
@@ -69,6 +69,14 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
 iroh = "1.0"
+# ── 去中心化教学通信（P2P 教学班）──
+iroh-gossip = "0.101"   # 每教学班独立 Topic 的群组广播（依赖 iroh ^1）
+iroh-blobs = "0.103"    # 作业文件：BLAKE3 内容寻址 + 多源下载（依赖 iroh ^1）
+blake3 = "1"            # Topic 派生（KDF）与哈希字符串
+hex = "0.4"             # TopicId / EndpointId 的 hex 编解码
+bytes = "1"             # gossip / blobs 的字节载体
+anyhow = "1"            # 新增网络层的错误聚合（既有模块仍沿用 String 错误）
+postcard = { version = "1", features = ["alloc"] }  # gossip 消息紧凑序列化
 liteparse = { version = "2.6", default-features = false }
 
 [build-dependencies]

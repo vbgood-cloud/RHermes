@@ -1,0 +1,93 @@
+<svg viewBox="0 0 680 570" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>RHermes P2P 师生教学通信系统架构</title>
+<desc>上半部分为课程到教学班再到成员的三级数据模型；下半部分为端到端通信路径：学生节点经四个 ALPN 接入老师节点，/class-auth/1.0 开放用于认证并在成功后写入 AuthRegistry 白名单，/class-app/1.0 与 gossip、blobs 分别承载受控应用、教学班广播与作业文件分发。</desc>
+<defs>
+<marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+<style>
+.t  { font-family: system-ui, "Noto Sans SC", sans-serif; font-size: 13px; font-weight: 500; }
+.s  { font-family: system-ui, "Noto Sans SC", sans-serif; font-size: 11.5px; font-weight: 400; }
+.h  { font-family: system-ui, "Noto Sans SC", sans-serif; font-size: 14px; font-weight: 500; }
+.lb { font-family: system-ui, "Noto Sans SC", sans-serif; font-size: 11px; font-weight: 400; }
+</style>
+</defs>
+
+<text class="h" x="40" y="30" fill="#2C2C2A">三级数据模型：课程 → 教学班 → 成员</text>
+
+<rect x="40" y="46" width="170" height="56" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="125" y="68" text-anchor="middle" dominant-baseline="central" fill="#0C447C">课程 Course</text>
+<text class="s" x="125" y="86" text-anchor="middle" dominant-baseline="central" fill="#185FA5">数据结构 CS201</text>
+
+<rect x="270" y="46" width="180" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="360" y="68" text-anchor="middle" dominant-baseline="central" fill="#0C447C">教学班 A · 信工班</text>
+
+<rect x="270" y="102" width="180" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="360" y="124" text-anchor="middle" dominant-baseline="central" fill="#0C447C">教学班 B · 电气班</text>
+
+<rect x="270" y="158" width="180" height="44" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="360" y="180" text-anchor="middle" dominant-baseline="central" fill="#0C447C">教学班 C · 计算机班</text>
+
+<path d="M210 74 L264 68" fill="none" stroke="#185FA5" stroke-width="1.2" marker-end="url(#ar)"/>
+<path d="M210 82 L264 124" fill="none" stroke="#185FA5" stroke-width="1.2" marker-end="url(#ar)"/>
+<path d="M210 90 L264 180" fill="none" stroke="#185FA5" stroke-width="1.2" marker-end="url(#ar)"/>
+
+<text class="s" x="40" y="228" fill="#5F5E5A">每个教学班独立：gossip_topic · blob_namespace · topic_epoch · Member[]（endpoint_id + admin_class）</text>
+
+<line x1="40" y1="248" x2="640" y2="248" stroke="#D3D1C7" stroke-width="0.5"/>
+
+<text class="h" x="40" y="274" fill="#2C2C2A">通信路径与接入控制</text>
+
+<rect x="40" y="290" width="170" height="64" rx="8" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="125" y="312" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">学生节点 张三</text>
+<text class="s" x="125" y="331" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">2024001 · 信工2201</text>
+
+<rect x="40" y="370" width="170" height="64" rx="8" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+<text class="t" x="125" y="392" text-anchor="middle" dominant-baseline="central" fill="#2C2C2A">学生节点 王五</text>
+<text class="s" x="125" y="411" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">2024117 · 信工2202</text>
+
+<rect x="270" y="290" width="170" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="355" y="308" text-anchor="middle" dominant-baseline="central" fill="#0C447C">/class-auth/1.0</text>
+<text class="s" x="355" y="326" text-anchor="middle" dominant-baseline="central" fill="#185FA5">开放 · 仅用于认证</text>
+
+<rect x="270" y="352" width="170" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="355" y="370" text-anchor="middle" dominant-baseline="central" fill="#0C447C">/class-app/1.0</text>
+<text class="s" x="355" y="388" text-anchor="middle" dominant-baseline="central" fill="#185FA5">须过白名单 Hook</text>
+
+<rect x="270" y="414" width="170" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="355" y="432" text-anchor="middle" dominant-baseline="central" fill="#0C447C">iroh-gossip ALPN</text>
+<text class="s" x="355" y="450" text-anchor="middle" dominant-baseline="central" fill="#185FA5">每教学班独立 Topic</text>
+
+<rect x="270" y="476" width="170" height="52" rx="8" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.5"/>
+<text class="t" x="355" y="494" text-anchor="middle" dominant-baseline="central" fill="#0C447C">iroh-blobs ALPN</text>
+<text class="s" x="355" y="512" text-anchor="middle" dominant-baseline="central" fill="#185FA5">作业文件 · BLAKE3</text>
+
+<path d="M210 322 L240 322 L240 502" fill="none" stroke="#888780" stroke-width="1"/>
+<path d="M210 402 L240 402" fill="none" stroke="#888780" stroke-width="1"/>
+<path d="M240 316 L264 316" fill="none" stroke="#185FA5" stroke-width="1.2" marker-end="url(#ar)"/>
+<path d="M240 378 L264 378" fill="none" stroke="#185FA5" stroke-width="1.2" marker-end="url(#ar)"/>
+<path d="M240 440 L264 440" fill="none" stroke="#185FA5" stroke-width="1.2" marker-end="url(#ar)"/>
+<path d="M240 502 L264 502" fill="none" stroke="#185FA5" stroke-width="1.2" marker-end="url(#ar)"/>
+<text class="lb" x="246" y="290" fill="#185FA5">学号 + 密码</text>
+
+<rect x="480" y="290" width="160" height="116" rx="10" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+<text class="t" x="560" y="312" text-anchor="middle" dominant-baseline="central" fill="#633806">AuthRegistry 白名单</text>
+<text class="s" x="560" y="334" text-anchor="middle" dominant-baseline="central" fill="#854F0B">EndpointId → Member</text>
+<text class="s" x="560" y="354" text-anchor="middle" dominant-baseline="central" fill="#854F0B">认证成功即写入</text>
+<text class="s" x="560" y="374" text-anchor="middle" dominant-baseline="central" fill="#854F0B">revoke 即撤销</text>
+
+<rect x="480" y="430" width="160" height="98" rx="10" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
+<text class="t" x="560" y="452" text-anchor="middle" dominant-baseline="central" fill="#085041">教学班 Topic / Blob</text>
+<text class="s" x="560" y="474" text-anchor="middle" dominant-baseline="central" fill="#0F6E56">topic = KDF(seed, epoch)</text>
+<text class="s" x="560" y="494" text-anchor="middle" dominant-baseline="central" fill="#0F6E56">撤销 → epoch + 1</text>
+<text class="s" x="560" y="514" text-anchor="middle" dominant-baseline="central" fill="#0F6E56">内容寻址，多源下载</text>
+
+<path d="M440 316 L474 330" fill="none" stroke="#BA7517" stroke-width="1.2" marker-end="url(#ar)"/>
+<path d="M440 378 L474 372" fill="none" stroke="#BA7517" stroke-width="1.2" marker-end="url(#ar)"/>
+<path d="M440 440 L474 460" fill="none" stroke="#0F6E56" stroke-width="1.2" marker-end="url(#ar)"/>
+<path d="M440 502 L474 498" fill="none" stroke="#0F6E56" stroke-width="1.2" marker-end="url(#ar)"/>
+<text class="lb" x="446" y="308" fill="#BA7517">授权</text>
+<text class="lb" x="446" y="400" fill="#BA7517">校验</text>
+
+<text class="s" x="40" y="552" fill="#5F5E5A">NAT 打洞 / Relay 回退由 iroh presets::N0 自动处理，不引入额外服务器；同一教学班内学生之间可直接互通。</text>
+</svg>
