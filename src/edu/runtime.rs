@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use futures_util::StreamExt;
-use iroh::EndpointId;
+use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_gossip::api::{Event, GossipReceiver};
 use iroh_gossip::{Gossip, TopicId};
 use tokio::sync::mpsc;
@@ -31,7 +31,7 @@ use super::allowlist::{
 use super::authz::{AuthRegistry, MemberBinding};
 use super::gossip::{self, SectionMsg, SectionSession};
 use super::model::SectionTicket;
-use super::net::P2pNode;
+use super::net::{client, P2pNode};
 use super::store::EduStore;
 
 /// 某教学班当前纪元下的会话槽
@@ -51,11 +51,10 @@ pub enum SectionEvent {
         epoch: u32,
         members: usize,
     },
-    /// Topic 已随老师轮换而切换
+    /// Topic 已随老师轮换而切换（新 Topic 经认证信道取回，不随广播下发）
     TopicRotated {
         section_id: i64,
         new_epoch: u32,
-        new_topic_id: String,
     },
     /// 接收循环结束（连接断开 / 流关闭）
     Closed { section_id: i64 },
@@ -77,6 +76,15 @@ pub struct TeacherRuntime {
 impl TeacherRuntime {
     /// 启动老师节点：恢复既有授权绑定 → 装配 P2P 节点。
     pub async fn start(db_path: PathBuf) -> anyhow::Result<Self> {
+        Self::start_with(db_path, false).await
+    }
+
+    /// 离网模式（测试 / 校内无外网）：`presets::Minimal`，只靠显式地址直连。
+    pub async fn start_offline(db_path: PathBuf) -> anyhow::Result<Self> {
+        Self::start_with(db_path, true).await
+    }
+
+    pub async fn start_with(db_path: PathBuf, offline: bool) -> anyhow::Result<Self> {
         let registry = AuthRegistry::new();
 
         // 预热白名单：从 DB 恢复「已授权的 EndpointId → 成员绑定」
@@ -102,7 +110,11 @@ impl TeacherRuntime {
             tracing::info!("白名单预热完成：{n} 个已授权节点");
         }
 
-        let node = P2pNode::teacher(db_path.clone(), registry.clone()).await?;
+        let node = if offline {
+            P2pNode::teacher_offline(db_path.clone(), registry.clone()).await?
+        } else {
+            P2pNode::teacher(db_path.clone(), registry.clone()).await?
+        };
         Ok(Self {
             node,
             db_path,
@@ -282,6 +294,8 @@ impl TeacherRuntime {
 pub struct StudentRuntime {
     pub node: P2pNode,
     pub teacher_id: EndpointId,
+    /// 老师完整地址（含直连 IP / 中继）。轮换后刷票据要用它重新连接。
+    pub teacher_addr: EndpointAddr,
     pub tickets: Vec<SectionTicket>,
     sessions: HashMap<i64, SessionSlot>,
     pub allowlist_state: AllowlistState,
@@ -290,28 +304,85 @@ pub struct StudentRuntime {
 }
 
 impl StudentRuntime {
-    /// 凭票据接入全部教学班，并为每班启动接收循环。
-    ///
-    /// `bootstrap` 取票据里的老师 EndpointId（票据来自认证信道，可信）。
+    /// 凭票据接入全部教学班（生产路径：只知老师 EndpointId，靠 N0 发现解析地址）。
     pub async fn connect(tickets: Vec<SectionTicket>) -> anyhow::Result<Self> {
+        let teacher_id = Self::teacher_from_tickets(&tickets)?;
+        Self::connect_at(tickets, EndpointAddr {
+            id: teacher_id,
+            addrs: Default::default(),
+        }, false)
+        .await
+    }
+
+    /// 离网测试路径：显式给出老师地址，不启用中继与发现。
+    pub async fn connect_offline(
+        tickets: Vec<SectionTicket>,
+        teacher_addr: EndpointAddr,
+    ) -> anyhow::Result<Self> {
+        Self::connect_at(tickets, teacher_addr, true).await
+    }
+
+    /// 完整入口：`teacher_addr` 承载「怎么连上老师」，用于轮换后刷新票据。
+    pub async fn connect_at(
+        tickets: Vec<SectionTicket>,
+        teacher_addr: EndpointAddr,
+        offline: bool,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(!tickets.is_empty(), "没有可用教学班票据");
+        let registry = AuthRegistry::new();
+        let node = if offline {
+            P2pNode::student_offline(registry.clone()).await?
+        } else {
+            P2pNode::student(registry.clone()).await?
+        };
+        Self::from_node(node, tickets, teacher_addr).await
+    }
+
+    /// 复用一棵**已建好的**学生节点接入教学班。
+    ///
+    /// 这是生产正解：学生必须先用**自己的**节点完成 `/class-auth` 认证
+    /// （老师把 `remote_id` 写进白名单），再用**同一个** `EndpointId` 接 gossip ——
+    /// 否则认证过的身份和入班的身份不是同一把钥匙，Hook 会拒之门外。
+    pub async fn from_node(
+        node: P2pNode,
+        tickets: Vec<SectionTicket>,
+        teacher_addr: EndpointAddr,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(!tickets.is_empty(), "没有可用教学班票据");
 
-        let registry = AuthRegistry::new();
-        let allowlist_state = AllowlistState::new();
-        let node = P2pNode::student(registry.clone()).await?;
+        // 离网模式下 gossip 只认显式地址 —— 先把老师地址塞进本机地址簿
+        node.add_peer_addr(teacher_addr.clone());
 
-        // 引导节点 = 首个票据的 bootstrap[0]（同一老师的多个班共享）
-        let teacher_hex = tickets[0]
-            .bootstrap
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("票据缺少 bootstrap（老师 EndpointId）"))?;
-        let teacher_id = EndpointId::from_str(teacher_hex)
-            .map_err(|e| anyhow::anyhow!("bootstrap 非法 EndpointId {teacher_hex}: {e}"))?;
+        let teacher_id = teacher_addr.id;
+        let registry = node.registry.clone();
+        let allowlist_state = AllowlistState::new();
 
         let (tx, rx) = mpsc::unbounded_channel();
         let mut sessions = HashMap::new();
 
         for t in &tickets {
+            // ⚠️ 顺序至关重要：先同步白名单，再订阅 Topic。
+            //
+            // 学生的 `WhitelistHook` 用**本地白名单**决定放不放行 INBOUND 连接。
+            // 若先订阅，老师/同学的回拨会在握手期被拒（实测日志：
+            // `拒绝未授权节点 … 接入协议 /iroh-gossip/1` → `dial failed: rejected locally`），
+            // gossip 因此判定该对端不可用，连接反复重建、消息大批丢失。
+            // 走认证信道主动拉一次，就能拿到"入场券"。
+            match client::fetch_allowlist(&node.endpoint, teacher_addr.clone(), t.section_id).await {
+                Ok(sl) => {
+                    match apply_signed_allowlist(&sl, &teacher_id, &registry, &allowlist_state).await
+                    {
+                        Ok(n) => tracing::info!(
+                            "[section {}] 入班即同步白名单：{n} 个成员（epoch={}）",
+                            t.section_id,
+                            sl.epoch
+                        ),
+                        Err(e) => tracing::warn!("[section {}] 入班白名单被拒: {e}", t.section_id),
+                    }
+                }
+                Err(e) => tracing::warn!("[section {}] 拉取白名单失败: {e}", t.section_id),
+            }
+
             let topic = gossip::topic_from_ticket(t)?;
             let (session, recv) =
                 SectionSession::join_topic(&node.gossip, t.section_id, topic, vec![teacher_id])
@@ -319,8 +390,9 @@ impl StudentRuntime {
             spawn_section_loop(
                 recv,
                 node.gossip.clone(),
+                node.endpoint.clone(),
                 t.section_id,
-                teacher_id,
+                teacher_addr.clone(),
                 registry.clone(),
                 allowlist_state.clone(),
                 tx.clone(),
@@ -344,12 +416,23 @@ impl StudentRuntime {
         Ok(Self {
             node,
             teacher_id,
+            teacher_addr,
             tickets,
             sessions,
             allowlist_state,
             registry,
             events: rx,
         })
+    }
+
+    /// 从票据的 `bootstrap` 解析老师 EndpointId
+    fn teacher_from_tickets(tickets: &[SectionTicket]) -> anyhow::Result<EndpointId> {
+        let hex = tickets
+            .first()
+            .and_then(|t| t.bootstrap.first())
+            .ok_or_else(|| anyhow::anyhow!("票据缺少 bootstrap（老师 EndpointId）"))?;
+        EndpointId::from_str(hex)
+            .map_err(|e| anyhow::anyhow!("bootstrap 非法 EndpointId {hex}: {e}"))
     }
 
     /// 向某班广播（学生也能发言 —— 同一 Topic 内完全对等）
@@ -379,16 +462,23 @@ impl StudentRuntime {
 ///
 /// 自动处理两类**控制消息**（不上报给业务层）：
 /// - `AllowlistUpdate`：校验签名 + 签发者 + 纪元单调后写入本地 `AuthRegistry`；
-/// - `TopicRotate`：重订阅新 Topic（后续消息继续可达）。
+/// - `TopicRotate`：**不信任广播里的 Topic**，改走 `/class-app/1.0` 认证信道
+///   `RefreshTickets` 取回新票据 → 派生新 Topic → 重订阅。
+///
+/// ⚠️ 为什么 `TopicRotate` 不下发新 Topic：轮换通知是在**旧 Topic**上广播的，
+/// 而旧 Topic 里正坐着刚被撤销的学生。若把新 Topic 塞进广播，被撤销者也能立刻
+/// 重订阅，撤销即失效。走认证信道则被撤销者在握手期就被 `WhitelistHook` 拒之门外。
 pub fn spawn_section_loop(
     mut rx: GossipReceiver,
     gossip: Gossip,
+    endpoint: Endpoint,
     section_id: i64,
-    teacher_id: EndpointId,
+    teacher_addr: EndpointAddr,
     registry: AuthRegistry,
     state: AllowlistState,
     tx: mpsc::UnboundedSender<SectionEvent>,
 ) -> tokio::task::JoinHandle<()> {
+    let teacher_id = teacher_addr.id;
     tokio::spawn(async move {
         loop {
             let Some(ev) = rx.next().await else { break };
@@ -429,40 +519,74 @@ pub fn spawn_section_loop(
                                 tracing::warn!("[section {sid}] 白名单反序列化失败: {e}")
                             }
                         },
-                        SectionMsg::TopicRotate {
-                            new_epoch,
-                            new_topic_id,
-                            ..
-                        } => match gossip::topic_from_hex(&new_topic_id) {
-                            Some(topic) => {
-                                match SectionSession::join_topic(
-                                    &gossip,
-                                    section_id,
-                                    topic,
-                                    vec![teacher_id],
-                                )
-                                .await
+                        SectionMsg::TopicRotate { new_epoch, .. } => {
+                            // 新 Topic 不随广播下发（旧 Topic 内有被撤销者），
+                            // 改走认证信道刷新票据：被撤销者在此处被 Hook 拒绝。
+                            match super::net::client::refresh_tickets(
+                                &endpoint,
+                                teacher_addr.clone(),
+                            )
+                            .await
+                            {
+                                Ok(tickets) => match tickets
+                                    .iter()
+                                    .find(|t| t.section_id == section_id)
+                                    .cloned()
                                 {
-                                    Ok((_s, new_rx)) => {
-                                        rx = new_rx;
-                                        tracing::info!(
-                                            "[section {section_id}] 已随老师轮换至 epoch {new_epoch}"
-                                        );
-                                        let _ = tx.send(SectionEvent::TopicRotated {
+                                    Some(t) => match gossip::topic_from_ticket(&t) {
+                                        Ok(topic) => match SectionSession::join_topic(
+                                            &gossip,
                                             section_id,
-                                            new_epoch,
-                                            new_topic_id,
-                                        });
-                                    }
-                                    Err(e) => tracing::warn!(
-                                        "[section {section_id}] 切换 Topic 失败: {e}"
+                                            topic,
+                                            vec![teacher_id],
+                                        )
+                                        .await
+                                        {
+                                            Ok((_s, new_rx)) => {
+                                                rx = new_rx;
+                                                // 新纪元的成员表也主动拉一次，不依赖广播是否到达
+                                                if let Ok(sl) = super::net::client::fetch_allowlist(
+                                                    &endpoint,
+                                                    teacher_addr.clone(),
+                                                    section_id,
+                                                )
+                                                .await
+                                                {
+                                                    if let Err(e) = apply_signed_allowlist(
+                                                        &sl, &teacher_id, &registry, &state,
+                                                    )
+                                                    .await
+                                                    {
+                                                        tracing::warn!(
+                                                            "[section {section_id}] 轮换后白名单被拒: {e}"
+                                                        );
+                                                    }
+                                                }
+                                                tracing::info!(
+                                                    "[section {section_id}] 已随老师轮换至 epoch {new_epoch}（票据刷新成功）"
+                                                );
+                                                let _ = tx.send(SectionEvent::TopicRotated {
+                                                    section_id,
+                                                    new_epoch,
+                                                });
+                                            }
+                                            Err(e) => tracing::warn!(
+                                                "[section {section_id}] 切换 Topic 失败: {e}"
+                                            ),
+                                        },
+                                        Err(e) => tracing::warn!(
+                                            "[section {section_id}] 新票据派生 Topic 失败: {e}"
+                                        ),
+                                    },
+                                    None => tracing::warn!(
+                                        "[section {section_id}] 刷新后的票据不含本班（可能已被移出）"
                                     ),
-                                }
+                                },
+                                Err(e) => tracing::warn!(
+                                    "[section {section_id}] 轮换后刷新票据被拒（很可能已被移出教学班）: {e}"
+                                ),
                             }
-                            None => tracing::warn!(
-                                "[section {section_id}] 轮换通知里 topic 非法: {new_topic_id}"
-                            ),
-                        },
+                        }
                         other => {
                             let _ = tx.send(SectionEvent::Message(other));
                         }

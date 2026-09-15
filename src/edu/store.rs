@@ -1404,10 +1404,12 @@ impl EduStore {
     /// 走 `PRAGMA user_version`，与 `/learn` 模块同源套路。
     fn migrate(&self) -> Result<(), EduError> {
         let v: i64 = self.db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if v >= 1 {
+
+        if v >= 2 {
             return Ok(());
         }
 
+        if v < 1 {
         // ── v1-a：列扩展（SQLite 的 ADD COLUMN 无 IF NOT EXISTS，重复执行会报错，故整段容错） ──
         for sql in [
             "ALTER TABLE edu_classes ADD COLUMN teacher_id INTEGER",
@@ -1480,6 +1482,21 @@ impl EduStore {
 
         self.db.execute_batch("PRAGMA user_version = 1")?;
         tracing::info!("edu.db 迁移完成 → user_version=1（教学班 + 成员 + 设备绑定）");
+        }
+
+        // ── v2：撤销时间戳 ──
+        //
+        // ⚠️ 安全必需：没有这一列时，「从未认证」与「已被撤销」在库里**完全无法区分**
+        //    （都是 authorized=0 + endpoint_id=NULL）。后果是被撤销的学生只要重新
+        //    执行一次 `/class-auth`，`sections_for_student` 仍会把教学班票据发给他，
+        //    他就能拿到轮换后的新 Topic —— 撤销形同虚设。
+        if v < 2 {
+            let _ = self
+                .db
+                .execute("ALTER TABLE edu_section_members ADD COLUMN revoked_at TEXT", []);
+            self.db.execute_batch("PRAGMA user_version = 2")?;
+            tracing::info!("edu.db 迁移完成 → user_version=2（撤销时间戳，区分待认证/已撤销）");
+        }
         Ok(())
     }
 
@@ -1506,6 +1523,10 @@ impl EduStore {
     ///
     /// 注意：**不**过滤 `authorized` —— 首次认证时成员行已存在但尚未授权，
     /// 票据正是在认证成功那一刻下发的。
+    ///
+    /// ⚠️ 但**必须**过滤 `revoked_at`：被撤销的成员与「尚未首次认证」的成员在
+    /// `authorized`/`endpoint_id` 上完全相同，只有撤销时间戳能区分。不过滤的话，
+    /// 被撤销学生重新走一次 `/class-auth` 就能拿到轮换后的新 Topic（安全缺陷）。
     pub fn sections_for_student(
         &self,
         username: &str,
@@ -1516,6 +1537,7 @@ impl EduStore {
              JOIN edu_classes cl ON cl.id = m.section_id
              JOIN edu_courses c  ON c.id = cl.course_id
              WHERE m.role = 'student' AND m.username = ?1
+               AND m.revoked_at IS NULL
              ORDER BY c.course_code, cl.id",
         )?;
         let rows = stmt.query_map(params![username], |r| {
@@ -1627,28 +1649,37 @@ impl EduStore {
             .unwrap_or(None);
         self.db.execute(
             "UPDATE edu_section_members
-                SET authorized = 0, endpoint_id = NULL
+                SET authorized = 0, endpoint_id = NULL, revoked_at = ?3
              WHERE section_id = ?1 AND username = ?2 AND role = 'student'",
-            params![section_id, username],
+            params![section_id, username, Self::now()],
         )?;
         Ok(ep)
     }
 
     /// 恢复 / 取消成员授权位（不清 `endpoint_id`）。
     ///
-    /// 与 `revoke_member` 的区别：`revoke_member` 是「彻底撤销」（清绑定 + 取消授权），
-    /// 本函数只翻转 `authorized` 标志，用于「先停权、保留设备绑定」或「恢复」场景。
+    /// 与 `revoke_member` 的区别：`revoke_member` 是「彻底撤销」（清绑定 + 取消授权 +
+    /// 打撤销时间戳），本函数只翻转 `authorized` 标志，用于「先停权、保留设备绑定」
+    /// 或「恢复」场景。恢复时一并清除 `revoked_at`，否则该生仍拿不到票据。
     pub fn set_member_authorized(
         &self,
         section_id: i64,
         username: &str,
         authorized: bool,
     ) -> Result<(), EduError> {
-        self.db.execute(
-            "UPDATE edu_section_members SET authorized = ?1
-             WHERE section_id = ?2 AND username = ?3 AND role = 'student'",
-            params![if authorized { 1 } else { 0 }, section_id, username],
-        )?;
+        if authorized {
+            self.db.execute(
+                "UPDATE edu_section_members SET authorized = 1, revoked_at = NULL
+                 WHERE section_id = ?1 AND username = ?2 AND role = 'student'",
+                params![section_id, username],
+            )?;
+        } else {
+            self.db.execute(
+                "UPDATE edu_section_members SET authorized = 0
+                 WHERE section_id = ?1 AND username = ?2 AND role = 'student'",
+                params![section_id, username],
+            )?;
+        }
         Ok(())
     }
 

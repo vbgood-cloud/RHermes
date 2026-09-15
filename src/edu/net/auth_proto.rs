@@ -24,7 +24,7 @@ use crate::edu::model::SectionTicket;
 use crate::edu::store::EduStore;
 
 /// 认证请求（学生 → 老师）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AuthRequest {
     pub username: String,
     pub password: String,
@@ -34,7 +34,7 @@ pub struct AuthRequest {
 }
 
 /// 认证响应（老师 → 学生）
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AuthResponse {
     pub ok: bool,
     pub message: String,
@@ -128,38 +128,51 @@ impl ProtocolHandler for AuthHandler {
                     let sections = store
                         .sections_for_student(&req.username)
                         .unwrap_or_default();
-                    let admin_class =
-                        store.admin_class_of(&req.username).unwrap_or_default();
 
-                    // ② 写白名单（内存热路径）
-                    let binding = MemberBinding::new(
-                        req.username.clone(),
-                        auth.student_name.clone(),
-                        admin_class,
-                        sections.iter().map(|s| s.section_id).collect(),
-                    );
-                    self.registry.grant(remote, binding).await;
+                    // ⚠️ 密码对了 ≠ 放行。被撤销的学生密码仍然正确（学籍还在），
+                    //    只是 `sections_for_student` 已把他过滤掉。此时若照样写白名单，
+                    //    他就能重新通过 `/class-app` 的 Hook 并 `RefreshTickets` 拿到新 Topic，
+                    //    撤销随之失效 —— 因此这里必须先卡住「零有效教学班」。
+                    if sections.is_empty() {
+                        tracing::warn!(
+                            "认证通过但无有效教学班（可能已被撤销）: {} from {remote}",
+                            req.username
+                        );
+                        AuthResponse::fail("你没有可参与的教学班（可能已被教师移出）")
+                    } else {
+                        let admin_class =
+                            store.admin_class_of(&req.username).unwrap_or_default();
 
-                    // ③ 落库：设备绑定（EndpointId）
-                    if let Err(e) = store.bind_endpoint(&req.username, &remote.to_string()) {
-                        tracing::warn!("绑定 EndpointId 落库失败: {e}");
-                    }
+                        // ② 写白名单（内存热路径）
+                        let binding = MemberBinding::new(
+                            req.username.clone(),
+                            auth.student_name.clone(),
+                            admin_class,
+                            sections.iter().map(|s| s.section_id).collect(),
+                        );
+                        self.registry.grant(remote, binding).await;
 
-                    // ④ 组装并下发教学班票据
-                    let tickets = Self::build_tickets(&store, &req.username, &teacher_id);
-                    tracing::info!(
-                        "认证成功: {} ({}) endpoint={} 教学班 {} 个",
-                        req.username,
-                        auth.student_name,
-                        remote,
-                        tickets.len()
-                    );
+                        // ③ 落库：设备绑定（EndpointId）
+                        if let Err(e) = store.bind_endpoint(&req.username, &remote.to_string()) {
+                            tracing::warn!("绑定 EndpointId 落库失败: {e}");
+                        }
 
-                    AuthResponse {
-                        ok: true,
-                        message: "认证成功".into(),
-                        token: Some(auth.token),
-                        tickets,
+                        // ④ 组装并下发教学班票据
+                        let tickets = Self::build_tickets(&store, &req.username, &teacher_id);
+                        tracing::info!(
+                            "认证成功: {} ({}) endpoint={} 教学班 {} 个",
+                            req.username,
+                            auth.student_name,
+                            remote,
+                            tickets.len()
+                        );
+
+                        AuthResponse {
+                            ok: true,
+                            message: "认证成功".into(),
+                            token: Some(auth.token),
+                            tickets,
+                        }
                     }
                 }
                 Err(e) => {

@@ -1043,10 +1043,10 @@ P1–P4 的代码分散在底层模块，CLI/TUI 直接使用会很啰嗦。`run
 
 ```
 revoke_member(section, 学号)
-  ├─ ① store.revoke_member        → authorized=0, endpoint_id=NULL
+  ├─ ① store.revoke_member        → authorized=0, endpoint_id=NULL, revoked_at=now
   ├─ ② registry.revoke(EndpointId) → 老师端直连立即失效（Hook 层）
   ├─ ③ store.rotate_topic_epoch    → epoch+1，旧 Topic 作废（治本）
-  ├─ ④ 旧 Topic 广播 TopicRotate   → 在线剩余成员切到新 Topic
+  ├─ ④ 旧 Topic 广播 TopicRotate   → **只报「纪元变了」，绝不带新 TopicId**
   ├─ ⑤ 新表 Ed25519 签名 + 新 Topic 广播 AllowlistUpdate（治标）
   └─ ⑥ 返回新纪元会话，老师后续广播改用新 Topic
 ```
@@ -1059,6 +1059,21 @@ revoke_member(section, 学号)
 > P1 已落地的额外设施：`store.rs` 新增 `sections_by_teacher` / `get_section` / `sections_for_student` /
 > `admin_class_of` / `bind_endpoint` / `upsert_section_member` / `list_section_members` /
 > `revoke_member` / `rotate_topic_epoch` / `authorized_bindings`，以及 5 个 `section_tests` 单元测试。
+
+### 10.6 ⚠️ 端到端测试暴露的 4 个缺陷（v0.7.10 修复）
+
+> 这 4 个缺陷**全部通过 `tests/edu_p2p_e2e.rs` 才暴露**：A/B 用纯逻辑单测测不出来
+> （不触发联网重入），C/D 只在真实双端点下才出现。详细测试方法见 `docs/edu-p2p-testing.md`。
+
+| # | 缺陷 | 危害 | 修复 |
+|---|---|---|---|
+| **A** | `sections_for_student` 只按 `authorized`/`endpoint_id` 判断，无法区分「尚未首次认证」与「已被撤销」 | 被撤销者重新走一次 `/class-auth` 就能拿到轮换后的**新 Topic**，撤销彻底失效 | `edu_section_members` 迁移 v2 新增 `revoked_at`；查询加 `AND revoked_at IS NULL`；`AuthHandler` 增加「零有效教学班即拒绝授权」卡口 |
+| **B** | `TopicRotate` 广播里携带 `new_topic_id` | 该消息在**旧 Topic** 上广播，而被撤销者正是旧 Topic 成员 → 他也收到并立刻订阅新 Topic | `TopicRotate` 只保留 `{new_epoch, reason, ts}`；学生改走 `/class-app` 的 `RefreshTickets`（认证信道，被撤销者被 Hook 拒）取新 Topic |
+| **C** | `WhitelistHook::after_handshake` 未区分连接方向 | iroh 1.0.2 的 Hook **对连接两端都调用**；不区分方向时本机出站连接被自己按白名单拒掉 → `/class-app` 与 gossip 全部不可用（`dial failed: Connection was rejected locally`） | 仅在 `conn.side()` 为 **Server（被连接方）** 时强制白名单；`Client`（本机主动发起）放行 |
+| **D** | 学生「先订阅 Topic、后拿白名单」 | 学生本地白名单为空 → Hook 拒掉老师/同学的回拨；且 gossip **无 store-and-forward**，连接建立前的广播被直接丢弃 → 入班后长期收不到任何消息 | ① `StudentRuntime::from_node` **先拉白名单再订阅**；② 新增 `/class-app` 的 `CurrentAllowlist` 拉取路径（认证信道主动拉，不依赖广播时机）；③ `join_topic` 有 bootstrap 时等 `joined()` 再返回 |
+
+**D 的补充**：`TopicRotate` 通知在旧 Topic 上「保持订阅 + 重播 3 次（~0.8s）」后才退订，
+避免"广播刚入队、会话就被 drop"导致在线成员滞留旧纪元。
 
 
 ### 决策 1：数据模型怎么改？

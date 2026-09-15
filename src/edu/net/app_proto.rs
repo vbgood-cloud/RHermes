@@ -20,13 +20,19 @@ use crate::edu::authz::AuthRegistry;
 use crate::edu::store::EduStore;
 
 /// 应用层请求（学生 → 老师）
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op")]
 pub enum AppRequest {
     /// 我是谁（用于客户端确认身份与授权班级）
     WhoAmI,
     /// 刷新教学班票据（例如 Topic 轮换后重新取 TopicId）
     RefreshTickets,
+    /// 拉取本班当前**签名成员表**。
+    ///
+    /// 学生入班那一刻就调用它：gossip 是"尽力而为"的广播，若老师的
+    /// `AllowlistUpdate` 恰好早于学生订阅（或中途丢包），学生本地白名单会长期为空，
+    /// 导致它把老师/同学的回拨一律拒掉。走认证信道**主动拉取**才能保证即时一致。
+    CurrentAllowlist { section_id: i64 },
     /// 提问（单点投递给老师，与 gossip 广播互补）
     AskQuestion { section_id: i64, question: String },
     /// 提交作业
@@ -38,10 +44,12 @@ pub enum AppRequest {
 }
 
 /// 应用层响应（老师 → 学生）
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum AppResponse {
-    Ok { message: String },
+    Ok {
+        message: String,
+    },
     Identity {
         username: String,
         display_name: String,
@@ -51,8 +59,18 @@ pub enum AppResponse {
     Tickets {
         tickets: Vec<crate::edu::model::SectionTicket>,
     },
-    Denied { message: String },
-    Error { message: String },
+    /// postcard 序列化的 `allowlist::SignedAllowlist`（学生端校验签名后应用）
+    Allowlist {
+        section_id: i64,
+        epoch: u32,
+        signed: Vec<u8>,
+    },
+    Denied {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// `ProtocolHandler` 的 supertrait 要求 `Debug + Send + Sync + 'static`
@@ -62,15 +80,39 @@ pub struct AppHandler {
     registry: AuthRegistry,
     /// 本机（老师）EndpointId —— iroh 1.0 的 `Connection` 不暴露本地 id，故构造时注入
     local_id: String,
+    /// 老师节点私钥：用于对成员表签名（`CurrentAllowlist` 下发时可被学生独立验签）
+    secret_key: iroh::SecretKey,
 }
 
 impl AppHandler {
-    pub fn new(db_path: PathBuf, registry: AuthRegistry, local_id: String) -> Self {
+    pub fn new(
+        db_path: PathBuf,
+        registry: AuthRegistry,
+        local_id: String,
+        secret_key: iroh::SecretKey,
+    ) -> Self {
         Self {
             db_path,
             registry,
             local_id,
+            secret_key,
         }
+    }
+
+    /// 生成并签名本班当前成员表，返回 `(epoch, postcard 字节)`
+    fn signed_allowlist(&self, section_id: i64) -> anyhow::Result<(u32, Vec<u8>)> {
+        let store = EduStore::open(&self.db_path)?;
+        let sec = store
+            .get_section(section_id)?
+            .ok_or_else(|| anyhow::anyhow!("教学班 {section_id} 不存在"))?;
+        let signed = crate::edu::allowlist::SignedAllowlist::build(
+            &store,
+            section_id,
+            sec.topic_epoch,
+            &self.local_id,
+        )?
+        .sign(&self.secret_key);
+        Ok((sec.topic_epoch, postcard::to_allocvec(&signed)?))
     }
 }
 
@@ -108,6 +150,30 @@ impl ProtocolHandler for AppHandler {
                     let store = EduStore::open(&self.db_path)?;
                     let tickets = self.tickets_for(&store, &binding.username)?;
                     AppResponse::Tickets { tickets }
+                }
+
+                AppRequest::CurrentAllowlist { section_id } => {
+                    if !binding.belongs_to(section_id) {
+                        tracing::warn!(
+                            "越权拦截：{} 不属于教学班 {}",
+                            binding.username,
+                            section_id
+                        );
+                        AppResponse::Denied {
+                            message: format!("你不属于教学班 {section_id}"),
+                        }
+                    } else {
+                        match self.signed_allowlist(section_id) {
+                            Ok((epoch, signed)) => AppResponse::Allowlist {
+                                section_id,
+                                epoch,
+                                signed,
+                            },
+                            Err(e) => AppResponse::Error {
+                                message: format!("生成成员表失败: {e}"),
+                            },
+                        }
+                    }
                 }
 
                 AppRequest::AskQuestion { section_id, question } => {

@@ -403,20 +403,42 @@ pub async fn revoke_and_rotate(
     let new_topic = super::gossip::derive_topic(&seed, new_epoch);
 
     // ④ 旧 Topic 上广播轮换通知（尽力而为：离线成员靠下次认证补票）
-    let old_topic_id = hex::encode(super::gossip::derive_topic(&seed, old_epoch));
-    if let Ok((old_session, _rx)) =
-        SectionSession::host(gossip, section_id, &seed, old_epoch).await
+    //
+    // ⚠️ 只广播「纪元变了」，**绝不带上新 TopicId** —— 旧 Topic 里就坐着被撤销者，
+    //    见 `SectionMsg::TopicRotate` 的注释。剩余成员随后各自经 `/class-app`
+    //    的 `RefreshTickets`（认证信道）取新 Topic。
+    //
+    // 退订时机很关键：`broadcast()` 只是把消息**入队**，真正的投递发生在之后。
+    // 若广播完立刻离开旧 Topic，通知可能在链路上被丢掉，在线成员就会滞留旧纪元。
+    // 因此交给后台任务「保持订阅 + 重播数次」后再放手。
     {
-        let notice = SectionMsg::TopicRotate {
-            new_epoch,
-            new_topic_id: hex::encode(new_topic),
-            reason: reason.to_string(),
-            ts: chrono::Utc::now().to_rfc3339(),
-        };
-        if let Err(e) = old_session.broadcast(&notice).await {
-            tracing::warn!("[section {section_id}] TopicRotate 广播失败（不影响轮换）: {e}");
-        }
-        let _ = old_topic_id; // 仅用于日志语义，旧 Topic 自此不再使用
+        let gossip = gossip.clone();
+        let seed = seed.clone();
+        let reason = reason.to_string();
+        tokio::spawn(async move {
+            let Ok((old_session, _rx)) =
+                SectionSession::host(&gossip, section_id, &seed, old_epoch).await
+            else {
+                tracing::warn!("[section {section_id}] 旧 Topic 重订阅失败，跳过轮换通知");
+                return;
+            };
+            let notice = SectionMsg::TopicRotate {
+                new_epoch,
+                reason,
+                ts: chrono::Utc::now().to_rfc3339(),
+            };
+            for i in 0..3 {
+                if let Err(e) = old_session.broadcast(&notice).await {
+                    tracing::warn!("[section {section_id}] TopicRotate 广播失败: {e}");
+                    break;
+                }
+                if i < 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                }
+            }
+            // `old_session` / `_rx` 在此 drop：两半都没了 → 自动退出旧 Topic
+            tracing::info!("[section {section_id}] 旧 Topic 轮换通知已重播，离开旧 Topic");
+        });
     }
 
     // ⑤ 新表签名 + 新 Topic 广播

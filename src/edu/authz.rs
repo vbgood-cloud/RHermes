@@ -173,6 +173,19 @@ impl WhitelistHook {
 
 impl EndpointHooks for WhitelistHook {
     async fn after_handshake(&self, conn: &Connection) -> AfterHandshakeOutcome {
+        // ⚠️⚠️ iroh 1.0.2 的 Hook 对**连接两端都会调用**（`endpoint/connection.rs`
+        //     里 accept 与 connect 共用同一个 `after_handshake` 调用点，日志里能看到
+        //     `side = ?conn.side()`）。若不区分方向，本机主动发起的出站连接会被
+        //     **自己** 按白名单拒掉 —— 实测表现：
+        //       · 学生发 `/class-app` 拉票据 → `Connection was rejected locally`
+        //       · 老师侧看到 `closed by peer: unauthorized: endpoint not in allowlist`
+        //       · 学生发 gossip 回拨 → `dial failed: Connection was rejected locally`
+        //     白名单的语义是「**谁能进得来**」，因此只在 `Server`（被连接方）强制；
+        //     `Client`（本机主动发起）一律放行 —— 出站是我们自己的选择，且对端仍会拦。
+        if conn.side().is_client() {
+            return AfterHandshakeOutcome::Accept;
+        }
+
         // iroh 1.0.2：`Connection<HandshakeCompleted>::alpn()` 返回 `&[u8]`
         let alpn: &[u8] = conn.alpn();
 

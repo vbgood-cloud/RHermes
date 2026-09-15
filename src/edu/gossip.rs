@@ -90,10 +90,17 @@ pub enum SectionMsg {
         body: String,
         ts: String,
     },
-    /// Topic 轮换通知（撤销成员后广播给**剩余成员**）
+    /// Topic 轮换通知（撤销成员后广播给**剩余成员**）。
+    ///
+    /// ⚠️ **故意不带 `new_topic_id`**（安全设计，勿"优化"回去）：
+    /// 本消息在**旧 Topic** 上广播，而被撤销者**正是旧 Topic 的成员** —— 他一定会收到。
+    /// 若把新 Topic 直接写在里面，他就能立刻跟着订阅新 Topic；而此时其他学生的白名单
+    /// 尚未更新（新签名表还在路上），握手仍会放行，他就能继续偷听。
+    ///
+    /// 正确做法：只告知「纪元变了」，剩余成员各自走 `/class-app` 的 `RefreshTickets`
+    /// （**认证信道**，被撤销者已不在白名单，会被 Hook 拒绝）换取新 Topic。
     TopicRotate {
         new_epoch: u32,
-        new_topic_id: String,
         reason: String,
         ts: String,
     },
@@ -205,13 +212,29 @@ impl SectionSession {
     }
 
     /// 直接用已确定的 `TopicId` 加入（学生侧持票据时用 —— 学生只有 topic_id，没有种子）。
+    ///
+    /// ⚠️ 有引导节点时，本函数会**等到真正建立至少一条连接**再返回（内含 15s 上限，
+    /// 超时也照常返回，仅放弃等待）。原因：gossip 是 best-effort，**不做 store-and-forward**，
+    /// 若在连接建立前老师就广播，那条消息会被直接丢弃 —— 而这正是"入班后收不到
+    /// 白名单/公告"的根因。等待 `joined()` 能把这类竞态压到可忽略。
     pub async fn join_topic(
         gossip: &Gossip,
         section_id: i64,
         topic: TopicId,
         bootstrap: Vec<EndpointId>,
     ) -> anyhow::Result<(Self, GossipReceiver)> {
-        let (sender, receiver) = gossip.subscribe(topic, bootstrap).await?.split();
+        let wait_for_join = !bootstrap.is_empty();
+        let mut sub = gossip.subscribe(topic, bootstrap).await?;
+        if wait_for_join {
+            match tokio::time::timeout(std::time::Duration::from_secs(15), sub.joined()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("[section {section_id}] 加入 Topic 失败: {e}"),
+                Err(_) => tracing::warn!(
+                    "[section {section_id}] 等待 Topic 连接超时（15s），继续但可能短暂不可达"
+                ),
+            }
+        }
+        let (sender, receiver) = sub.split();
         Ok((
             Self {
                 section_id,

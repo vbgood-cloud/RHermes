@@ -8,14 +8,16 @@
 
 pub mod app_proto;
 pub mod auth_proto;
+pub mod client;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use iroh::{Endpoint, EndpointId};
+use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
 use iroh_gossip::Gossip;
 use iroh::protocol::Router;
+use iroh::address_lookup::memory::MemoryLookup;
 
 use super::authz::{AuthRegistry, WhitelistHook};
 
@@ -33,26 +35,74 @@ pub struct P2pNode {
     pub gossip: Gossip,
     pub blobs: Arc<MemStore>,
     pub registry: AuthRegistry,
+    /// 离网模式下的手工地址簿（`presets::Minimal` 没有任何发现服务，
+    /// gossip 仅凭 `EndpointId` 无法解析出对端 socket 地址 —— 必须显式注入）。
+    /// 生产模式（N0）为 `None`，走中继 + DNS 发现。
+    pub lookup: Option<MemoryLookup>,
     router: Router,
 }
 
 impl P2pNode {
+    /// 装配 Endpoint。
+    ///
+    /// - `offline = false`（生产）：`presets::N0` —— 含 n0 公有 Relay + DNS 发现，跨网可达；
+    /// - `offline = true`（测试 / 校内无外网）：`presets::Minimal` —— 无中继、无发现，
+    ///   只能靠显式 `EndpointAddr` 直连。**端到端测试必须用这个**，否则会依赖外网。
+    ///
+    /// 返回 `(endpoint, lookup)`：`lookup` 在离网模式下非空，调用方须把对端
+    /// `EndpointAddr` 注册进去（`add_peer_addr`），否则 gossip 找不到人。
+    async fn build_endpoint(
+        alpns: Vec<Vec<u8>>,
+        hook: WhitelistHook,
+        offline: bool,
+    ) -> anyhow::Result<(Endpoint, Option<MemoryLookup>)> {
+        let lookup = if offline { Some(MemoryLookup::new()) } else { None };
+        let builder = if offline {
+            Endpoint::builder(iroh::endpoint::presets::Minimal)
+        } else {
+            Endpoint::builder(iroh::endpoint::presets::N0)
+        };
+        let mut builder = builder.alpns(alpns).hooks(hook);
+        if let Some(l) = &lookup {
+            builder = builder.address_lookup(l.clone());
+        }
+        Ok((builder.bind().await?, lookup))
+    }
+
     /// 老师端节点：注册 4 类协议（auth / app / gossip / blobs）。
     pub async fn teacher(db_path: PathBuf, registry: AuthRegistry) -> anyhow::Result<Self> {
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-            .alpns(vec![
+        Self::teacher_with(db_path, registry, false).await
+    }
+
+    /// 老师端节点（离网模式，供测试使用）
+    pub async fn teacher_offline(
+        db_path: PathBuf,
+        registry: AuthRegistry,
+    ) -> anyhow::Result<Self> {
+        Self::teacher_with(db_path, registry, true).await
+    }
+
+    async fn teacher_with(
+        db_path: PathBuf,
+        registry: AuthRegistry,
+        offline: bool,
+    ) -> anyhow::Result<Self> {
+        let (endpoint, lookup) = Self::build_endpoint(
+            vec![
                 ALPN_AUTH.to_vec(),
                 ALPN_APP.to_vec(),
                 iroh_gossip::ALPN.to_vec(),
                 iroh_blobs::ALPN.to_vec(),
-            ])
-            .hooks(WhitelistHook::teacher(registry.clone()))
-            .bind()
-            .await?;
+            ],
+            WhitelistHook::teacher(registry.clone()),
+            offline,
+        )
+        .await?;
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let blobs = Arc::new(MemStore::new());
         let local_id = endpoint.id().to_string();
+        let secret_key = endpoint.secret_key().clone();
 
         let router = Router::builder(endpoint.clone())
             .accept(iroh_gossip::ALPN, gossip.clone())
@@ -67,7 +117,12 @@ impl P2pNode {
             )
             .accept(
                 ALPN_APP,
-                app_proto::AppHandler::new(db_path, registry.clone(), local_id),
+                app_proto::AppHandler::new(
+                    db_path,
+                    registry.clone(),
+                    local_id,
+                    secret_key,
+                ),
             )
             .spawn();
 
@@ -76,6 +131,7 @@ impl P2pNode {
             gossip,
             blobs,
             registry,
+            lookup,
             router,
         })
     }
@@ -85,15 +141,25 @@ impl P2pNode {
     /// 学生端同样安装 `WhitelistHook`（§5.4 R2 分布式白名单），
     /// 以拦截「已被撤销的同伴」通过学生间接入 swarm。
     pub async fn student(registry: AuthRegistry) -> anyhow::Result<Self> {
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-            .alpns(vec![
+        Self::student_with(registry, false).await
+    }
+
+    /// 学生端节点（离网模式，供测试使用）
+    pub async fn student_offline(registry: AuthRegistry) -> anyhow::Result<Self> {
+        Self::student_with(registry, true).await
+    }
+
+    async fn student_with(registry: AuthRegistry, offline: bool) -> anyhow::Result<Self> {
+        let (endpoint, lookup) = Self::build_endpoint(
+            vec![
                 ALPN_AUTH.to_vec(),
                 iroh_gossip::ALPN.to_vec(),
                 iroh_blobs::ALPN.to_vec(),
-            ])
-            .hooks(WhitelistHook::student(registry.clone()))
-            .bind()
-            .await?;
+            ],
+            WhitelistHook::student(registry.clone()),
+            offline,
+        )
+        .await?;
 
         let gossip = Gossip::builder().spawn(endpoint.clone());
         let blobs = Arc::new(MemStore::new());
@@ -108,8 +174,18 @@ impl P2pNode {
             gossip,
             blobs,
             registry,
+            lookup,
             router,
         })
+    }
+
+    /// 离网模式下把对端 `EndpointAddr` 注册进本地地址簿。
+    ///
+    /// 生产模式（N0）是空操作 —— 中继 + DNS 发现会自动补全地址。
+    pub fn add_peer_addr(&self, addr: EndpointAddr) {
+        if let Some(l) = &self.lookup {
+            l.add_endpoint_info(addr);
+        }
     }
 
     /// 本节点 EndpointId（= 身份公钥，用作课程码 / 引导地址）
