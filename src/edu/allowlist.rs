@@ -28,7 +28,7 @@ use tokio::sync::RwLock;
 
 use super::authz::{AuthRegistry, MemberBinding};
 use super::gossip::{SectionMsg, SectionSession};
-use super::model::{Member, MemberRole};
+use super::model::{Member, MemberRole, SectionKey};
 use super::store::EduStore;
 
 /// 白名单载荷版本。结构变更时递增，旧版本一律拒绝加载。
@@ -303,16 +303,24 @@ pub async fn apply_signed_allowlist(
         ));
     }
 
+    // 本班的**全局键**：班 id 只在签发老师的库内唯一（缺陷 F 的根因之一）
+    let section_key = SectionKey::new(expected_teacher.clone(), signed.section_id);
+
     // 先撤销该班旧成员（防止已退出者残留），再写入新表
+    //
+    // ⚠️ 必须按**教学班**粒度撤销（`revoke_from_section`），不能整条 `revoke`：
+    //    同一节点可能同时属于本老师的其他班、或其他老师的班。整条移除会把那些班
+    //    的授权一并抹掉，之后它在该班的握手会被本地 Hook 拒绝、gossip 连接反复重建
+    //    （缺陷 F：重复下发某班名单会踢掉该生在其他班的连接）。
     let stale: Vec<EndpointId> = {
         let snap = registry.snapshot().await;
         snap.into_iter()
-            .filter(|(_, b)| b.belongs_to(signed.section_id))
+            .filter(|(_, b)| b.belongs_to(&section_key))
             .map(|(id, _)| id)
             .collect()
     };
     for id in stale {
-        registry.revoke(&id).await;
+        registry.revoke_from_section(&id, &section_key).await;
     }
 
     let mut applied = 0usize;
@@ -331,8 +339,8 @@ pub async fn apply_signed_allowlist(
             .await
             .map(|b| b.sections)
             .unwrap_or_default();
-        if !sections.contains(&signed.section_id) {
-            sections.push(signed.section_id);
+        if !sections.contains(&section_key) {
+            sections.push(section_key.clone());
         }
         registry
             .grant(
@@ -391,10 +399,14 @@ pub async fn revoke_and_rotate(
     // ① 落库撤销
     let revoked_endpoint = store.revoke_member(section_id, username)?;
 
-    // ② 内存白名单同步移除
+    // ② 内存白名单同步移除（**只移除本班归属**）
+    //
+    // ⚠️ 不能整条 `revoke`：该生可能同时在本老师的其他班（一个老师挂多门课），
+    //    整条移除会让他连其他班也进不来（缺陷 G：撤销跨班连坐）。
     if let Some(ep) = revoked_endpoint.as_ref() {
         if let Ok(id) = EndpointId::from_str(ep) {
-            registry.revoke(&id).await;
+            let key = SectionKey::new(secret_key.public(), section_id);
+            registry.revoke_from_section(&id, &key).await;
         }
     }
 
@@ -673,6 +685,69 @@ mod tests {
             !registry.is_authorized(&stu.public()).await,
             "新表应剔除已撤销学生"
         );
+    }
+
+    /// 缺陷 F 回归：**重复下发某一班名单，不得抹掉该节点在其他班的授权**。
+    ///
+    /// 触发频率很高 —— 老师每发一次公告都会 `publish_allowlist`、`revoke_and_rotate`
+    /// 也会广播新表、学生重连时 `from_node` 会逐班 `fetch_allowlist`。旧实现先把
+    /// 「本班旧成员」整条 `revoke`（含其他班归属），再按本班表重建 → 该生在其他班的
+    /// 授权被静默清掉，那些班的握手随之被本地 Hook 拒绝、连接反复重建。
+    #[tokio::test]
+    async fn test_reapply_section_keeps_other_sections() {
+        let teacher_key = dummy_key(51);
+        let teacher_id = teacher_key.public();
+        let teacher_hex = teacher_id.to_string();
+        let stu_id = dummy_key(52).public();
+        let stu_hex = stu_id.to_string();
+
+        let registry = AuthRegistry::new();
+        let state = AllowlistState::new();
+
+        // 全局班键 = (老师, 班 id)
+        let k11 = SectionKey::new(teacher_id.clone(), 11);
+        let k12 = SectionKey::new(teacher_id.clone(), 12);
+
+        let mk = |section_id: i64, epoch: u32| {
+            let members = vec![
+                make_member(MemberRole::Teacher, "T", "师", Some(&teacher_hex), true),
+                make_member(MemberRole::Student, "A", "甲", Some(&stu_hex), true),
+            ];
+            SignedAllowlist::build_from_members(section_id, epoch, &teacher_hex, &members)
+                .sign(&teacher_key)
+        };
+
+        // 该生同时在 11 班、12 班（同一位老师的两门课）
+        apply_signed_allowlist(&mk(11, 1), &teacher_id, &registry, &state)
+            .await
+            .unwrap();
+        apply_signed_allowlist(&mk(12, 1), &teacher_id, &registry, &state)
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.binding(&stu_id).await.unwrap().sections.len(),
+            2,
+            "应同时在两个班"
+        );
+
+        // ⚠️ 再次下发 11 班名单 → 12 班归属必须保留
+        apply_signed_allowlist(&mk(11, 2), &teacher_id, &registry, &state)
+            .await
+            .unwrap();
+        let b = registry.binding(&stu_id).await.unwrap();
+        assert!(b.belongs_to(&k11), "本班归属保留");
+        assert!(b.belongs_to(&k12), "其他班归属不得被抹掉（缺陷 F）");
+        assert!(registry.is_authorized(&stu_id).await, "节点仍在白名单");
+
+        // 12 班名单里剔除该生 → 只剩 11 班，节点不得被整体移除
+        let only_teacher = vec![make_member(MemberRole::Teacher, "T", "师", Some(&teacher_hex), true)];
+        let v12 = SignedAllowlist::build_from_members(12, 2, &teacher_hex, &only_teacher)
+            .sign(&teacher_key);
+        apply_signed_allowlist(&v12, &teacher_id, &registry, &state)
+            .await
+            .unwrap();
+        let b = registry.binding(&stu_id).await.unwrap();
+        assert_eq!(b.sections, vec![k11], "仅移除 12 班，11 班保留");
     }
 
     #[test]

@@ -28,7 +28,7 @@ use tokio::time::{timeout, Instant};
 use rhermes::edu::authz::AuthRegistry;
 use rhermes::edu::gossip::SectionMsg;
 use rhermes::edu::net::{client, P2pNode};
-use rhermes::edu::runtime::{SectionEvent, StudentRuntime, TeacherRuntime};
+use rhermes::edu::runtime::{Enrollment, SectionEvent, SectionKey, StudentRuntime, TeacherRuntime};
 use rhermes::edu::store::EduStore;
 
 /// 初始化日志（`RUST_LOG=info` 可见入班 / 白名单 / 拒绝等关键事件）
@@ -145,6 +145,8 @@ async fn edu_p2p_revocation_end_to_end() {
         .expect("老师节点启动");
     let teacher_addr = teacher.node.endpoint.addr();
     let teacher_id = teacher.node.endpoint.id();
+    // 学生端的**全局班键** = (签发老师, 该老师库内的班 id)
+    let key = SectionKey::new(teacher_id, fx.section_id);
     assert!(
         !teacher_addr.addrs.is_empty(),
         "离网老师也应至少有 loopback 直连地址"
@@ -188,13 +190,22 @@ async fn edu_p2p_revocation_end_to_end() {
         "同学应被写入学生本地白名单"
     );
 
+    // 记录轮换前的**发送端** Topic 指纹 —— 5d 用它断言轮换确实换掉了发送端（缺陷 E）
+    let topic_before = s2
+        .session_topic(&key)
+        .await
+        .expect("学生 2 应有可用会话 Topic");
+
     // ===== 2. 群组通信：老师广播 → 学生收到 =====
     teacher
         .announce(fx.section_id, "轮换前公告", "第一版 Topic 上的通知")
         .await
         .expect("老师广播失败");
     let got = wait_for(&mut s1, 15, |e| match e {
-        SectionEvent::Message(SectionMsg::Announce { title, .. }) if title == "轮换前公告" => {
+        SectionEvent::Message {
+            msg: SectionMsg::Announce { title, .. },
+            ..
+        } if title == "轮换前公告" => {
             Some(())
         }
         _ => None,
@@ -283,6 +294,21 @@ async fn edu_p2p_revocation_end_to_end() {
     .await;
     assert_eq!(rotated, Some(1), "剩余成员应轮换到纪元 1");
 
+    // 5d-2. 🔴 缺陷 E 回归：轮换必须同时替换**发送端**，而不只是接收端。
+    //
+    //       旧实现里接收循环把新会话丢给了 `_s`，只换了收件箱 `rx`；
+    //       `StudentRuntime` 内保存的 `SectionSession`（持有 GossipSender）仍指向旧
+    //       Topic。用户可见后果：轮换后学生"发得出"却全班收不到，而滞留在旧 Topic 的
+    //       被撤销者反而能收到 —— 既是投递失败，也是撤销后的信息泄露。
+    let topic_after = s2
+        .session_topic(&key)
+        .await
+        .expect("学生 2 轮换后仍应有会话 Topic");
+    assert_ne!(
+        topic_before, topic_after,
+        "轮换后学生的发送端 Topic 必须改变（缺陷 E：只换接收端不换发送端）"
+    );
+
     // 5e. 被撤销者**不会**切到新 Topic（他刷新不到票据）——
     //     注意：旧 Topic 上的 `TopicRotate` 广播他确实收得到，但只是"纪元变了"的暗号，
     //     没有新 TopicId，且刷新票据被拒 → 永远停留在作废的旧 Topic。
@@ -300,7 +326,10 @@ async fn edu_p2p_revocation_end_to_end() {
         .expect("轮换后广播失败");
 
     let ok = wait_for(&mut s2, 15, |e| match e {
-        SectionEvent::Message(SectionMsg::Announce { title, .. }) if title == "轮换后公告" => {
+        SectionEvent::Message {
+            msg: SectionMsg::Announce { title, .. },
+            ..
+        } if title == "轮换后公告" => {
             Some(())
         }
         _ => None,
@@ -309,7 +338,10 @@ async fn edu_p2p_revocation_end_to_end() {
     assert!(ok.is_some(), "合法成员应在新 Topic 收到公告");
 
     let leaked = wait_for(&mut s1, 5, |e| match e {
-        SectionEvent::Message(SectionMsg::Announce { title, .. }) if title == "轮换后公告" => {
+        SectionEvent::Message {
+            msg: SectionMsg::Announce { title, .. },
+            ..
+        } if title == "轮换后公告" => {
             Some(())
         }
         _ => None,
@@ -324,4 +356,244 @@ async fn edu_p2p_revocation_end_to_end() {
     s2.shutdown().await.ok();
     s1.shutdown().await.ok();
     teacher.shutdown().await.ok();
+}
+
+// ---------------------------------------------------------------------------
+// 多老师 / 多课程：一个学生同时选修多位老师的课
+// ---------------------------------------------------------------------------
+
+/// 为某位老师建一份独立教务库：1 老师 / 1 课程 / 1 教学班 / 1 学生（未绑定设备）
+fn setup_teacher_db(db: &std::path::Path, code: &str, course: &str, class: &str) -> i64 {
+    let store = EduStore::open(db).expect("打开库");
+    let t = store.create_teacher("张老师", "tpw").expect("建老师");
+    let c = store.create_course(code, course, t.id).expect("建课程");
+    let s = store.create_class(class, c.id).expect("建班级");
+    store
+        .create_student("2024001", "张三", "pw", Some(s.id))
+        .expect("建学生");
+    s.id
+}
+
+/// 持续收集事件，直到闭包判定「够了」或超时（避免依赖事件到达顺序）。
+async fn collect_until<T>(
+    rt: &mut StudentRuntime,
+    budget: Duration,
+    mut done: impl FnMut(&SectionEvent, &mut Vec<T>) -> bool,
+) -> Vec<T> {
+    let mut acc: Vec<T> = Vec::new();
+    let deadline = Instant::now() + budget;
+    while Instant::now() < deadline {
+        match timeout(Duration::from_secs(5), rt.next_event()).await {
+            Ok(Some(ev)) => {
+                if done(&ev, &mut acc) {
+                    break;
+                }
+            }
+            // 所有会话关闭
+            Ok(None) => break,
+            // 本轮等待超时 → 继续等（只要总预算未耗尽）
+            Err(_) => {}
+        }
+    }
+    acc
+}
+
+/// 🔴 缺陷 H 回归：**一个学生同时选修多位老师的课**。
+///
+/// 旧实现把「老师」当成全局单值：`teacher_from_tickets` 只取首票的 bootstrap、
+/// `connect_at` 一个地址全票共用、`apply_signed_allowlist` 只认单一期望签发者 ——
+/// 第二位老师的白名单会被「签发者不符」直接拒绝，第二个班永远进不去。
+#[tokio::test]
+async fn edu_p2p_multi_teacher_end_to_end() {
+    init_tracing();
+
+    // ===== 两位老师，各自独立教务库（现实即如此）=====
+    let tmp_a = tempfile::tempdir().expect("临时目录A");
+    let tmp_b = tempfile::tempdir().expect("临时目录B");
+    let db_a = tmp_a.path().join("edu.db");
+    let db_b = tmp_b.path().join("edu.db");
+
+    let sec_a = setup_teacher_db(&db_a, "CS101", "Python 编程基础", "计算机2301");
+    let sec_b = setup_teacher_db(&db_b, "MA201", "高等数学", "电信2302");
+    // ⚠️ 两位老师各自独立建库 → 教学班主键**必然重复**（都从 1 开始）。
+    //    这正是学生端必须用 (老师, 班 id) 组合键的原因：
+    //    单用 section_id 做键，第二个老师的班会直接覆盖第一个。
+    assert_eq!(
+        sec_a, sec_b,
+        "独立建库的两位老师，班 id 相同 —— 单靠 section_id 无法区分"
+    );
+
+    let mut teacher_a = TeacherRuntime::start_offline(db_a.clone())
+        .await
+        .expect("老师A 启动");
+    let mut teacher_b = TeacherRuntime::start_offline(db_b.clone())
+        .await
+        .expect("老师B 启动");
+    teacher_a
+        .publish_allowlist(sec_a)
+        .await
+        .expect("A 首版白名单广播");
+    teacher_b
+        .publish_allowlist(sec_b)
+        .await
+        .expect("B 首版白名单广播");
+
+    let addr_a = teacher_a.node.endpoint.addr();
+    let addr_b = teacher_b.node.endpoint.addr();
+    let id_a = teacher_a.node.node_id();
+    let id_b = teacher_b.node.node_id();
+    assert_ne!(id_a, id_b, "两位老师必须是不同身份");
+    let key_a = SectionKey::new(id_a, sec_a);
+    let key_b = SectionKey::new(id_b, sec_b);
+    assert_ne!(key_a, key_b, "班 id 相同但老师不同 ⇒ 必须是两个不同的班键");
+
+    // ===== 学生：**同一把钥匙**分别向两位老师认证 =====
+    let node = P2pNode::student_offline(AuthRegistry::new())
+        .await
+        .expect("建学生节点");
+    let student_id = node.endpoint.id();
+
+    let ra = client::authenticate(&node.endpoint, addr_a.clone(), "2024001", "pw")
+        .await
+        .expect("认证A 应完成");
+    assert!(ra.ok, "认证 A 应成功：{}", ra.message);
+    let rb = client::authenticate(&node.endpoint, addr_b.clone(), "2024001", "pw")
+        .await
+        .expect("认证B 应完成");
+    assert!(rb.ok, "认证 B 应成功：{}", rb.message);
+    assert_eq!(
+        ra.tickets[0].bootstrap[0],
+        id_a.to_string(),
+        "A 的票必须由 A 签发"
+    );
+    assert_eq!(
+        rb.tickets[0].bootstrap[0],
+        id_b.to_string(),
+        "B 的票必须由 B 签发"
+    );
+
+    // ===== 一次入班：两位老师、两个班 =====
+    let mut stu = StudentRuntime::from_node_multi(
+        node,
+        vec![
+            Enrollment {
+                teacher_addr: addr_a.clone(),
+                tickets: ra.tickets,
+            },
+            Enrollment {
+                teacher_addr: addr_b.clone(),
+                tickets: rb.tickets,
+            },
+        ],
+    )
+    .await
+    .expect("多老师入班失败");
+
+    assert_eq!(stu.sections().len(), 2, "应同时接入两个班");
+    assert_eq!(
+        stu.teacher_of(&key_a).map(|a| a.id),
+        Some(id_a),
+        "A 班归 A 老师"
+    );
+    assert_eq!(
+        stu.teacher_of(&key_b).map(|a| a.id),
+        Some(id_b),
+        "B 班归 B 老师"
+    );
+    assert_ne!(
+        stu.session_topic(&key_a).await,
+        stu.session_topic(&key_b).await,
+        "两个班必须是彼此独立的 Topic"
+    );
+
+    // 两位老师的白名单都必须被接受（旧实现会拒掉第二位）
+    assert!(
+        stu.registry.is_authorized(&id_a).await,
+        "老师A 应写入学生本地白名单"
+    );
+    assert!(
+        stu.registry.is_authorized(&id_b).await,
+        "🔴 缺陷 H：老师B 也必须在白名单（旧实现报「签发者不符」直接拒绝）"
+    );
+    let b = stu.registry.binding(&student_id).await.expect("学生应有绑定");
+    assert_eq!(
+        b.sections.len(),
+        2,
+        "本地绑定应同时含两位老师的班（跨老师也必须并存，缺陷 F）"
+    );
+
+    // ===== 两位老师各自再广播一次白名单（此时已含学生）=====
+    let sa = teacher_a
+        .publish_allowlist(sec_a)
+        .await
+        .expect("A 二版白名单");
+    let sb = teacher_b
+        .publish_allowlist(sec_b)
+        .await
+        .expect("B 二版白名单");
+    assert_eq!(sa.student_count(), 1, "A 班白名单应含 1 名学生");
+    assert_eq!(sb.student_count(), 1, "B 班白名单应含 1 名学生");
+
+    let applied = collect_until(&mut stu, Duration::from_secs(20), |ev, acc| {
+        if let SectionEvent::AllowlistApplied { key, .. } = ev {
+            if !acc.contains(key) {
+                acc.push(key.clone());
+            }
+        }
+        acc.len() >= 2
+    })
+    .await;
+    assert!(
+        applied.contains(&key_a) && applied.contains(&key_b),
+        "两班白名单都应生效，实测 = {applied:?}"
+    );
+
+    // ===== 两班公告互不串台，且都带正确的 section_id =====
+    teacher_a
+        .announce(sec_a, "A班公告", "只属于 A 班")
+        .await
+        .expect("A 广播");
+    teacher_b
+        .announce(sec_b, "B班公告", "只属于 B 班")
+        .await
+        .expect("B 广播");
+
+    let got = collect_until(&mut stu, Duration::from_secs(20), |ev, acc| {
+        if let SectionEvent::Message {
+            key,
+            msg: SectionMsg::Announce { title, .. },
+        } = ev
+        {
+            acc.push((key.clone(), title.clone()));
+        }
+        acc.len() >= 2
+    })
+    .await;
+    assert!(
+        got.contains(&(key_a.clone(), "A班公告".to_string())),
+        "A 班公告应带 key_a，实测 = {got:?}"
+    );
+    assert!(
+        got.contains(&(key_b.clone(), "B班公告".to_string())),
+        "B 班公告应带 key_b，实测 = {got:?}"
+    );
+
+    // ===== 学生发言：两个班各自可发，互不影响 =====
+    for (k, text) in [(&key_a, "同学们好"), (&key_b, "老师好")] {
+        stu.broadcast(
+            k,
+            &SectionMsg::Chat {
+                from: "2024001".to_string(),
+                display_name: "张三".to_string(),
+                text: text.to_string(),
+                ts: String::new(),
+            },
+        )
+        .await
+        .expect("学生发言应成功");
+    }
+
+    stu.shutdown().await.ok();
+    teacher_a.shutdown().await.ok();
+    teacher_b.shutdown().await.ok();
 }

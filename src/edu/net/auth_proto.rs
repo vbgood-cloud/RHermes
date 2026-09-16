@@ -14,13 +14,14 @@
 //! 之后学生走 `/class-app/1.0` 与 gossip 时，会被 `WhitelistHook` 放行。
 
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use iroh::endpoint::Connection;
 use iroh::protocol::ProtocolHandler;
 use serde::{Deserialize, Serialize};
 
 use crate::edu::authz::{AuthRegistry, MemberBinding};
-use crate::edu::model::SectionTicket;
+use crate::edu::model::{SectionKey, SectionTicket};
 use crate::edu::store::EduStore;
 
 /// 认证请求（学生 → 老师）
@@ -107,6 +108,15 @@ impl ProtocolHandler for AuthHandler {
         // 身份以 TLS 握手的 remote_id 为准，客户端无法伪造
         let remote = conn.remote_id();
         let teacher_id = self.local_id.clone();
+        // 本机身份（构造班键 / 签名白名单都需要）。iroh 1.0 的 Connection 不暴露本地 id，
+        // 因此由构造时注入的 `local_id` 反解。
+        let me = match iroh::EndpointId::from_str(&teacher_id) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("本机 EndpointId 非法（{teacher_id}）：{e}");
+                return Ok(());
+            }
+        };
 
         // 所有错误都在内部消化：返回 Ok 即让 Router 正常关闭连接
         let result: anyhow::Result<()> = async {
@@ -148,7 +158,10 @@ impl ProtocolHandler for AuthHandler {
                             req.username.clone(),
                             auth.student_name.clone(),
                             admin_class,
-                            sections.iter().map(|s| s.section_id).collect(),
+                            sections
+                                .iter()
+                                .map(|s| SectionKey::new(me.clone(), s.section_id))
+                                .collect(),
                         );
                         self.registry.grant(remote, binding).await;
 

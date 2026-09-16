@@ -21,6 +21,8 @@ use iroh::endpoint::{AfterHandshakeOutcome, Connection, EndpointHooks};
 use iroh::EndpointId;
 use tokio::sync::RwLock;
 
+use super::model::SectionKey;
+
 /// 一个已认证节点绑定的成员信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberBinding {
@@ -28,8 +30,11 @@ pub struct MemberBinding {
     pub display_name: String,
     /// 行政班级，如「信工2201」（同一教学班可含多个行政班）
     pub admin_class: String,
-    /// 该节点被授权可参与的教学班 id 列表
-    pub sections: Vec<i64>,
+    /// 该节点被授权可参与的教学班列表。
+    ///
+    /// ⚠️ 元素是 [`SectionKey`] 而不是裸 `section_id` —— 每位老师各自一份 edu.db，
+    /// 教学班主键都从 1 开始；学生同时选修多位老师时不带老师身份会互相覆盖。
+    pub sections: Vec<SectionKey>,
 }
 
 impl MemberBinding {
@@ -37,7 +42,7 @@ impl MemberBinding {
         username: impl Into<String>,
         display_name: impl Into<String>,
         admin_class: impl Into<String>,
-        sections: Vec<i64>,
+        sections: Vec<SectionKey>,
     ) -> Self {
         Self {
             username: username.into(),
@@ -48,8 +53,8 @@ impl MemberBinding {
     }
 
     /// 是否属于指定教学班（Handler 层细粒度校验用）
-    pub fn belongs_to(&self, section_id: i64) -> bool {
-        self.sections.contains(&section_id)
+    pub fn belongs_to(&self, key: &SectionKey) -> bool {
+        self.sections.contains(key)
     }
 }
 
@@ -79,6 +84,37 @@ impl AuthRegistry {
     /// 返回 `true` 表示确实移除了一个条目。
     pub async fn revoke(&self, id: &EndpointId) -> bool {
         self.inner.write().await.remove(id).is_some()
+    }
+
+    /// 从**某一个教学班**撤销该节点的归属，保留其在其他教学班（含其他老师）的授权。
+    ///
+    /// ⚠️ 撤销的正确粒度是「教学班」而不是「节点」。一个学生可以同时选同一老师的
+    /// 多门课、或不同老师的课；从 A 班撤销不应把他从 B 班一并踢出，否则：
+    /// - 白名单整表刷新时（`apply_signed_allowlist` 会先清本班旧成员）会把该生在
+    ///   其他班的授权一起抹掉 → 本地 Hook 拒绝那些班的同伴 → 那些班 gossip 断开；
+    /// - 老师撤销 A 班成员时，会连带吊销他在同一老师 B 班的权限。
+    ///
+    /// 仅当该节点不再属于任何教学班时才整条移除（此时才真正「离开所有班」）。
+    ///
+    /// 返回 `true` 表示本地条目确有变化。
+    pub async fn revoke_from_section(&self, id: &EndpointId, key: &SectionKey) -> bool {
+        let mut w = self.inner.write().await;
+        let changed = match w.get_mut(id) {
+            Some(b) => {
+                let before = b.sections.len();
+                b.sections.retain(|s| s != key);
+                b.sections.len() != before
+            }
+            // 本就不在白名单 → 无事发生
+            None => return false,
+        };
+        if !changed {
+            return false;
+        }
+        if w.get(id).map(|b| b.sections.is_empty()).unwrap_or(false) {
+            w.remove(id);
+        }
+        true
     }
 
     pub async fn is_authorized(&self, id: &EndpointId) -> bool {
@@ -229,33 +265,77 @@ mod tests {
         sk.public()
     }
 
+    /// 测试用班键：默认归同一个老师（seed=200）
+    fn sk(section_id: i64) -> SectionKey {
+        SectionKey::new(dummy_id(200), section_id)
+    }
+
     #[tokio::test]
     async fn test_grant_and_check() {
         let reg = AuthRegistry::new();
         let id = dummy_id(1);
         assert!(!reg.is_authorized(&id).await);
 
-        reg.grant(id, MemberBinding::new("2024001", "张三", "信工2201", vec![10, 11]))
+        reg.grant(id, MemberBinding::new("2024001", "张三", "信工2201", vec![sk(10), sk(11)]))
             .await;
         assert!(reg.is_authorized(&id).await);
         assert_eq!(reg.len().await, 1);
 
         let b = reg.binding(&id).await.unwrap();
         assert_eq!(b.username, "2024001");
-        assert!(b.belongs_to(10));
-        assert!(!b.belongs_to(99));
+        assert!(b.belongs_to(&sk(10)));
+        assert!(!b.belongs_to(&sk(99)));
+        // 同班 id、不同老师 ⇒ 必须是不同的班（班 id 只在各自库内唯一）
+        assert!(!b.belongs_to(&SectionKey::new(dummy_id(201), 10)));
     }
 
     #[tokio::test]
     async fn test_revoke_removes() {
         let reg = AuthRegistry::new();
         let id = dummy_id(2);
-        reg.grant(id, MemberBinding::new("2024002", "李四", "电气2201", vec![20]))
+        reg.grant(id, MemberBinding::new("2024002", "李四", "电气2201", vec![sk(20)]))
             .await;
         assert!(reg.revoke(&id).await);
         assert!(!reg.is_authorized(&id).await);
         // 二次撤销返回 false
         assert!(!reg.revoke(&id).await);
+    }
+
+    /// 缺陷 F/G 回归：撤销必须按**教学班**粒度，不能整条移除节点。
+    ///
+    /// 一个学生可以同时选同一老师的多门课、或不同老师的课。从 A 班撤销（或白名单
+    /// 整表刷新时清旧成员）不得把他从 B 班一并踢出，否则 B 班的握手会被本地 Hook
+    /// 拒绝、gossip 连接反复重建。
+    #[tokio::test]
+    async fn test_revoke_from_section_keeps_other_sections() {
+        let reg = AuthRegistry::new();
+        let id = dummy_id(5);
+        // 该生同时在 10、20 两个班
+        reg.grant(id, MemberBinding::new("2024005", "王五", "信工2201", vec![sk(10), sk(20)]))
+            .await;
+
+        // 撤销「本就不属于」的班 → 无变化
+        assert!(!reg.revoke_from_section(&id, &sk(99)).await);
+        assert_eq!(reg.binding(&id).await.unwrap().sections.len(), 2);
+        // 同班 id、不同老师 → 不应命中
+        assert!(!reg.revoke_from_section(&id, &SectionKey::new(dummy_id(201), 10)).await);
+        assert_eq!(reg.binding(&id).await.unwrap().sections.len(), 2);
+
+        // 撤 10 班 → 20 班保留，节点仍授权在册
+        assert!(reg.revoke_from_section(&id, &sk(10)).await);
+        let b = reg.binding(&id).await.unwrap();
+        assert_eq!(b.sections, vec![sk(20)], "其他班归属必须保留");
+        assert!(reg.is_authorized(&id).await, "仍属于其他班，节点不得被整体移除");
+
+        // 重复撤销同一班 → false（幂等）
+        assert!(!reg.revoke_from_section(&id, &sk(10)).await);
+
+        // 再撤 20 → 已不属于任何班 → 整条移除
+        assert!(reg.revoke_from_section(&id, &sk(20)).await);
+        assert!(!reg.is_authorized(&id).await);
+
+        // 节点已不在白名单 → false
+        assert!(!reg.revoke_from_section(&id, &sk(20)).await);
     }
 
     #[tokio::test]
@@ -264,8 +344,8 @@ mod tests {
         let a = dummy_id(3);
         let b = dummy_id(4);
         reg.load_from(vec![
-            (a, MemberBinding::new("A", "甲", "信工2201", vec![1])),
-            (b, MemberBinding::new("B", "乙", "信工2202", vec![1, 2])),
+            (a, MemberBinding::new("A", "甲", "信工2201", vec![sk(1)])),
+            (b, MemberBinding::new("B", "乙", "信工2202", vec![sk(1), sk(2)])),
         ])
         .await;
         assert_eq!(reg.len().await, 2);

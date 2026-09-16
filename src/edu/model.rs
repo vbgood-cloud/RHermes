@@ -113,6 +113,36 @@ pub struct Member {
     pub last_seen_at: Option<String>,
 }
 
+/// 教学班的**全局**标识：签发老师 EndpointId + 该老师教务库内的班 id。
+///
+/// ⚠️ `section_id` 只在**签发老师的教务库内**唯一 —— 每位老师各自一份 `edu.db`，
+/// 教学班主键都从 1 开始。学生同时选修多位老师时，必须与老师身份组合做键，
+/// 否则不同老师的教学班会在会话表 / 授权表里互相覆盖。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SectionKey {
+    /// 签发该班票据的老师
+    pub teacher: iroh::EndpointId,
+    /// 该老师教务库内的教学班主键
+    pub section_id: i64,
+}
+
+impl SectionKey {
+    pub fn new(teacher: iroh::EndpointId, section_id: i64) -> Self {
+        Self {
+            teacher,
+            section_id,
+        }
+    }
+}
+
+impl std::fmt::Display for SectionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // 只显示老师 id 前 8 位，避免日志 / UI 刷屏
+        let t = self.teacher.to_string();
+        write!(f, "{}#{}", &t[..8.min(t.len())], self.section_id)
+    }
+}
+
 /// 下发给已认证学生的教学班票据。
 ///
 /// 只在 `/class-auth/1.0` 的 **加密信道**内下发；TopicId 本身即能力凭据。

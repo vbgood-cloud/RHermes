@@ -194,6 +194,14 @@ pub struct SectionSession {
 }
 
 impl SectionSession {
+    /// 本会话当前绑定的 Topic。
+    ///
+    /// 轮换后应变为新纪元派生的 Topic —— 上层展示「当前纪元」与回归测试断言
+    /// **发送端**是否已切到新 Topic 都依赖它（只换接收端不换发送端是缺陷 E）。
+    pub fn topic_id(&self) -> TopicId {
+        self.topic
+    }
+
     /// 老师侧：为每个自己任教的教学班建会话（无需 bootstrap，老师是 Topic 起点）。
     pub async fn host(gossip: &Gossip, section_id: i64, seed: &[u8], epoch: u32) -> anyhow::Result<(Self, GossipReceiver)> {
         Self::join(gossip, section_id, seed, epoch, Vec::new()).await

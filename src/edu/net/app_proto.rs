@@ -17,6 +17,7 @@ use iroh::protocol::ProtocolHandler;
 use serde::{Deserialize, Serialize};
 
 use crate::edu::authz::AuthRegistry;
+use crate::edu::model::SectionKey;
 use crate::edu::store::EduStore;
 
 /// 应用层请求（学生 → 老师）
@@ -143,7 +144,14 @@ impl ProtocolHandler for AppHandler {
                     username: binding.username.clone(),
                     display_name: binding.display_name.clone(),
                     admin_class: binding.admin_class.clone(),
-                    sections: binding.sections.clone(),
+                    // 只回报**本老师**名下的教学班：班 id 在各自的库里会重复，
+                    // 不按老师过滤会误导学生
+                    sections: binding
+                        .sections
+                        .iter()
+                        .filter(|k| k.teacher == self.secret_key.public())
+                        .map(|k| k.section_id)
+                        .collect(),
                 },
 
                 AppRequest::RefreshTickets => {
@@ -153,7 +161,7 @@ impl ProtocolHandler for AppHandler {
                 }
 
                 AppRequest::CurrentAllowlist { section_id } => {
-                    if !binding.belongs_to(section_id) {
+                    if !binding.belongs_to(&SectionKey::new(self.secret_key.public(), section_id)) {
                         tracing::warn!(
                             "越权拦截：{} 不属于教学班 {}",
                             binding.username,
@@ -177,7 +185,7 @@ impl ProtocolHandler for AppHandler {
                 }
 
                 AppRequest::AskQuestion { section_id, question } => {
-                    if !binding.belongs_to(section_id) {
+                    if !binding.belongs_to(&SectionKey::new(self.secret_key.public(), section_id)) {
                         tracing::warn!(
                             "越权拦截：{} 不属于教学班 {}",
                             binding.username,
@@ -204,7 +212,7 @@ impl ProtocolHandler for AppHandler {
                     assignment_id,
                     content,
                 } => {
-                    if !binding.belongs_to(section_id) {
+                    if !binding.belongs_to(&SectionKey::new(self.secret_key.public(), section_id)) {
                         tracing::warn!(
                             "越权拦截：{} 不属于教学班 {}",
                             binding.username,
