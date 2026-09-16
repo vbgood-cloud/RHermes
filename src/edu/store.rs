@@ -1747,6 +1747,24 @@ impl EduStore {
         }
     }
 
+    /// 列出全部老师（按 id 升序）。
+    ///
+    /// 供「未配置工号时自动认领」使用：库里只有一位老师就默认是他。
+    pub fn list_teachers(&self) -> Result<Vec<Teacher>, EduError> {
+        let mut stmt = self
+            .db
+            .prepare("SELECT id, name, node_id, created_at FROM edu_teachers ORDER BY id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Teacher {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                node_id: r.get(2)?,
+                created_at: r.get(3)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// 教务同步：课程按 `course_code` upsert。
     ///
     /// 已存在时**只**更新课程名，绝不覆盖 `tools_whitelist` / `allowed_modes`

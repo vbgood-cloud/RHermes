@@ -1733,6 +1733,125 @@ pub struct EduConfig {
     /// 学生认证 token（认证后自动保存）
     #[serde(default)]
     pub auth_token: String,
+    /// 学生侧配置（本机学生身份 + 选修的多位老师）
+    #[serde(default)]
+    pub student: EduStudentConfig,
+    /// 老师侧配置（本机老师身份 + 启动时托管的教学班）
+    #[serde(default)]
+    pub teacher: EduTeacherConfig,
+}
+
+/// 学生侧：本机身份 + 选修的老师清单。
+///
+/// 目的：**免去每次输入** `--teacher <地址> --student-no <学号> --password <口令>`。
+///
+/// ```toml
+/// [edu.student]
+/// student_no = "2024001"
+/// display_name = "张三"
+///
+/// [[edu.student.teachers]]
+/// teacher = "ed25519-hex…"          # 老师 EndpointId
+/// addr    = "192.168.1.9:5000"      # 可选：离网/局域网直连
+/// password = "…"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EduStudentConfig {
+    /// 本机学生学号
+    #[serde(default)]
+    pub student_no: String,
+    /// 显示名（可空，认证成功后由老师侧花名册回填）
+    #[serde(default)]
+    pub display_name: String,
+    /// 可选：固定身份私钥（64 位 hex）。留空则首次运行自动生成，
+    /// 持久化到 `home/edu_identities/<学号>.key`。
+    #[serde(default)]
+    pub secret_key: String,
+    /// 选修的老师（可 0..N 位）
+    #[serde(default)]
+    pub teachers: Vec<EduTeacherPeer>,
+}
+
+/// 学生选修的**一位**老师（一份接入凭据）
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EduTeacherPeer {
+    /// 老师 EndpointId（hex）。
+    #[serde(default)]
+    pub teacher: String,
+    /// 可选：直连地址（`host:port`）。离网 / 局域网演示必填，
+    /// 生产（N0 中继发现）可留空。
+    #[serde(default)]
+    pub addr: String,
+    /// 该老师处使用的学号；留空则用 `[edu.student].student_no`。
+    #[serde(default)]
+    pub student_no: String,
+    /// 该老师处的密码；留空则用顶层 `auth_token`。
+    #[serde(default)]
+    pub password: String,
+    /// 该老师走离网模式（无中继、仅显式地址直连）
+    #[serde(default)]
+    pub offline: bool,
+}
+
+impl EduTeacherPeer {
+    /// 实际使用的学号（回退到全局 `[edu.student].student_no` 或旧字段）
+    pub fn effective_student_no<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if self.student_no.trim().is_empty() {
+            fallback
+        } else {
+            self.student_no.trim()
+        }
+    }
+
+    /// 实际使用的密码（回退到顶层 `auth_token`）
+    pub fn effective_password<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if self.password.is_empty() {
+            fallback
+        } else {
+            self.password.as_str()
+        }
+    }
+}
+
+/// 老师侧：本机身份 + 启动时自动托管的教学班清单。
+///
+/// ```toml
+/// [edu.teacher]
+/// account = "t001"            # 工号，决定身份文件 home/edu_identities/t001.key
+/// display_name = "张老师"
+///
+/// [[edu.teacher.serve]]       # 启动时自动开的班（可多个）
+/// course = "CS201"
+/// class  = "信工2201"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EduTeacherConfig {
+    /// 工号 / 账号 —— 本机老师的身份标识
+    #[serde(default)]
+    pub account: String,
+    /// 显示名
+    #[serde(default)]
+    pub display_name: String,
+    /// 可选：固定身份私钥（64 位 hex）。
+    #[serde(default)]
+    pub secret_key: String,
+    /// 启动时托管的教学班（可 0..N 个）
+    #[serde(default)]
+    pub serve: Vec<EduServeSection>,
+}
+
+/// 老师启动时托管的一个教学班
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EduServeSection {
+    /// 课程码，如 "CS201"
+    #[serde(default)]
+    pub course: String,
+    /// 班级名，如 "信工2201"
+    #[serde(default)]
+    pub class: String,
+    /// 学期；留空表示不校验/沿用库内既有值
+    #[serde(default)]
+    pub term: String,
 }
 
 fn default_edu_mode() -> String {
@@ -1748,6 +1867,8 @@ impl Default for EduConfig {
             student_no: String::new(),
             default_mode: default_edu_mode(),
             auth_token: String::new(),
+            student: EduStudentConfig::default(),
+            teacher: EduTeacherConfig::default(),
         }
     }
 }
@@ -1853,6 +1974,7 @@ mod edu_tests {
                 student_no: "2024001".into(),
                 default_mode: "scaffold".into(),
                 auth_token: String::new(),
+                ..EduConfig::default()
             },
             ..Default::default()
         };
@@ -1871,5 +1993,127 @@ mod edu_tests {
         // 通用模式下 edu.role 应为空
         let cfg = Config::default();
         assert!(cfg.edu.role.is_empty());
+    }
+
+    #[test]
+    fn test_edu_multi_teacher_config_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toml_path = tmp.path().join("config.toml");
+
+        let cfg = Config {
+            edu: EduConfig {
+                enabled: true,
+                role: "student".into(),
+                student: EduStudentConfig {
+                    student_no: "2024001".into(),
+                    display_name: "张三".into(),
+                    secret_key: String::new(),
+                    teachers: vec![
+                        EduTeacherPeer {
+                            teacher: "aaaa".into(),
+                            addr: "127.0.0.1:5000".into(),
+                            password: "pw1".into(),
+                            ..Default::default()
+                        },
+                        EduTeacherPeer {
+                            teacher: "bbbb".into(),
+                            student_no: "2024900".into(),
+                            password: "pw2".into(),
+                            ..Default::default()
+                        },
+                    ],
+                },
+                ..EduConfig::default()
+            },
+            ..Default::default()
+        };
+
+        cfg.save(&toml_path).unwrap();
+        let loaded = Config::load(&toml_path).unwrap();
+
+        // 一位学生可同时选修多位老师 —— 顺序与内容都必须完整保留
+        assert_eq!(loaded.edu.student.teachers.len(), 2);
+        assert_eq!(loaded.edu.student.teachers[0].teacher, "aaaa");
+        assert_eq!(loaded.edu.student.teachers[0].addr, "127.0.0.1:5000");
+        assert_eq!(loaded.edu.student.teachers[1].teacher, "bbbb");
+        assert_eq!(loaded.edu.student.teachers[1].student_no, "2024900");
+    }
+
+    #[test]
+    fn test_edu_teacher_serve_config_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let toml_path = tmp.path().join("config.toml");
+
+        let cfg = Config {
+            edu: EduConfig {
+                enabled: true,
+                role: "teacher".into(),
+                teacher: EduTeacherConfig {
+                    account: "t001".into(),
+                    display_name: "张老师".into(),
+                    secret_key: String::new(),
+                    serve: vec![
+                        EduServeSection {
+                            course: "CS201".into(),
+                            class: "信工2201".into(),
+                            term: "2026-2027-1".into(),
+                        },
+                        EduServeSection {
+                            course: "CS202".into(),
+                            class: "信工2202".into(),
+                            term: String::new(),
+                        },
+                    ],
+                },
+                ..EduConfig::default()
+            },
+            ..Default::default()
+        };
+
+        cfg.save(&toml_path).unwrap();
+        let loaded = Config::load(&toml_path).unwrap();
+
+        // 师端服务启动时可挂多个课程/班级
+        assert_eq!(loaded.edu.teacher.account, "t001");
+        assert_eq!(loaded.edu.teacher.serve.len(), 2);
+        assert_eq!(loaded.edu.teacher.serve[0].course, "CS201");
+        assert_eq!(loaded.edu.teacher.serve[1].class, "信工2202");
+    }
+
+    #[test]
+    fn test_edu_peer_fallback_resolution() {
+        // 未写的字段回退到全局值 —— 避免每行配置都重复学号/密码
+        let peer = EduTeacherPeer::default();
+        assert_eq!(peer.effective_student_no("2024001"), "2024001");
+        assert_eq!(peer.effective_password("secret"), "secret");
+
+        let peer = EduTeacherPeer {
+            student_no: "2024900".into(),
+            password: "own".into(),
+            ..Default::default()
+        };
+        assert_eq!(peer.effective_student_no("2024001"), "2024900");
+        assert_eq!(peer.effective_password("secret"), "own");
+    }
+
+    #[test]
+    fn test_edu_config_legacy_fields_still_parse() {
+        // 老配置文件（只有顶层字段）必须继续可读
+        let toml_src = r#"
+[edu]
+enabled = true
+role = "student"
+teacher_node_id = "abc123"
+student_no = "2024001"
+default_mode = "scaffold"
+"#;
+        let cfg: Config = toml::from_str(toml_src).unwrap();
+        assert!(cfg.edu.enabled);
+        assert_eq!(cfg.edu.role, "student");
+        assert_eq!(cfg.edu.teacher_node_id, "abc123");
+        assert_eq!(cfg.edu.student_no, "2024001");
+        // 新字段缺省 → 空，不报错
+        assert!(cfg.edu.student.teachers.is_empty());
+        assert!(cfg.edu.teacher.serve.is_empty());
     }
 }

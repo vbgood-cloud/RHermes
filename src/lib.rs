@@ -196,6 +196,14 @@ pub enum TeacherCommands {
     Dashboard,
     /// 🔑 初始化教师身份
     InitTeacher,
+    /// 🛰️ 长期在线托管多个课程/班级（配置驱动）
+    Serve {
+        /// 托管项：`<课程码> <班级>` 若干；`--all` 表示该老师名下全部；`--offline` 走离网直连
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// 📇 打印本机老师地址（供学生填配置）
+    Addr,
 }
 
 // ── 学生 CLI（rhermes-stu = 通用 + 学生特有）──────────────────────────────
@@ -241,6 +249,11 @@ pub enum StudentCommands {
     Mode {
         /// 学习模式（explore 自由探索 / scaffold 引导式），不填则查看当前模式
         mode: Option<String>,
+    },
+    /// 🛰️ 进入课堂：按配置同时接入多位老师的多个教学班（`--offline` 走离网直连）
+    Live {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -459,6 +472,8 @@ fn teacher_cmd_to_edu_args(cmd: TeacherCommands) -> Vec<String> {
         }
         TeacherCommands::Dashboard => vec!["dashboard".to_string()],
         TeacherCommands::InitTeacher => vec!["init".to_string()],
+        TeacherCommands::Serve { args } => prepend("serve", args),
+        TeacherCommands::Addr => vec!["addr".to_string()],
     }
 }
 
@@ -490,6 +505,7 @@ fn student_cmd_to_edu_args(cmd: StudentCommands) -> (&'static str, Vec<String>) 
             if let Some(m) = mode { v.push(m); }
             ("mode", v)
         }
+        StudentCommands::Live { args } => ("student", prepend("live", args)),
     }
 }
 

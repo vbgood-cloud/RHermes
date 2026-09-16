@@ -9,16 +9,19 @@ pub mod auth;
 pub mod authz;
 pub mod allowlist;
 pub mod blobs;
+pub mod client_app;
 pub mod course;
 pub mod dashboard;
 pub mod e2e_tests;
 pub mod gossip;
+pub mod identity;
 pub mod model;
 pub mod net;
 pub mod p2p;
 pub mod reflection;
 pub mod registrar;
 pub mod runtime;
+pub mod serve;
 pub mod setup;
 pub mod store;
 pub mod teacher;
@@ -45,6 +48,13 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
                     "login" => {
                         auth::handle_auth_command(&["login".to_string()], &db_path);
                     }
+                    // 按配置同时接入多位老师的多个教学班
+                    "live" => {
+                        if let Err(e) = client_app::run_live(config_path, &args[1..]).await {
+                            eprintln!("❌ 进入课堂失败：{e}");
+                        }
+                        return;
+                    }
                     _ => {
                         println!("   未知子命令: {sub}");
                     }
@@ -70,6 +80,20 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
                     println!("📊 启动教师仪表板...");
                     let dashboard = dashboard::TeacherDashboard::new(8080, &db_path);
                     dashboard.run().await;
+                    return;
+                }
+                // 长期在线的多班托管服务（配置驱动）
+                if sub == "serve" {
+                    if let Err(e) = serve::run_serve(config_path, &args[1..]).await {
+                        eprintln!("❌ 托管服务启动失败：{e}");
+                    }
+                    return;
+                }
+                // 打印本机老师地址（供学生填配置）
+                if sub == "addr" {
+                    if let Err(e) = print_teacher_addr(config_path).await {
+                        eprintln!("❌ {e}");
+                    }
                     return;
                 }
             }
@@ -294,7 +318,10 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
             println!();
             println!("可用命令:");
             println!("  rhermes edu student [auth|login]  学生模式");
+            println!("  rhermes edu student live [--offline]  按配置同时进入多位老师的课堂");
             println!("  rhermes edu teacher <init|course|class|lesson|student|list>  教师管理");
+            println!("  rhermes edu teacher serve [--all|--offline|<课程码> <班级>...]  托管多个课程/班级");
+            println!("  rhermes edu teacher addr           打印本机老师地址（供学生填配置）");
             println!("  rhermes edu auth <login|verify>   认证");
             println!("  rhermes edu sync <csv|url> ...     教务名单同步（P4）");
             println!("  rhermes edu revoke <课程码> <班级> <学号>  撤销成员并轮换 Topic（P4/R3）");
@@ -307,6 +334,39 @@ pub async fn handle_edu(command: &str, args: &[String], config_path: &Path) {
             println!("  rhermes edu mode [explore|scaffold] 学习模式");
         }
     }
+}
+
+/// `rhermes edu teacher addr` —— 打印本机老师身份，供学生抄进配置。
+///
+/// 只算公钥、不建网络节点：`EndpointId` 就是身份公钥，离线也能给出；
+/// 需要 ip:port 时跑 `teacher serve`（横幅里会列全）。
+async fn print_teacher_addr(config_path: &Path) -> anyhow::Result<()> {
+    let cfg = crate::core::Config::load(config_path)
+        .map_err(|e| anyhow::anyhow!("读取配置失败：{e}"))?;
+    let home = serve::home_dir(config_path);
+    let store = store::EduStore::open(&home.join("edu.db"))?;
+    let teacher = serve::pick_teacher(&store, &cfg.edu.teacher.account)?;
+
+    let owner = if cfg.edu.teacher.account.trim().is_empty() {
+        teacher.name.clone()
+    } else {
+        cfg.edu.teacher.account.trim().to_string()
+    };
+    let key = identity::load_or_import(
+        &identity::identity_dir(&home),
+        &owner,
+        &cfg.edu.teacher.secret_key,
+    )?;
+
+    println!("👩‍🏫 {}", teacher.name);
+    println!("   身份文件 : {}", identity::key_path(&identity::identity_dir(&home), &owner).display());
+    println!("   指纹     : {}", identity::fingerprint(&key));
+    println!("   老师地址 : {}", key.public());
+    println!();
+    println!("   学生配置片段：");
+    println!("   [[edu.student.teachers]]");
+    println!("   teacher = \"{}\"", key.public());
+    Ok(())
 }
 
 /// 处理教育模式斜杠命令（TUI 和 Gateway 共用）

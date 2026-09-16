@@ -13,7 +13,7 @@ pub mod client;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_blobs::{BlobsProtocol, store::mem::MemStore};
 use iroh_gossip::Gossip;
 use iroh::protocol::Router;
@@ -51,10 +51,14 @@ impl P2pNode {
     ///
     /// 返回 `(endpoint, lookup)`：`lookup` 在离网模式下非空，调用方须把对端
     /// `EndpointAddr` 注册进去（`add_peer_addr`），否则 gossip 找不到人。
+    /// ⚠️ `secret_key` 是「每位老师 / 每位学生一套凭据」的落点：不注入时 iroh 会
+    /// **每次随机生成**，`EndpointId` 随之改变 —— 老师的白名单、对端地址簿全部作废。
+    /// 生产路径必须传入 [`crate::edu::identity`] 里持久化的那把钥匙。
     async fn build_endpoint(
         alpns: Vec<Vec<u8>>,
         hook: WhitelistHook,
         offline: bool,
+        secret_key: Option<SecretKey>,
     ) -> anyhow::Result<(Endpoint, Option<MemoryLookup>)> {
         let lookup = if offline { Some(MemoryLookup::new()) } else { None };
         let builder = if offline {
@@ -63,6 +67,9 @@ impl P2pNode {
             Endpoint::builder(iroh::endpoint::presets::N0)
         };
         let mut builder = builder.alpns(alpns).hooks(hook);
+        if let Some(key) = secret_key {
+            builder = builder.secret_key(key);
+        }
         if let Some(l) = &lookup {
             builder = builder.address_lookup(l.clone());
         }
@@ -82,10 +89,40 @@ impl P2pNode {
         Self::teacher_with(db_path, registry, true).await
     }
 
+    /// 老师端节点（**带持久化身份**，生产多老师场景的唯一入口）。
+    ///
+    /// `secret_key = None` 时行为与 [`P2pNode::teacher`] 一致（每次随机身份）。
+    pub async fn teacher_with_key(
+        db_path: PathBuf,
+        registry: AuthRegistry,
+        offline: bool,
+        secret_key: Option<SecretKey>,
+    ) -> anyhow::Result<Self> {
+        Self::teacher_with_key_inner(db_path, registry, offline, secret_key).await
+    }
+
+    /// 学生端节点（**带持久化身份**）。
+    pub async fn student_with_key(
+        registry: AuthRegistry,
+        offline: bool,
+        secret_key: Option<SecretKey>,
+    ) -> anyhow::Result<Self> {
+        Self::student_with_key_inner(registry, offline, secret_key).await
+    }
+
     async fn teacher_with(
         db_path: PathBuf,
         registry: AuthRegistry,
         offline: bool,
+    ) -> anyhow::Result<Self> {
+        Self::teacher_with_key_inner(db_path, registry, offline, None).await
+    }
+
+    async fn teacher_with_key_inner(
+        db_path: PathBuf,
+        registry: AuthRegistry,
+        offline: bool,
+        secret_key: Option<SecretKey>,
     ) -> anyhow::Result<Self> {
         let (endpoint, lookup) = Self::build_endpoint(
             vec![
@@ -96,6 +133,7 @@ impl P2pNode {
             ],
             WhitelistHook::teacher(registry.clone()),
             offline,
+            secret_key,
         )
         .await?;
 
@@ -150,6 +188,14 @@ impl P2pNode {
     }
 
     async fn student_with(registry: AuthRegistry, offline: bool) -> anyhow::Result<Self> {
+        Self::student_with_key_inner(registry, offline, None).await
+    }
+
+    async fn student_with_key_inner(
+        registry: AuthRegistry,
+        offline: bool,
+        secret_key: Option<SecretKey>,
+    ) -> anyhow::Result<Self> {
         let (endpoint, lookup) = Self::build_endpoint(
             vec![
                 ALPN_AUTH.to_vec(),
@@ -158,6 +204,7 @@ impl P2pNode {
             ],
             WhitelistHook::student(registry.clone()),
             offline,
+            secret_key,
         )
         .await?;
 
@@ -191,6 +238,16 @@ impl P2pNode {
     /// 本节点 EndpointId（= 身份公钥，用作课程码 / 引导地址）
     pub fn node_id(&self) -> EndpointId {
         self.endpoint.id()
+    }
+
+    /// 本节点完整地址（id + 当前直连/中继地址），用于打印「老师地址」给学生填配置。
+    pub fn endpoint_addr(&self) -> EndpointAddr {
+        self.endpoint.addr()
+    }
+
+    /// 本节点身份私钥（签发白名单 / 派生 Topic 用）
+    pub fn secret_key(&self) -> &SecretKey {
+        self.endpoint.secret_key()
     }
 
     /// 课程码：EndpointId 前 12 位大写（沿用既有 `p2p::encode_course_code` 的语义）

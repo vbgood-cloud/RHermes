@@ -1075,6 +1075,124 @@ revoke_member(section, 学号)
 **D 的补充**：`TopicRotate` 通知在旧 Topic 上「保持订阅 + 重播 3 次（~0.8s）」后才退订，
 避免"广播刚入队、会话就被 drop"导致在线成员滞留旧纪元。
 
+### 10.7 ⚠️ 多老师拓扑暴露的 5 个缺陷（v0.7.11 修复）
+
+> 需求升级为「**一位老师挂多门课、一位学生选多位老师的课**」之后，
+> 原有的单老师假设全面失效。这批缺陷同样只有端到端测试能抓到。
+
+**根因：教学班 id 不是全局唯一的。** 每位老师各自一份 `edu.db`，
+`edu_classes` 的主键都从 1 开始 —— 学生同时选修两位老师时，两位老师的
+「1 班」在学生的会话表 / 授权表里**互相覆盖**。测试
+`edu_p2p_multi_teacher_end_to_end` 用两个独立库断言了 `sec_a == sec_b` 来固化这一事实。
+
+修复：引入**全局班键** `SectionKey { teacher: EndpointId, section_id: i64 }`
+（`src/edu/model.rs`），并把所有「按班归属」的数据结构换成它：
+
+| 位置 | 改动 |
+|---|---|
+| `MemberBinding.sections` | `Vec<i64>` → `Vec<SectionKey>` |
+| `SectionEvent` 四个变体 | 一律携带 `SectionKey` |
+| `StudentRuntime` | `sessions` / `section_teacher` 改以 `SectionKey` 为键 |
+| `AuthRegistry::belongs_to` | 参数改 `&SectionKey` |
+| `app_proto` / `auth_proto` | 归属判定与绑定构造统一用 `SectionKey` |
+
+在此之上另修 4 个缺陷：
+
+| # | 缺陷 | 危害 | 修复 |
+|---|---|---|---|
+| **E** | `spawn_section_loop` 收到 `TopicRotate` 只换了**接收端** `rx`，没更新发送槽 | 轮换后广播仍发往**旧 Topic** → 在线学生再也收不到老师消息 | `*slot.write().await = new_session`，收发同步切换（回归断言：轮换前后 `session_topic` 必须不同） |
+| **F** | `apply_signed_allowlist` 用整条 `revoke(id)` 处理「本班已无此人」 | 顺带抹掉该节点在**别的老师/别的班**的全部归属 → 撤一个班把其他班也退了 | 新增 `AuthRegistry::revoke_from_section(id, &SectionKey)`，只摘指定班，整条仅在清空时删除 |
+| **G** | `revoke_and_rotate` 同样调用整条 `revoke(id)` | 同上（老师侧主动撤销路径） | 同上，改用 `revoke_from_section` |
+| **H** | `app_proto::WhoAmI` 返回该老师**全部**教学班；且跨老师班 id 相同 | 串班：学生在 A 老师处被告知自己在 A 的「1 班」，但那是 B 的班 | `WhoAmI` 只回 `secret_key.public()` 名下的班，并用 `SectionKey` 判定 |
+
+**回归防线**：3 处修复都配了「临时回退即失败」的测试（见
+`docs/edu-p2p-testing.md` §3.4），确保后续重构不会静默退化。
+
+### 10.8 配置驱动的多老师凭据与师端多班托管（v0.7.12）
+
+> 目标：**每位老师一套凭据**、**多位老师写进配置文件**、**师端一次托管多个课程/班级**。
+> 解决的是「每次都要手敲地址/学号/密码」和「一个班一个进程」的运维摩擦。
+
+**① 身份持久化（`src/edu/identity.rs`）**
+
+iroh 的 `EndpointId` 就是身份公钥；`Endpoint::builder().bind()` 默认**每次随机生成**，
+一重启就换人 —— 老师的白名单、对端的地址簿全部作废。故把私钥落盘：
+
+```text
+<home>/edu_identities/<账号>.key     # 64 位 hex（32 字节种子）
+```
+
+| 规则 | 说明 |
+|---|---|
+| 账号 = 学号 / 工号 | 「每位老师一套凭据」= 同机并存 `t001.key` / `t002.key`，互不覆盖 |
+| 已存在则复用 | 第二次启动拿到同一把钥匙 |
+| **损坏则报错，绝不重建** | 静默重建 = 换了身份，白名单里凭空多个陌生人 |
+| `--secret_key` 可显式指定 | 便于演示/复现（`load_or_import`） |
+
+注入点：`P2pNode::build_endpoint(.., secret_key)` → `Endpoint::builder(..).secret_key(k)`；
+对外暴露 `P2pNode::{endpoint_addr, secret_key}`，运行时入口
+`TeacherRuntime::start_with_key` / `StudentRuntime::connect_multi_with_key`。
+
+**② 配置 schema（`src/core/config.rs`）**
+
+```toml
+[edu]
+role = "student"          # student | teacher
+
+# ── 学生侧 ──
+[edu.student]
+student_no   = "2024001"
+display_name = "张三"
+# secret_key = ""         # 可选：固定私钥（hex）
+
+[[edu.student.teachers]]  # 一位学生可写多位老师
+teacher  = "<老师 EndpointId>"
+addr     = "192.168.1.9:5000"   # 可选：离网/局域网直连
+password = "…"                  # 省略则回退顶层 auth_token
+offline  = false
+
+# ── 老师侧 ──
+[edu.teacher]
+account      = "t001"     # 工号 → 决定身份文件名
+display_name = "张老师"
+
+[[edu.teacher.serve]]     # 启动时自动托管的教学班（可多个）
+course = "CS201"
+class  = "信工2201"
+term   = "2026-2027-1"    # 可选；给了就校验，不符即报错
+```
+
+兼容性：旧的顶层 `teacher_node_id` / `student_no` / `auth_token` **原样保留**；
+新段缺省为空，老配置文件照常可读（有单测固化）。
+
+**③ 师端托管服务（`src/edu/serve.rs`）**
+
+```bash
+rhermes-teacher serve                          # 用 [[edu.teacher.serve]]
+rhermes-teacher serve --all                    # 该老师名下全部教学班
+rhermes-teacher serve CS201 信工2201 CS202     # 显式指定（只给课程码 = 该课全部班）
+rhermes-teacher serve --offline                # 离网/局域网
+rhermes-teacher addr                           # 只打印身份与老师地址（供学生填配置）
+```
+
+启动即：解析托管清单 → 逐班建会话 → 广播首版白名单 → 进交互台
+（`list` / `addr` / `whoami` / `announce` / `refresh` / `quit`）。
+
+**④ 学生端进入课堂（`src/edu/client_app.rs`）**
+
+```bash
+rhermes-stu live [--offline]
+```
+
+核心不变量：**一个学生节点，多位老师** —— 同一把持久化钥匙先分别向每位老师走
+`/class-auth/1.0`（各自被写进各自的白名单），再一次性入班。
+分层上 `join_from_config()` 是纯逻辑（不碰 stdin），因此可被端到端测试直接调用；
+`run_live()` 只是「读配置 → 调用 → 进交互台」的薄壳。
+
+**⑤ 端到端验证**：`edu_p2p_config_driven_multi_teacher` —— 两位老师各自独立库 +
+各自持久化凭据；学生配置写两位老师；断言接入 2 个班、身份与身份文件一致、
+两班公告互不串台。
+
 
 ### 决策 1：数据模型怎么改？
 
@@ -1111,28 +1229,86 @@ revoke_member(section, 学号)
 
 ---
 
-## 11. 运行方式（目标形态）
+## 11. 运行方式（v0.7.12 实况）
+
+### 11.1 老师端：一次托管多个课程 / 班级
+
+```toml
+# config.toml（老师机）
+[edu]
+enabled = true
+role    = "teacher"
+
+[edu.teacher]
+account      = "t001"          # 工号 → 身份文件 home/edu_identities/t001.key
+display_name = "张老师"
+
+[[edu.teacher.serve]]          # 可写多个
+course = "CS201"
+class  = "信工2201"
+```
 
 ```bash
-# ── 老师端 ───────────────────────────────────────────────
-rhermes edu teacher init                     # 初始化（已有）
-rhermes edu teacher sync --term 2026-2027-1   # 从教务拉教学班与名单（新增）
-rhermes edu teacher serve                    # 启动 P2P 节点 + 仪表板（新增）
-#   → 输出课堂码 / NodeID，供学生连接
-#   → 为每个教学班订阅 Topic，等待学生入群
+rhermes-teacher class create CS201 信工2201     # 先建班（已有）
+rhermes-teacher serve                          # 🛰️ 按配置托管全部
+rhermes-teacher serve --all --offline           # 全部班 + 离网直连
+rhermes-teacher serve CS201 信工2201 CS202      # 命令行覆盖配置
+rhermes-teacher addr                            # 📇 打印老师地址给学生
 
-# ── 学生端 ───────────────────────────────────────────────
-rhermes stu login 2024001 <密码>              # 走 /class-auth/1.0，成功后写入白名单
-rhermes stu join CS201                        # 从票据订阅该教学班 Topic
-rhermes stu ask "红黑树删除为什么要分四种情况？"  # 班内广播提问
-rhermes stu discuss                           # 进入班内讨论（交互式）
-
-# ── TUI 内（斜杠命令） ──────────────────────────────────
-/class   list|publish|status                  # 已有
-/topic   list|join|leave                       # 新增：Topic 管理
-/announce <教学班> <内容>                       # 新增：教师公告广播
-/assign  <教学班> <文件路径> <截止日期>          # 新增：发作业（走 blobs）
+# 启动后交互台：
+#   edu> list                                  # 看托管的班
+#   edu> addr                                  # 把地址发给学生
+#   edu> announce CS201 信工2201 第3周调课|周日补课
+#   edu> refresh                               # 重新签名广播白名单
+#   edu> quit
 ```
+
+> **同机多位老师**：换 `[edu.teacher].account`（如 `t002`）即可并排托管，
+> 凭据互不覆盖（`home/edu_identities/t001.key` / `t002.key`）。
+
+### 11.2 学生端：一位学生选多位老师的课
+
+```toml
+# config.toml（学生机）
+[edu]
+role = "student"
+
+[edu.student]
+student_no   = "2024001"
+display_name = "张三"
+
+[[edu.student.teachers]]
+teacher  = "<老师A EndpointId>"
+addr     = "192.168.1.9:5000"   # 离网/局域网必填；生产可省（走中继发现）
+password = "…"
+
+[[edu.student.teachers]]
+teacher  = "<老师B EndpointId>"
+addr     = "192.168.1.20:5000"
+password = "…"
+```
+
+```bash
+rhermes-stu live                # 按配置同时接入两位老师
+rhermes-stu live --offline      # 离网/局域网
+
+# 进入交互台后：
+#   list                                   # 已接入的教学班
+#   ask  CS201 信工2201 红黑树删除为什么要分四种情况？
+#   chat MA201 电信2302 同学们好
+#   quit
+```
+
+> 学生的 `EndpointId` 全程只有一个（`home/edu_identities/2024001.key`），
+> 在每位老师处分别被白名单收录；老师之间互不感知。
+
+### 11.3 待落地（下一批）
+
+| 项 | 说明 |
+|---|---|
+| TUI 内驱动 | `/class` 复用 `SectionHost`，走已有 inbound 管道（`SessionRouter`） |
+| 渠道驱动 | 微信 / 企微 / Telegram 各挂一份 `SectionHost`，推送用 `spawn_build_heartbeat` 同款范式 |
+| 双入口收敛 | `edu::handle_edu` 与 `handle_slash_command` 两套实现合并 |
 
 ---
 

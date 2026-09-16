@@ -21,7 +21,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_gossip::api::{Event, GossipReceiver};
 use iroh_gossip::{Gossip, TopicId};
 use tokio::sync::{mpsc, RwLock};
@@ -91,13 +91,27 @@ impl TeacherRuntime {
     }
 
     pub async fn start_with(db_path: PathBuf, offline: bool) -> anyhow::Result<Self> {
+        Self::start_with_key(db_path, offline, None).await
+    }
+
+    /// 带**持久化身份**启动（生产路径）。
+    ///
+    /// `secret_key = None` 等价于 [`TeacherRuntime::start_with`]（每次新身份）——
+    /// 生产务必传入 [`crate::edu::identity`] 载入的钥匙，否则学生白名单会全部失效。
+    pub async fn start_with_key(
+        db_path: PathBuf,
+        offline: bool,
+        secret_key: Option<SecretKey>,
+    ) -> anyhow::Result<Self> {
         let registry = AuthRegistry::new();
 
-        let node = if offline {
-            P2pNode::teacher_offline(db_path.clone(), registry.clone()).await?
-        } else {
-            P2pNode::teacher(db_path.clone(), registry.clone()).await?
-        };
+        let node = P2pNode::teacher_with_key(
+            db_path.clone(),
+            registry.clone(),
+            offline,
+            secret_key,
+        )
+        .await?;
 
         // 预热白名单：从 DB 恢复「已授权的 EndpointId → 成员绑定」
         //
@@ -373,13 +387,21 @@ impl StudentRuntime {
         enrollments: Vec<Enrollment>,
         offline: bool,
     ) -> anyhow::Result<Self> {
+        Self::connect_multi_with_key(enrollments, offline, None).await
+    }
+
+    /// 多老师接入 + **持久化身份**（生产路径）。
+    ///
+    /// 学生的 `EndpointId` 必须稳定：它在每位老师处都被白名单收录，
+    /// 换钥匙 = 在老师眼里变成陌生人。
+    pub async fn connect_multi_with_key(
+        enrollments: Vec<Enrollment>,
+        offline: bool,
+        secret_key: Option<SecretKey>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(!enrollments.is_empty(), "没有可用教学班票据");
         let registry = AuthRegistry::new();
-        let node = if offline {
-            P2pNode::student_offline(registry.clone()).await?
-        } else {
-            P2pNode::student(registry.clone()).await?
-        };
+        let node = P2pNode::student_with_key(registry.clone(), offline, secret_key).await?;
         Self::from_node_multi(node, enrollments).await
     }
 

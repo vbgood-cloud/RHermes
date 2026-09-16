@@ -25,11 +25,13 @@ use std::time::Duration;
 
 use tokio::time::{timeout, Instant};
 
+use rhermes::core::{Config, EduServeSection, EduStudentConfig, EduTeacherConfig, EduTeacherPeer};
 use rhermes::edu::authz::AuthRegistry;
 use rhermes::edu::gossip::SectionMsg;
 use rhermes::edu::net::{client, P2pNode};
 use rhermes::edu::runtime::{Enrollment, SectionEvent, SectionKey, StudentRuntime, TeacherRuntime};
 use rhermes::edu::store::EduStore;
+use rhermes::edu::{client_app, identity, serve};
 
 /// 初始化日志（`RUST_LOG=info` 可见入班 / 白名单 / 拒绝等关键事件）
 static INIT_TRACING: std::sync::Once = std::sync::Once::new();
@@ -594,6 +596,208 @@ async fn edu_p2p_multi_teacher_end_to_end() {
     }
 
     stu.shutdown().await.ok();
+    teacher_a.shutdown().await.ok();
+    teacher_b.shutdown().await.ok();
+}
+
+// ---------------------------------------------------------------------------
+// 配置驱动的多老师链路（「每位老师一套凭据」+「多位老师写在配置文件」）
+// ---------------------------------------------------------------------------
+
+/// 老师地址里第一条 IP 直连地址（离网测试用）
+fn first_ip(addrs: &iroh::EndpointAddr) -> std::net::SocketAddr {
+    *addrs
+        .ip_addrs()
+        .next()
+        .expect("离网节点必须至少有 loopback 直连地址")
+}
+
+fn write_config(dir: &std::path::Path, cfg: &Config) -> std::path::PathBuf {
+    std::fs::create_dir_all(dir).expect("建配置目录");
+    let path = dir.join("config.toml");
+    cfg.save(&path).expect("写配置");
+    path
+}
+
+/// 端到端验证「一位学生选多位老师的课」在**真实配置文件**下成立：
+///
+/// 1. 每位老师一套**持久化凭据**（`home/edu_identities/<工号>.key`）；
+/// 2. 师端按 `[[edu.teacher.serve]]` 解析出要托管的班；
+/// 3. 学生按 `[[edu.student.teachers]]` 同时接入两位老师，**同一把钥匙**；
+/// 4. 两班公告互不串台。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn edu_p2p_config_driven_multi_teacher() {
+    init_tracing();
+
+    let tmp_a = tempfile::tempdir().expect("临时目录A");
+    let tmp_b = tempfile::tempdir().expect("临时目录B");
+    let tmp_stu = tempfile::tempdir().expect("临时目录学生");
+
+    let home_a = tmp_a.path().join("home");
+    let home_b = tmp_b.path().join("home");
+    let home_stu = tmp_stu.path().join("home");
+    for h in [&home_a, &home_b, &home_stu] {
+        std::fs::create_dir_all(h).expect("建 home");
+    }
+
+    // ===== 1. 两位老师各自的教务库（各自独立 → 班 id 必然重复）=====
+    let db_a = home_a.join("edu.db");
+    let db_b = home_b.join("edu.db");
+    let sec_a = setup_teacher_db(&db_a, "CS101", "Python 编程基础", "计算机2301");
+    let sec_b = setup_teacher_db(&db_b, "MA201", "高等数学", "电信2302");
+    assert_eq!(sec_a, sec_b, "独立建库的老师，班 id 相同");
+
+    // ===== 2. 每位老师一套持久化凭据 =====
+    let key_a = identity::load_or_create(&identity::identity_dir(&home_a), "t001").expect("A 身份");
+    let key_b = identity::load_or_create(&identity::identity_dir(&home_b), "t002").expect("B 身份");
+    assert_ne!(key_a.to_bytes(), key_b.to_bytes(), "两位老师必须不同身份");
+    // 同一工号重复载入必须稳定（第二次启动仍是同一个人）
+    let again = identity::load_or_create(&identity::identity_dir(&home_a), "t001").unwrap();
+    assert_eq!(again.to_bytes(), key_a.to_bytes(), "身份必须稳定");
+
+    let mut teacher_a = TeacherRuntime::start_with_key(db_a.clone(), true, Some(key_a.clone()))
+        .await
+        .expect("老师A 启动");
+    let mut teacher_b = TeacherRuntime::start_with_key(db_b.clone(), true, Some(key_b.clone()))
+        .await
+        .expect("老师B 启动");
+    assert_eq!(
+        teacher_a.node.node_id(),
+        key_a.public(),
+        "注入的私钥决定 EndpointId（每位老师一套凭据的落点）"
+    );
+
+    // ===== 3. 师端：按配置解析出要托管的班 =====
+    let store_a = EduStore::open(&db_a).unwrap();
+    let store_b = EduStore::open(&db_b).unwrap();
+    let picked_a = serve::pick_teacher(&store_a, "张老师").expect("认出老师A");
+    let picked_b = serve::pick_teacher(&store_b, "张老师").expect("认出老师B");
+    let wanted_a = vec![EduServeSection {
+        course: "CS101".into(),
+        class: "计算机2301".into(),
+        term: String::new(),
+    }];
+    let want_b = vec![EduServeSection {
+        course: "MA201".into(),
+        class: "电信2302".into(),
+        term: String::new(),
+    }];
+    let sched_a = serve::resolve_sections(&store_a, picked_a.id, &wanted_a).expect("解析 A 托管项");
+    let sched_b = serve::resolve_sections(&store_b, picked_b.id, &want_b).expect("解析 B 托管项");
+    assert_eq!(sched_a.len(), 1);
+    assert_eq!(sched_a[0].section_id, sec_a);
+    assert_eq!(sched_a[0].course_code, "CS101");
+    assert_eq!(sched_b.len(), 1);
+    assert_eq!(sched_b[0].section_id, sec_b);
+
+    // 师端入班（建会话 + 首版白名单）
+    teacher_a.publish_allowlist(sec_a).await.expect("A 白名单");
+    teacher_b.publish_allowlist(sec_b).await.expect("B 白名单");
+
+    let addr_a = teacher_a.node.endpoint_addr();
+    let addr_b = teacher_b.node.endpoint_addr();
+    let ip_a = first_ip(&addr_a);
+    let ip_b = first_ip(&addr_b);
+
+    // ===== 4. 学生：两位老师写进配置文件 =====
+    let cfg_stu = Config {
+        edu: rhermes::core::EduConfig {
+            enabled: true,
+            role: "student".into(),
+            student: EduStudentConfig {
+                student_no: "2024001".into(),
+                display_name: "张三".into(),
+                secret_key: String::new(),
+                teachers: vec![
+                    EduTeacherPeer {
+                        teacher: key_a.public().to_string(),
+                        addr: ip_a.to_string(),
+                        password: "pw".into(),
+                        offline: true,
+                        ..Default::default()
+                    },
+                    EduTeacherPeer {
+                        teacher: key_b.public().to_string(),
+                        addr: ip_b.to_string(),
+                        password: "pw".into(),
+                        offline: true,
+                        ..Default::default()
+                    },
+                ],
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let stu_config = write_config(tmp_stu.path(), &cfg_stu);
+
+    // 从磁盘重新读回 —— 验证 TOML 往返不丢字段
+    let reloaded = Config::load(&stu_config).expect("读回学生配置");
+    assert_eq!(reloaded.edu.student.teachers.len(), 2, "两位老师必须都留在配置里");
+
+    // ===== 5. 按配置一次接入两位老师 =====
+    let sess = client_app::join_from_config(&reloaded, &home_stu, true, false)
+        .await
+        .expect("按配置接入应成功");
+
+    let key_a_sec = SectionKey::new(key_a.public(), sec_a);
+    let key_b_sec = SectionKey::new(key_b.public(), sec_b);
+
+    assert_eq!(sess.joined.len(), 2, "应同时接入两个班");
+    assert!(sess.failures.is_empty(), "不应有老师接入失败：{:?}", sess.failures);
+    assert_eq!(sess.rt.sections().len(), 2, "运行时应有 2 个班会话");
+    assert!(
+        sess.joined.contains(&client_app::Joined {
+            key: key_a_sec.clone(),
+            course_code: "CS101".into(),
+            course_name: "Python 编程基础".into(),
+            class_name: "计算机2301".into(),
+        }),
+        "A 班标签应由票据直接得出"
+    );
+    assert!(sess.joined.iter().any(|j| j.key == key_b_sec));
+
+    // 学生身份持久化：节点身份 == 身份文件里的公钥
+    let stu_key =
+        identity::load_or_create(&identity::identity_dir(&home_stu), "2024001").expect("学生身份");
+    assert_eq!(
+        sess.rt.node.endpoint.id(),
+        stu_key.public(),
+        "客户端必须复用持久化身份（否则老师白名单里那把钥匙对不上）"
+    );
+
+    // ===== 6. 两班公告互不串台 =====
+    let mut sess = sess;
+    teacher_a
+        .announce(sec_a, "A班公告", "只属于 A 班")
+        .await
+        .expect("A 广播");
+    teacher_b
+        .announce(sec_b, "B班公告", "只属于 B 班")
+        .await
+        .expect("B 广播");
+
+    let got = collect_until(&mut sess.rt, Duration::from_secs(20), |ev, acc| {
+        if let SectionEvent::Message {
+            key,
+            msg: SectionMsg::Announce { title, .. },
+        } = ev
+        {
+            acc.push((key.clone(), title.clone()));
+        }
+        acc.len() >= 2
+    })
+    .await;
+    assert!(
+        got.contains(&(key_a_sec.clone(), "A班公告".to_string())),
+        "A 班公告应带 A 的班键，实测 = {got:?}"
+    );
+    assert!(
+        got.contains(&(key_b_sec.clone(), "B班公告".to_string())),
+        "B 班公告应带 B 的班键，实测 = {got:?}"
+    );
+
+    sess.rt.shutdown().await.ok();
     teacher_a.shutdown().await.ok();
     teacher_b.shutdown().await.ok();
 }

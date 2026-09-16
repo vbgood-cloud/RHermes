@@ -1,7 +1,8 @@
 # 教育版 P2P 通信 —— 完整测试方法与路径
 
-> 适用版本：**v0.7.10+**（含 P1–P4 去中心化教学班通信）
-> 对应设计：`docs/edu-p2p-design.md`（§4 双 ALPN / §5 Topic 隔离 / §5.4 R3 撤销）
+> 适用版本：**v0.7.12+**（含 P1–P4 去中心化教学班通信 + 多老师拓扑 + 配置驱动）
+> 对应设计：`docs/edu-p2p-design.md`（§4 双 ALPN / §5 Topic 隔离 / §5.4 R3 撤销 /
+> §10.7 多老师缺陷 / §10.8 身份持久化与配置驱动）
 
 ---
 
@@ -15,11 +16,18 @@ RH_SKIP_WINRESOURCE=1 cargo test --test edu_p2p_e2e -- --nocapture
 **预期末行**：
 
 ```
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-这一条命令就把「认证 → 入班 → 群发 → 越权拦截 → 白名单 → 撤销轮换」五条链路
-全部跑完了，**不依赖外网、不需要中继**（两个节点绑在 loopback 上直连）。
+3 个端到端用例各自覆盖一条主线：
+
+| 用例 | 覆盖 |
+|---|---|
+| `edu_p2p_revocation_end_to_end` | 认证 → 入班 → 群发 → 越权拦截 → 白名单 → 撤销轮换 |
+| `edu_p2p_multi_teacher_end_to_end` | 一位学生同时接入**两位老师**（同一把钥匙，两班互不串台） |
+| `edu_p2p_config_driven_multi_teacher` | **配置文件**驱动：老师持久化凭据 + 学生多老师清单 |
+
+全部**不依赖外网、不需要中继**（节点绑在 loopback 上直连）。
 
 ---
 
@@ -47,15 +55,25 @@ export RUST_LOG=rhermes=info
 
 | 层 | 范围 | 命令 | 数量 | 特征 |
 |---|---|---|---|---|
-| **L1 单元** | 纯逻辑：Topic 派生 / 签名验签 / 纪元单调 / 撤销 SQL | `RH_SKIP_WINRESOURCE=1 cargo test --lib edu::` | 95+ | 毫秒级，无网络 |
-| **L2 集成（本页主角）** | 真实 iroh 端点 + gossip + 双 ALPN，**离网** | `cargo test --test edu_p2p_e2e -- --nocapture` | 1（含 6 组断言） | ~11 秒，无外网 |
+| **L1 单元** | 纯逻辑：Topic 派生 / 签名验签 / 纪元单调 / 撤销 SQL / 身份持久化 / 配置解析 / 托管项解析 | `RH_SKIP_WINRESOURCE=1 cargo test --lib edu::` | 123 | 毫秒级，无网络 |
+| **L2 集成（本页主角）** | 真实 iroh 端点 + gossip + 双 ALPN，**离网** | `cargo test --test edu_p2p_e2e -- --nocapture` | 3（含 20+ 组断言） | ~21 秒，无外网 |
 | **L3 手工** | 真机多进程 / 同机不同目录 | 见 §5 | — | 验收用 |
+
+其中 edu 单元测试按模块分布（2026-09-16 实测）：
+
+| 模块 | 数量 | 模块 | 数量 |
+|---|---|---|---|
+| `store` | 20 | `allowlist` | 10 |
+| `reflection` | 10 | `course` | 9 |
+| `identity` / `serve` / `net` / `p2p` | 8 ×4 | `registrar` | 7 |
+| `auth` / `client_app` / `teacher` | 5 ×3 | `authz` | 4 |
+| `blobs` / `gossip` / `model` | 3 ×3 | `runtime` | 2 |
 
 **全量回归**：
 
 ```bash
 RH_SKIP_WINRESOURCE=1 cargo test
-# 期望：350 单元 + 1 edu_p2p_e2e + 2 kb_e2e = 353 passed / 0 failed
+# 期望：377 单元 + 3 edu_p2p_e2e + 2 kb_e2e = 382 passed / 0 failed
 ```
 
 ---
@@ -103,6 +121,20 @@ let outcome = teacher.revoke_member(section_id, "2024001", "端到端测试撤�
 | Endpoint preset | `presets::N0`（n0 公有 Relay + DNS 发现） | `presets::Minimal`（无中继无发现） |
 | 地址解析 | DNS / Relay 自动发现 | `MemoryLookup` 手工地址簿（`P2pNode::add_peer_addr`） |
 | 入口 | `TeacherRuntime::start` / `StudentRuntime::connect` | `start_offline` / `connect_offline` / `from_node` |
+
+### 3.4 多老师回归：三个「临时回退必失败」的防线
+
+多老师场景的缺陷**全都不会在单老师测试里出现**，所以每条修复都配了负控验证
+（把修复临时改回旧写法 → 测试必须 FAILED），确认测试真的在守这件事，而不是恰好通过。
+
+| 用例 / 断言 | 对应的修复 | 临时回退后实测 |
+|---|---|---|
+| `edu_p2p_multi_teacher_end_to_end`：`rt.sections().len() == 2` | `SectionKey` 全局班键（§10.7） | 回退成只用第一位老师的 id 作键 → **FAILED**：`应同时接入两个班: left 1, right 2` |
+| `edu_p2p_revocation_end_to_end`：轮换前后 `session_topic` 必须不同 | 缺陷 E（轮换丢发送槽） | 回退 `let _ = new_session;` → **FAILED**（两个 TopicId 相同） |
+| `test_reapply_section_keeps_other_sections`：其他班归属不得被抹掉 | 缺陷 F（撤销误伤其他班） | 回退 `revoke_from_section` → `revoke` → **FAILED**（panic「其他班归属不得被抹掉（缺陷 F）」） |
+
+> 负控验证的做法：改回旧代码 → 跑单测 → 确认 FAILED → 改回修复 → 复跑通过。
+> 这一步能挡住「写了个恒真断言」这类假防线。
 
 ---
 
@@ -208,6 +240,107 @@ cargo run -- edu teacher student add 2024001 张三 pw1 CS101 计算机2301
 # 注意：撤销时已轮换 Topic，该生必须**重新认证**才能拿到新票据
 ```
 
+### 5.6 配置驱动的多老师（v0.7.12）——两终端 5 分钟演示
+
+⚠️ **没有 `--config` 参数**：`PathManager::detect()` 以**可执行文件所在目录**为锚点 ——
+`config.toml` 与它同级，数据根 `home/`（含 `edu.db`、`edu_identities/`）也在它下面。
+所以「模拟多台机器」的做法是**建多个便携目录**，各自放一份可执行文件 + config.toml。
+
+```bash
+# 0. 编译一次，准备三个便携目录
+RH_SKIP_WINRESOURCE=1 cargo build
+mkdir -p /tmp/demo-a /tmp/demo-b /tmp/demo-stu
+for d in /tmp/demo-a /tmp/demo-b /tmp/demo-stu; do
+  cp target/debug/rhermes.exe target/debug/rhermes-teacher.exe \
+     target/debug/rhermes-stu.exe "$d/"
+done
+```
+
+> 图省事也可以直接 `cargo run`：此时 exe_dir = `target/debug/`，
+> 配置就落在 `target/debug/config.toml`、数据在 `target/debug/home/`。
+
+```bash
+# ── A 机：老师 1 ────────────────────────────────
+cd /tmp/demo-a
+cat > config.toml <<'EOF'
+[edu]
+enabled = true
+role = "teacher"
+
+[edu.teacher]
+account = "t001"
+display_name = "张老师"
+
+[[edu.teacher.serve]]
+course = "CS101"
+class  = "计算机2301"
+EOF
+
+# 建库（写 /tmp/demo-a/home/edu.db）+ 建课程 + 建班
+./rhermes-teacher.exe init
+./rhermes-teacher.exe course create CS101 "Python 编程基础"
+./rhermes-teacher.exe class  create CS101 计算机2301
+
+# ① 打印老师地址（学生要抄进配置）
+./rhermes-teacher.exe addr
+#   👩‍🏫 张老师
+#      身份文件 : /tmp/demo-a/home/edu_identities/t001.key
+#      指纹     : <12 位 hex>
+#      老师地址 : <64 位 hex>        ← 记作 TEACHER_A
+
+# ② 启动托管服务（保持在线），记下横幅里的 ip:127.0.0.1:PORT
+./rhermes-teacher.exe serve --offline
+#   👩‍🏫 教学班托管服务已启动
+#      身份     : t001 · <指纹>
+#      老师地址 : <TEACHER_A>
+#               ip:127.0.0.1:PORT     ← 记作 PORT_A
+#      ✅ [1] CS101 / 计算机2301 · 学生 1 人 · epoch 0
+#   edu> _
+```
+
+B 机同理（`account = "t002"`、换成另一个课程码），拿到 `TEACHER_B` 与 `PORT_B`。
+
+```bash
+# ── 学生机 ──────────────────────────────────────
+cd /tmp/demo-stu
+cat > config.toml <<'EOF'
+[edu]
+role = "student"
+
+[edu.student]
+student_no   = "2024001"
+display_name = "张三"
+
+[[edu.student.teachers]]
+teacher  = "<TEACHER_A>"
+addr     = "127.0.0.1:<PORT_A>"
+password = "pw"
+
+[[edu.student.teachers]]
+teacher  = "<TEACHER_B>"
+addr     = "127.0.0.1:<PORT_B>"
+password = "pw"
+EOF
+
+./rhermes-stu.exe live --offline
+#   🎒 学生端进入课堂
+#      身份 : /tmp/demo-stu/home/edu_identities/2024001.key · <指纹>
+#      ✅ 已认证 <TEACHER_A 前 8 位> · 拿到 1 个教学班票据
+#      ✅ 已认证 <TEACHER_B 前 8 位> · 拿到 1 个教学班票据
+#      📚 已接入 2 个教学班
+#   live> _
+```
+
+**核对要点**
+
+| 要看什么 | 期望 |
+|---|---|
+| 两位老师指纹 | **互不相同**（每位老师一套凭据） |
+| 学生身份文件 | 只有一份 `2024001.key`，两位老师看到**同一个 EndpointId** |
+| 老师侧日志 | 各自出现 `认证成功: 2024001 (张三) … 教学班 1 个` |
+| `edu> announce CS101 计算机2301 调课\|周日补课` | 学生端只出现 `📨 [CS101 / 计算机2301] …`，**不会串到 B 班** |
+| 重启老师（不带 `--secret_key`） | 指纹不变，学生无需重新认证 |
+
 ---
 
 ## 6. 发版前检查清单
@@ -216,7 +349,7 @@ cargo run -- edu teacher student add 2024001 张三 pw1 CS101 计算机2301
 # ① 编译（快）
 RH_SKIP_WINRESOURCE=1 cargo check --all-targets
 
-# ② 全量测试（353 通过）
+# ② 全量测试（382 通过：377 单元 + 3 e2e + 2 kb）
 RH_SKIP_WINRESOURCE=1 cargo test
 
 # ③ P2P 端到端单独复跑（看日志）
@@ -235,14 +368,15 @@ grep '^version' Cargo.toml
 
 | 项 | 现状 | 影响 |
 |---|---|---|
-| **学生侧长驻 CLI** | 未实现（`StudentRuntime` 只有库入口，没有 `edu join-live` / `edu recv`） | 无法开多终端手工演示"老师边讲、学生边收"；需靠 L2 测试覆盖 |
 | **blobs 作业文件分发** | 代码在 `blobs.rs`，L2 未断言（只测了 gossip 元数据通道） | 文件链路需补一条 e2e 断言 |
 | **跨机真实网络** | L2 全在 loopback；`presets::N0` 的 Relay/发现路径未在 CI 验证 | 校园网/公网场景建议 §5 真机各跑一次 |
-| **`edu announce` 的常驻形态** | 目前是短命进程（广播完就退） | 离线学生收不到；需长驻老师节点才能覆盖 |
+| **TUI / 渠道驱动** | 学生端目前只有 REPL（`student live`）；TUI 斜杠命令与微信/企微/TG 尚未接 | 三端需收敛到同一个 `SectionHost`（见设计 §11.3） |
+| **`edu announce` 的短命进程** | 仍为「广播完就退」 | 离线学生收不到；长驻场景请用 `teacher serve` 的 `announce` |
+| **`edu_section_members` 无 `teacher_no`** | 老师身份以 `name` 对齐（历史表只有 `name` 列） | 重名老师会歧义；后续迁移需加 `teacher_no` |
 
 ---
 
-## 附：本次联调修复的 4 个真实缺陷
+## 附 A：v0.7.10 联调修复的 4 个真实缺陷
 
 | 编号 | 缺陷 | 危害 |
 |---|---|---|
@@ -253,3 +387,22 @@ grep '^version' Cargo.toml
 
 A/B 由 L1 单测**测不出来**（单测只覆盖纯逻辑，不触发联网重入），
 C/D 只有在**真实双端点**下才暴露 —— 这正是 L2 端到端测试的价值所在。
+
+## 附 B：v0.7.11 多老师拓扑修复的 5 个缺陷
+
+| 编号 | 缺陷 | 危害 |
+|---|---|---|
+| **班键** | 教材班 `section_id` 被当作全局唯一 | 每位老师各自一份 `edu.db`，班 id 都从 1 开始 → 学生选两位老师时两个「1 班」互相覆盖 |
+| **E** | `TopicRotate` 只换了接收端、没换发送槽 | 轮换后老师的广播仍发往旧 Topic，在线学生再也收不到 |
+| **F** | `apply_signed_allowlist` 用整条 `revoke(id)` | 撤一个班，顺带把该生在别的老师的班也退了 |
+| **G** | `revoke_and_rotate` 同样整条 `revoke(id)` | 同上（老师主动撤销路径） |
+| **H** | `WhoAmI` 返回该老师全部班 + 跨老师班 id 相同 | 串班：把别人的班当成自己的报给客户端 |
+
+修复统一收敛到 **`SectionKey = (老师 EndpointId, 该库内班 id)`**（见设计 §10.7）。
+
+## 附 C：v0.7.12 配置驱动的两个设计要点
+
+| 要点 | 说明 |
+|---|---|
+| 身份必须持久化 | `Endpoint::builder().bind()` 默认每次随机生成身份；不落盘则老师的白名单/对端地址簿**每次重启全废**（`src/edu/identity.rs`） |
+| 文件名清洗不能塌缩 | 非法字符若一律替换成 `_`，`张三`/`李四` 都会变成 `__` → **两位老师共用一套凭据**；发生替换时须追加内容指纹 |
