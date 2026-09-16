@@ -23,11 +23,15 @@
 
 use std::time::Duration;
 
+use tokio::sync::broadcast;
 use tokio::time::{timeout, Instant};
 
-use rhermes::core::{Config, EduServeSection, EduStudentConfig, EduTeacherConfig, EduTeacherPeer};
+use rhermes::core::{
+    Config, EduConfig, EduServeSection, EduStudentConfig, EduTeacherConfig, EduTeacherPeer,
+};
 use rhermes::edu::authz::AuthRegistry;
 use rhermes::edu::gossip::SectionMsg;
+use rhermes::edu::host::{HostEvent, NoticeKind, SectionHost};
 use rhermes::edu::net::{client, P2pNode};
 use rhermes::edu::runtime::{Enrollment, SectionEvent, SectionKey, StudentRuntime, TeacherRuntime};
 use rhermes::edu::store::EduStore;
@@ -800,4 +804,231 @@ async fn edu_p2p_config_driven_multi_teacher() {
     sess.rt.shutdown().await.ok();
     teacher_a.shutdown().await.ok();
     teacher_b.shutdown().await.ok();
+}
+
+// ---------------------------------------------------------------------------
+// SectionHost：驱动无关的会话宿主（学生端 REPL / TUI / 渠道三驱动的共同底座）
+// ---------------------------------------------------------------------------
+
+/// 在宿主通知流里等第一个匹配的事件（带总超时）。
+///
+/// 与 [`wait_for`] 的区别：这条走 `SectionHost` 的 broadcast 通道，
+/// 而不是直接消费 `StudentRuntime` 的事件流 —— 正是三驱动将来走的那条路。
+async fn wait_host_event<T>(
+    rx: &mut broadcast::Receiver<HostEvent>,
+    secs: u64,
+    mut pred: impl FnMut(&HostEvent) -> Option<T>,
+) -> Option<T> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match timeout(remaining, rx.recv()).await {
+            Ok(Ok(ev)) => {
+                if let Some(v) = pred(&ev) {
+                    return Some(v);
+                }
+            }
+            // 订阅者跟不上（缓冲被覆盖）→ 继续读，不算失败
+            Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+            // 通道关闭 / 超时
+            _ => return None,
+        }
+    }
+}
+
+/// 等一条含 `needle` 的公告通知，并断言它被识别为 `NoticeKind::Announce`
+async fn expect_announce(rx: &mut broadcast::Receiver<HostEvent>, who: &str, needle: &str) {
+    let got = wait_host_event(rx, 25, |ev| match ev {
+        HostEvent::Notice { kind, text, .. } if text.contains(needle) => Some(*kind),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        got,
+        Some(NoticeKind::Announce),
+        "宿主 {who} 应收到含 '{needle}' 的公告通知"
+    );
+}
+
+/// 一位学生的配置（同一位老师、指定学号/姓名/密码）
+fn student_cfg(
+    teacher_id: &str,
+    ip: &str,
+    student_no: &str,
+    display_name: &str,
+    password: &str,
+) -> Config {
+    Config {
+        edu: EduConfig {
+            enabled: true,
+            role: "student".into(),
+            student: EduStudentConfig {
+                student_no: student_no.into(),
+                display_name: display_name.into(),
+                secret_key: String::new(),
+                teachers: vec![EduTeacherPeer {
+                    teacher: teacher_id.to_string(),
+                    addr: ip.to_string(),
+                    password: password.to_string(),
+                    offline: true,
+                    ..Default::default()
+                }],
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// 🔴 装配层验收：`SectionHost` 必须**真的能驱动会话**。
+///
+/// 单元测试只覆盖了 `translate` / `render_event` 两个纯函数；而「宿主能不能用」
+/// 属于**装配层** —— v0.7.13 的缺陷 I/J/K 全部躲在这一层，`cargo test` 全绿也没抓到。
+/// 所以这里必须有真端到端。
+///
+/// 覆盖：
+/// 1. 老师公告 → 两位学生的宿主**都**收到 `Notice{Announce}`；
+/// 2. `host.ask()` 的命令通道**真的把提问送进了 gossip**（另一位学生收得到 ——
+///    只断言本地返回 `Ok` 说明不了问题，那可能只是写进了本地队列）；
+/// 3. 同一宿主可挂多个订阅者（broadcast 多播），旧驱动退出不带走事件；
+/// 4. `shutdown()` 后订阅者收到 `Stopped`，且**不影响**另一位学生的宿主。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn edu_p2p_section_host_drives_notices_and_send() {
+    init_tracing();
+
+    let tmp_t = tempfile::tempdir().expect("临时目录老师");
+    let tmp_s1 = tempfile::tempdir().expect("临时目录学生1");
+    let tmp_s2 = tempfile::tempdir().expect("临时目录学生2");
+
+    let home_t = tmp_t.path().join("home");
+    let home_s1 = tmp_s1.path().join("home");
+    let home_s2 = tmp_s2.path().join("home");
+    for h in [&home_t, &home_s1, &home_s2] {
+        std::fs::create_dir_all(h).expect("建 home");
+    }
+
+    // ===== 老师：1 课 / 1 班 / 2 学生 =====
+    let db_t = home_t.join("edu.db");
+    let sec = setup_teacher_db(&db_t, "CS101", "Python 编程基础", "计算机2301");
+    {
+        let store = EduStore::open(&db_t).unwrap();
+        store
+            .create_student("2024002", "李四", "pw", Some(sec))
+            .expect("建第二个学生");
+    }
+
+    let key_t = identity::load_or_create(&identity::identity_dir(&home_t), "t001").expect("老师身份");
+    let mut teacher = TeacherRuntime::start_with_key(db_t.clone(), true, Some(key_t.clone()))
+        .await
+        .expect("老师启动");
+    teacher.publish_allowlist(sec).await.expect("白名单");
+    let addr_t = teacher.node.endpoint_addr();
+    let ip_t = first_ip(&addr_t);
+
+    // ===== 两位学生各自按配置接入，再交给宿主管 =====
+    let t_id = key_t.public().to_string();
+    let ip_s = ip_t.to_string();
+    let p1 = write_config(
+        tmp_s1.path(),
+        &student_cfg(&t_id, &ip_s, "2024001", "张三", "pw"),
+    );
+    let p2 = write_config(
+        tmp_s2.path(),
+        &student_cfg(&t_id, &ip_s, "2024002", "李四", "pw"),
+    );
+
+    let s1 = client_app::join_from_config(&Config::load(&p1).unwrap(), &home_s1, true, false)
+        .await
+        .expect("学生1 接入");
+    let s2 = client_app::join_from_config(&Config::load(&p2).unwrap(), &home_s2, true, false)
+        .await
+        .expect("学生2 接入");
+    assert_eq!(s1.joined.len(), 1, "学生1 应接入 1 个班");
+    assert_eq!(s2.joined.len(), 1, "学生2 应接入 1 个班");
+
+    let host_a = SectionHost::start(s1).await.expect("宿主 A 启动");
+    let host_b = SectionHost::start(s2).await.expect("宿主 B 启动");
+
+    // 快照是**同步读**的 —— 驱动渲染列表不该依赖 async
+    let snap = host_a.snapshot();
+    assert_eq!(snap.student_no, "2024001");
+    assert_eq!(snap.display_name, "张三");
+    assert_eq!(snap.joined.len(), 1);
+    assert_eq!(
+        snap.labels.get(&snap.joined[0].key).map(String::as_str),
+        Some("CS101 / 计算机2301"),
+        "标签应由票据直接得出"
+    );
+    assert!(snap.failures.is_empty(), "不应有失败：{:?}", snap.failures);
+
+    let mut rx_a = host_a.subscribe();
+    let mut rx_a2 = host_a.subscribe(); // 第二个订阅者：证明 broadcast 真的多播
+    let mut rx_b = host_b.subscribe();
+
+    // ① 老师公告 → 两个宿主都收到
+    teacher
+        .announce(sec, "调课", "周日补课")
+        .await
+        .expect("老师广播");
+    expect_announce(&mut rx_a, "A", "周日补课").await;
+    expect_announce(&mut rx_b, "B", "周日补课").await;
+
+    // ② host.ask() 真的把话送进 gossip —— 由**另一位学生**收到来证明
+    let key_a = host_a.snapshot().joined[0].key.clone();
+    host_a
+        .ask(&key_a, "红黑树删除为什么要分四种情况？")
+        .await
+        .expect("ask 应成功");
+    let got_q = wait_host_event(&mut rx_b, 25, |ev| match ev {
+        HostEvent::Notice { kind, text, .. } if text.contains("红黑树") => Some(*kind),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        got_q,
+        Some(NoticeKind::Question),
+        "B 应收到 A 通过 host.ask 发出的提问（否则只是写进了本地队列）"
+    );
+
+    // ③ 同一宿主的第二个订阅者也拿得到那条公告（多播，不是独占）
+    let mut saw_multi = false;
+    while let Ok(ev) = rx_a2.try_recv() {
+        if let HostEvent::Notice { text, .. } = &ev {
+            if text.contains("周日补课") {
+                saw_multi = true;
+                break;
+            }
+        }
+    }
+    assert!(saw_multi, "同一宿主的第二个订阅者也应拿到公告（broadcast 多播）");
+
+    // ④ 收摊：A 关掉 → 它的两个订阅者都收到 Stopped
+    host_a.shutdown().await.expect("宿主 A 应干净退出");
+    assert!(
+        matches!(rx_a.recv().await, Ok(HostEvent::Stopped)),
+        "订阅者应收到 Stopped"
+    );
+    assert!(
+        matches!(rx_a2.recv().await, Ok(HostEvent::Stopped)),
+        "第二个订阅者也应收到 Stopped"
+    );
+
+    // ⑤ A 收摊不影响 B：老师再广播，B 仍收得到
+    teacher
+        .announce(sec, "第二次公告", "B 还应该在")
+        .await
+        .expect("老师广播");
+    expect_announce(&mut rx_b, "B（A 收摊后）", "B 还应该在").await;
+
+    // ⑥ B 收摊也一样干净
+    host_b.shutdown().await.expect("宿主 B 应干净退出");
+    assert!(
+        matches!(rx_b.recv().await, Ok(HostEvent::Stopped)),
+        "B 的订阅者也应收到 Stopped"
+    );
+
+    teacher.shutdown().await.ok();
 }

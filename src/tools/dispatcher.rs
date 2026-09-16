@@ -240,17 +240,39 @@ mod tests {
         let reg = builtin_registry(&Config::default());
         let dispatcher = ToolDispatcher::new(reg);
 
+        // ⚠️ 必须给**不同的 call_id**：`make_call` 用 `format!("call_{name}")`，
+        //    两次 read_file 会撞成同一个 id，就再也无法把结果对回调用。
+        //    真实场景里 id 由模型给出、天然唯一，这里要照着真实契约来。
         let calls = vec![
-            make_call("read_file", json!({"path": f1.to_str().unwrap()})),
-            make_call("read_file", json!({"path": f2.to_str().unwrap()})),
+            ToolCall {
+                id: "c1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": f1.to_str().unwrap()}),
+            },
+            ToolCall {
+                id: "c2".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": f2.to_str().unwrap()}),
+            },
         ];
 
         let results = dispatcher.dispatch(calls).await;
         assert_eq!(results.len(), 2);
-        assert!(results[0].success);
-        assert!(results[1].success);
-        assert!(results[0].output.contains("hello"));
-        assert!(results[1].output.contains("world"));
+        assert!(results.iter().all(|r| r.success));
+
+        // 按 `call_id` 对齐，**不能按下标** —— 并行批次用 `JoinSet::join_next`
+        // 收集，完成顺序不保证等于调用顺序（谁先跑完谁先出）。
+        // 结果靠 `call_id` 自证身份，这正是调用方的真实契约。
+        let output_of = |id: &str| {
+            results
+                .iter()
+                .find(|r| r.call_id == id)
+                .unwrap_or_else(|| panic!("结果里缺少 call_id={id}：{:?}", results))
+                .output
+                .clone()
+        };
+        assert!(output_of("c1").contains("hello"));
+        assert!(output_of("c2").contains("world"));
     }
 
     #[tokio::test]

@@ -33,24 +33,9 @@ use super::net::{client, P2pNode};
 use super::runtime::{Enrollment, SectionEvent, SectionKey, StudentRuntime};
 use super::serve::home_dir;
 
-/// 已接入的一个教学班（含展示用的课程/班级名）
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Joined {
-    pub key: SectionKey,
-    pub course_code: String,
-    pub course_name: String,
-    pub class_name: String,
-}
-
-/// 一次「进入课堂」的结果
-pub struct LiveSession {
-    pub rt: StudentRuntime,
-    pub joined: Vec<Joined>,
-    pub student_no: String,
-    pub display_name: String,
-    /// 认证失败 / 被拒的老师（不致命，只影响其名下班级）
-    pub failures: Vec<String>,
-}
+// `Joined` / `LiveSession` 已下沉到 `host` —— 宿主是下层，接入结果是它的输入。
+// 这里 re-export 保持既有引用路径（`edu::client_app::Joined` 等）不断。
+pub use super::host::{Joined, LiveSession};
 
 /// 把配置里的一位老师解析成 `EndpointAddr`。
 ///

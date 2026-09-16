@@ -14,6 +14,7 @@ pub mod course;
 pub mod dashboard;
 pub mod e2e_tests;
 pub mod gossip;
+pub mod host;
 pub mod identity;
 pub mod model;
 pub mod net;

@@ -1,6 +1,6 @@
 # 教育版 P2P 通信 —— 完整测试方法与路径
 
-> 适用版本：**v0.7.13+**（含 P1–P4 去中心化教学班通信 + 多老师拓扑 + 配置驱动）
+> 适用版本：**v0.7.14+**（含 P1–P4 去中心化教学班通信 + 多老师拓扑 + 配置驱动）
 > 对应设计：`docs/edu-p2p-design.md`（§4 双 ALPN / §5 Topic 隔离 / §5.4 R3 撤销 /
 > §10.7 多老师缺陷 / §10.8 身份持久化与配置驱动）
 
@@ -55,7 +55,7 @@ export RUST_LOG=rhermes=info
 
 | 层 | 范围 | 命令 | 数量 | 特征 |
 |---|---|---|---|---|
-| **L1 单元** | 纯逻辑：Topic 派生 / 签名验签 / 纪元单调 / 撤销 SQL / 身份持久化 / 配置解析 / 托管项解析 | `RH_SKIP_WINRESOURCE=1 cargo test --lib edu::` | 129 | 毫秒级，无网络 |
+| **L1 单元** | 纯逻辑：Topic 派生 / 签名验签 / 纪元单调 / 撤销 SQL / 身份持久化 / 配置解析 / 托管项解析 | `RH_SKIP_WINRESOURCE=1 cargo test --lib edu::` | 144 | 毫秒级，无网络 |
 | **L2 集成（本页主角）** | 真实 iroh 端点 + gossip + 双 ALPN，**离网** | `cargo test --test edu_p2p_e2e -- --nocapture` | 3（含 20+ 组断言） | ~21 秒，无外网 |
 | **L3 手工** | 真机多进程 / 同机不同目录 | 见 §5 | — | 验收用 |
 
@@ -73,7 +73,7 @@ export RUST_LOG=rhermes=info
 
 ```bash
 RH_SKIP_WINRESOURCE=1 cargo test
-# 期望：383 单元 + 3 edu_p2p_e2e + 2 kb_e2e = 388 passed / 0 failed
+# 期望：398 单元 + 4 edu_p2p_e2e + 2 kb_e2e = 404 passed / 0 failed
 ```
 
 ---
@@ -361,7 +361,7 @@ EOF
 # ① 编译（快）
 RH_SKIP_WINRESOURCE=1 cargo check --all-targets
 
-# ② 全量测试（388 通过：383 单元 + 3 e2e + 2 kb）
+# ② 全量测试（404 通过：398 单元 + 4 e2e + 2 kb）
 RH_SKIP_WINRESOURCE=1 cargo test
 
 # ③ P2P 端到端单独复跑（看日志）

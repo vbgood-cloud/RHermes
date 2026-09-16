@@ -1304,15 +1304,231 @@ rhermes-stu live --offline      # 离网/局域网
 
 ### 11.3 待落地（下一批）
 
-| 项 | 说明 |
-|---|---|
-| TUI 内驱动 | `/class` 复用 `SectionHost`，走已有 inbound 管道（`SessionRouter`） |
-| 渠道驱动 | 微信 / 企微 / Telegram 各挂一份 `SectionHost`，推送用 `spawn_build_heartbeat` 同款范式 |
-| 双入口收敛 | `edu::handle_edu` 与 `handle_slash_command` 两套实现合并 |
+下表是 v0.7.13 时的缺口。**完整实施计划已定稿在 §12**，此处只留索引。
+
+| 项 | 说明 | 计划位置 |
+|---|---|---|
+| 驱动无关的会话宿主 | 目前学生端只有 REPL，逻辑全揉在 `client_app.rs` | §12.3（`SectionHost`） |
+| TUI 内驱动 | `/class` 复用同一宿主，通知经 `reply_to_channel("tui", ..)` 上屏 | §12.4 / S2.3 |
+| 渠道驱动 | 微信 / 企微 / Telegram 各挂一份宿主，推送沿用 `reply_to_channel` | §12.4 / S2.3 |
+| 双入口收敛 | `edu::handle_edu` 与 `handle_slash_command` 两套实现合并 | §12.5 / S2.4 |
+| `teacher_id = 1` 硬编码 | 5 处写死（`edu/mod.rs` 3 处、`router.rs` 1 处、`dashboard.rs` 1 处） | §12.5 / S2.4 |
 
 ---
 
-## 12. 交付物对照（对上你的 8 项要求）
+## 12. 三驱动收敛实施计划（v0.7.14 —— 学生端多前端）
+
+> 本节是**动工前的计划书**，v0.7.13 定稿。§12.1–12.4 讲「为什么 / 怎么做」，
+> §12.5 是分阶段任务与验收，§12.6 明确不做的事，§12.7 是风险与缓解。
+> 目标版本：**v0.7.14**（默认只递增 patch）。
+
+### 12.0 实施进度
+
+| 阶段 | 状态 | 落地位置 / 证据 |
+|---|---|---|
+| **S2.1** `SectionHost` | ✅ 已完成 | `src/edu/host.rs`：15 条单测（`translate` / `render_event` / `build_labels`）+ e2e `edu_p2p_section_host_drives_notices_and_send`（含负控） |
+| **S2.2** REPL 迁移 | ⏳ 进行中 | `client_app.rs`（`Joined` / `LiveSession` 已下沉到 `host.rs`） |
+| **S2.3** 推送驱动 + `/class` | ⬜ 待做 | — |
+| **S2.4** 双入口收敛 | ⬜ 待做 | — |
+| **S2.5** 渠道真机验证 | ⬜ 待做 | — |
+
+**S2.1 的两个实现决定（与计划书略有出入，以本节为准）**：
+
+1. `translate(ev) -> Option<HostEvent>` **不接收 `labels`**（计划书原文传了）。
+   标签只影响排版，而排版已由独立的 `render_event` 负责；去掉后 `translate`
+   的输入只有协议事件，测试更好写，职责也更干净。
+2. `HostEvent::Roster.members` 的类型是 **`Option<usize>`** 而非 `usize`。
+   `AllowlistUpdate` 消息里的人数藏在 postcard 字节串里，宿主不该为了显示人数
+   去解析协议；正常路径的人数由 runtime 的 `AllowlistApplied` 带出（`Some`），
+   兜底路径如实报 `None`，**不把「未知人数」显示成「0 人」**。
+
+---
+
+### 12.1 问题：REPL 把三件事揉在一起
+
+学生端目前只有一个前端：`rhermes-stu live` 的 REPL（`src/edu/client_app.rs`）。
+它把三件本应分离的事写在一处：
+
+1. **持有会话** —— `StudentRuntime`（`runtime.rs:341`）。它独占
+   `events: mpsc::UnboundedReceiver<SectionEvent>`，而 `next_event(&mut self)`
+   （`runtime.rs:595`）需要 `&mut self`；
+2. **终端 I/O** —— `tokio::select!` 三路（`next_event` / stdin / ctrl_c，`client_app.rs:260`）；
+3. **事件渲染** —— `render_event(ev, labels)`（`client_app.rs:287`）把 `SectionEvent`
+   变成中文终端文本。
+
+TUI 和三个渠道需要的是**同一批能力**（接入、收发、看已接入的班），
+差别只在「消息从哪来」「结果往哪去」。如果照抄三遍，网络、纪元轮换、
+白名单这三块最不该分叉的逻辑就会分叉成四份。
+
+### 12.2 现有约束（照抄代码，实施时不得违反）
+
+| 约束 | 依据 | 对设计的影响 |
+|---|---|---|
+| `next_event` 要 `&mut self`，且 `events` 是 `UnboundedReceiver`（**非 `Sync`**） | `runtime.rs:595` / `:352` | `StudentRuntime` **必须独占一个 tokio task**；不能 `Arc<Mutex<..>>` 让多个驱动直接调 |
+| `broadcast(&self, ..)` 只需 `&self` | `runtime.rs:565` | 「发消息」可以退化成一条命令，交给那个 task 执行 |
+| `sections()` / `teacher_of()` / `session_topic()` 是同步 `&self` | `runtime.rs:575` / `:582` / `:589` | 「已接入哪些班」可以做同步快照，驱动随时读 |
+| 通知必须能定位到「哪个班」 | `SectionKey { teacher: EndpointId, section_id: i64 }`（`model.rs:122`） | 驱动侧要常备一张 `SectionKey → 「CS101 / 计算机2301」` 标签表 |
+| TUI 与渠道的出口是同一个 | `TuiChannel::send_message` 落到 `App::outbound_rx` → `poll_outbound_messages`（`tui/mod.rs:2099-2123`）；渠道出口 `router.reply_to_channel(channel, chat_id, text)`（`router.rs:1417`） | **推送驱动只需写一遍**，TUI 只是名为 `tui` 的一个 channel |
+| 三个渠道都实现了同一个 trait | `trait Channel`（`channel/mod.rs:114`），`WechatChannel` / `WeComChannel` / `TelegramChannel` | 不需要为渠道写分支代码 |
+
+### 12.3 目标结构：`SectionHost`（驱动无关的会话宿主）
+
+新文件 **`src/edu/host.rs`**。
+
+```
+              ┌───────────────── SectionHost（只管会话，不管界面）─────────────────┐
+  驱动侧       │                                                                   │
+  ┌────────┐   │  HostCommand ─► ┌─────────────────────────────┐                    │
+  │ REPL   │──►│                 │ 独占 task：StudentRuntime    │                    │
+  ├────────┤   │                 │  loop { next_event() }      │                    │
+  │ TUI    │──►│                 └──────────────┬──────────────┘                    │
+  ├────────┤   │                                │ broadcast（多订阅者）              │
+  │ 微信    │──►│                                ▼                                  │
+  │ 企微/TG │◄──│  订阅 HostEvent ─► 各自格式化 / 推送                                │
+  └────────┘   │                                                                   │
+               │  Arc<RwLock<HostSnapshot>>  ← 同步读「接入了哪些班 / 谁失败了」     │
+               └───────────────────────────────────────────────────────────────────┘
+```
+
+```rust
+/// 驱动 → 宿主
+pub enum HostCommand {
+    Ask  { key: SectionKey, text: String },
+    Chat { key: SectionKey, text: String },
+    /// 请求优雅停止
+    Shutdown,
+}
+
+/// 宿主 → 驱动（与终端/渠道无关的抽象通知）
+#[derive(Debug, Clone)]
+pub enum HostEvent {
+    Notice  { key: SectionKey, kind: NoticeKind, text: String },
+    /// 白名单生效（入班 / 撤销落地）
+    Roster  { key: SectionKey, epoch: u32, members: usize },
+    /// Topic 已轮换（撤销后自动重订阅）
+    Rotated { key: SectionKey, new_epoch: u32 },
+    /// 某个班断了
+    Closed  { key: SectionKey },
+    /// 宿主已退出
+    Stopped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeKind { Announce, Assignment, Question, Answer, Chat }
+
+/// 同步快照：驱动渲染「我接入了什么」用
+#[derive(Debug, Clone)]
+pub struct HostSnapshot {
+    pub student_no: String,
+    pub display_name: String,
+    pub joined: Vec<Joined>,                     // 复用 client_app::Joined
+    pub labels: HashMap<SectionKey, String>,     // 「CS101 / 计算机2301」
+    pub failures: Vec<String>,                   // 部分老师建连失败时给学生看
+}
+
+pub struct SectionHost { /* cmd_tx, event_tx, snapshot: Arc<RwLock<..>>, task: JoinHandle<()> */ }
+
+impl SectionHost {
+    /// 接一个已经建好连的会话（复用 client_app::join_from_config 的结果）
+    pub async fn start(session: LiveSession) -> anyhow::Result<Self>;
+    pub fn snapshot(&self) -> HostSnapshot;
+    pub fn subscribe(&self) -> broadcast::Receiver<HostEvent>;
+    pub async fn send(&self, cmd: HostCommand) -> anyhow::Result<()>;
+    /// 把 SectionEvent 翻成 HostEvent。**纯函数**，不碰网络 —— 能被单测钉死。
+    pub fn translate(ev: SectionEvent, labels: &HashMap<SectionKey, String>) -> Option<HostEvent>;
+}
+```
+
+> **`translate` 必须是纯函数**，这是从 v0.7.13 缺陷 K 学到的：
+> 凡是「只做映射、不碰 IO」的逻辑都要独立成纯函数，否则它只能靠真机冒烟发现。
+
+`SectionEvent → HostEvent` 的完整映射（`SectionMsg` 定义见 `gossip.rs:53`）：
+
+| `SectionEvent` | `SectionMsg` | → `HostEvent` |
+|---|---|---|
+| `Message` | `Announce { title, body }` | `Notice { kind: Announce, text: "【title】body" }` |
+| `Message` | `AssignmentPosted { title, due_date, .. }` | `Notice { kind: Assignment, text: "📄 新作业：title（截止 due_date）" }` |
+| `Message` | `Question { display_name, text, .. }` | `Notice { kind: Question, text: "❓ display_name: text" }` |
+| `Message` | `Answer { display_name, text, .. }` | `Notice { kind: Answer, text: "✅ display_name: text" }` |
+| `Message` | `Chat { display_name, text, .. }` | `Notice { kind: Chat, text: "display_name: text" }` |
+| `Message` | `TopicRotate { new_epoch, .. }` | `Rotated { new_epoch }`（⚠️ **不再**另发 `Notice`，避免噪音） |
+| `Message` | `AllowlistUpdate { epoch, .. }` | `Roster { epoch, members }`（`members` 由宿主补，见下） |
+| `AllowlistApplied` | — | `Roster { epoch, members }` |
+| `TopicRotated` | — | `Rotated { new_epoch }` |
+| `Closed` | — | `Closed` |
+
+⚠️ **`AllowlistUpdate` 的 `members` 拿不到**：`signed` 是 postcard 字节串，
+解析它等于把协议细节泄漏进宿主。**决策**：`translate` 对 `AllowlistUpdate`
+只产出 `Roster { epoch, members: 0 }`，真正的人数由宿主在 `AllowlistApplied`
+事件里填（那是客户端解析后的结果，`runtime.rs` 已解出来）。驱动侧对 `members == 0`
+应显示「成员表已更新」而不是「0 人」。
+
+### 12.4 三个驱动怎么接
+
+| 驱动 | 命令入口 | 通知出口 | 本批要新写的东西 |
+|---|---|---|---|
+| **REPL** | stdin（`tokio::select!`） | 终端 stdout | 只把 `client_app.rs::repl` 改成发 `HostCommand` / 收 `HostEvent`；删掉本地 `render_event` |
+| **TUI** | `/class ...` 斜杠命令（`role == "student"` 分支） | `reply_to_channel("tui", chat_id, text)` → `App::outbound_rx` → `poll_outbound_messages` 上屏 | `/class start\|stop\|list\|ask\|chat` + 宿主生命周期绑到会话 |
+| **微信 / 企微 / TG** | 渠道入站 `InboundMessage`：以 `/class` 开头走宿主，其余仍走 LLM | `reply_to_channel(channel, chat_id, text)` | 入站分流 + 每个会话一份宿主 |
+
+**关键简化**：TUI 不需要单独的推送通道。`TuiChannel` 本身就是 `Channel`
+（`tui/mod.rs:2095` 注释明确写了「TuiChannel.send_message → 这里上屏」），
+所以推送驱动只写一遍，`tui` 是它的一个 channel 名。
+
+**宿主放哪儿**：`SessionRouter` 增加一张 `edu_hosts: HashMap<SessionKey, SectionHost>`，
+`SessionKey` 沿用路由现成的 `format!("{}:{}{}", channel, chat_id, course_suffix)`
+（`router.rs:301`）。这样「同一个微信用户」和「同一个 TUI 会话」天然隔离，
+一个学生同时在微信和 TG 上就是两份宿主、两个 `EndpointId`（`home/edu_identities/<学号>.key`
+仍只有一份，但并发跑两份会争同一把钥匙 —— **本批约定一个人同时只在一个前端接入**，见 §12.6）。
+
+**`/class` 命令名的分歧点（决策 D1，已定）**：老师侧 `/class` 已是班级管理
+（`edu/mod.rs:433`、`:737`），学生侧要用同一个名字做课堂会话。因为
+`[edu].role` 是**每进程一个**（老师机跑 `rhermes-teacher`，学生机跑 `rhermes-stu`），
+两边不可能同时命中，所以**按 role 分流是安全的**：
+
+| role | `/class` 子命令 |
+|---|---|
+| `teacher` | `create <课程码> <班级名>` / `list`（维持现状） |
+| `student` | `start` / `stop` / `list` / `ask <课程码> <班级> <文本>` / `chat <课程码> <班级> <文本>` |
+
+实施时必须给两个分支各加一条「角色断言」测试，防止将来合并入口时两条路都可达。
+
+### 12.5 分阶段任务与验收
+
+| 阶段 | 内容 | 验收（可自动化的） |
+|---|---|---|
+| **S2.1** | 新增 `src/edu/host.rs`：`HostCommand` / `HostEvent` / `NoticeKind` / `HostSnapshot` / `SectionHost` + 纯函数 `translate` | `cargo test --lib edu::host` 全过（`translate` ≥ 8 条：逐个 `SectionMsg` 变体一个、`AllowlistApplied`/`TopicRotated`/`Closed` 各一、`AllowlistUpdate` 走 `Roster` 且 `members == 0`）；`edu_p2p_e2e` 3 条**不动**且仍全过 |
+| **S2.2** | `client_app.rs::repl` 改为 `SectionHost` 驱动；`render_event` 退化为「`translate` + 一行格式化」 | `target/smoke/run_e2e.py` 输出与 v0.7.13 **逐字一致**（重点比对 `[<前8位>#1] CS101 · 计算机2301` 与 `✅ 已认证 … 拿到 1 个教学班票据` 两行）；`cargo test` 全量 388 仍全过 |
+| **S2.3** | 推送驱动 + `/class` 命令族：`SessionRouter.edu_hosts`、学生侧 `/class start\|stop\|list\|ask\|chat`、`HostEvent` 经 `reply_to_channel` 推到 `tui`/`wechat`/`wecom`/`telegram` | 新增单测：`/class` 前缀分流（学生 vs 老师）、`NoticeKind` 过滤、同一会话二次 `start` 不重复建连、`stop` 后宿主 task 能退出；e2e 用 `tui` channel 跑通「起宿主 → 收公告 → 上屏」 |
+| **S2.4** | 双入口收敛：`edu/mod.rs::handle_slash_command`（TUI 非 router 模式）与 `agent/router.rs::handle_edu_slash_command`（router 模式 + 渠道）合并为一份；清掉 5 处 `teacher_id = 1` 硬编码 | 合并前先把现有斜杠命令写成**表驱动快照单测**（输入 → 期望输出），合并后逐条对齐；`list_courses_by_teacher(1)` → 按 `[edu.teacher].account` 解析（与 `serve.rs:93` 同源），5 处全部消除 |
+| **S2.5** | 渠道真机验证 | 单测覆盖「格式化 + 路由」层；真机需微信/企微/TG 凭据，由你按键启动，离线只到单测层 |
+
+**顺序不可颠倒**：S2.1 不碰任何 UI（纯新增）→ S2.2 证明宿主等价于原 REPL →
+S2.3 才动 TUI 与渠道。这样每一步都有一个「仍能跑」的中间态。
+
+### 12.6 明确不做（本批边界）
+
+| 不做 | 原因 |
+|---|---|
+| 老师侧的渠道驱动 | 老师端继续 `teacher serve` + 交互台；本批只做学生端三驱动 |
+| 一人同时多前端并发接入 | 一个学生只有一个 `home/edu_identities/<学号>.key`，并发跑两份会争同一把钥匙。约定「同一时刻只在一个前端接入」；多前端登录冲突留到后续做钥匙锁 |
+| 多学生共用一台机器 | 仍是「一人一机一身份」，不做同机多学生会话隔离 |
+| blobs 文件分发的新前端入口 | 作业下载仍走 `/assignment` 命令族 |
+| 改线协议 | `SectionKey` / 白名单 / Topic 轮换 / ALPN **一律不动** —— 本批只动装配层 |
+
+### 12.7 风险与缓解
+
+| 风险 | 怎么防 |
+|---|---|
+| `StudentRuntime` 独占 task 后，退出时任务挂着不结束 | `SectionHost::shutdown` = `send(Shutdown)` + `task.await` + 超时兜底；e2e 里断言进程能在 N 秒内退出 |
+| 渠道被 `Chat` 刷屏 | `HostEvent` 带 `NoticeKind`，驱动默认只推 `Announce` / `Assignment` / `Answer`，`Chat` 与 `Question` 按需开（配置项留出） |
+| TUI 的 `poll_outbound_messages` 会顺带清 `running`/计时（`tui/mod.rs:2109-2116`） | 宿主通知与 LLM 请求是两条独立流，通知只在空闲时到达；若实测冲突，改走 `Message::system` 分支（`poll_outbound_messages` 只清 `⏳`/`🔧` 前缀的系统消息） |
+| 双入口合并引发行为回归 | 合并前先落表驱动快照单测（S2.4 第一件事），合并后逐条对齐；不一致即视为回归 |
+| 静态学生名单与「谁能进班」不一致 | 白名单只收「已授权且已绑定 EndpointId」者（v0.7.13 已确认），所以托管横幅**认证前就是 0 人** —— 驱动侧文案不要写成「没有学生」 |
+
+---
+
+## 13. 交付物对照（对上你的 8 项要求）
 
 | 你的要求 | 本文档位置 |
 |----------|-----------|
@@ -1325,3 +1541,4 @@ rhermes-stu live --offline      # 离网/局域网
 | ⑦ 教务系统对接接口设计 | §7 |
 | ⑧ 说明文档（模块职责 + 运行方式） | §2.1 / §11 |
 | 改造方案选项 | §10 |
+| 学生端三驱动实施计划 | §12 |
