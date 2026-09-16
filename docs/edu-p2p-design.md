@@ -1320,14 +1320,14 @@ rhermes-stu live --offline      # 离网/局域网
 
 > 本节是**动工前的计划书**，v0.7.13 定稿。§12.1–12.4 讲「为什么 / 怎么做」，
 > §12.5 是分阶段任务与验收，§12.6 明确不做的事，§12.7 是风险与缓解。
-> 目标版本：**v0.7.14**（默认只递增 patch）。
+> 版本按阶段递进（每步 +0.0.1，遵循「每次提交只递增 patch」）：**S2.1 = v0.7.14**、**S2.2 = v0.7.15**。
 
 ### 12.0 实施进度
 
 | 阶段 | 状态 | 落地位置 / 证据 |
 |---|---|---|
 | **S2.1** `SectionHost` | ✅ 已完成 | `src/edu/host.rs`：15 条单测（`translate` / `render_event` / `build_labels`）+ e2e `edu_p2p_section_host_drives_notices_and_send`（含负控） |
-| **S2.2** REPL 迁移 | ⏳ 进行中 | `client_app.rs`（`Joined` / `LiveSession` 已下沉到 `host.rs`） |
+| **S2.2** REPL 迁移 | ✅ 已完成 | `client_app.rs`：`run_live` 改为 `SectionHost::start(session)` → `repl(&host)`；本地 `render_event` **删除**（统一用 `host::render_event`）；接入列表/失败改读 `snapshot()`；`ask`/`chat` 走 `host.ask`/`host.chat`。`run_e2e.py` 学生端 STDOUT 与 v0.7.13 **逐字一致**（仅身份指纹因脚本每次重建目录而变） |
 | **S2.3** 推送驱动 + `/class` | ⬜ 待做 | — |
 | **S2.4** 双入口收敛 | ⬜ 待做 | — |
 | **S2.5** 渠道真机验证 | ⬜ 待做 | — |
@@ -1498,7 +1498,7 @@ impl SectionHost {
 | 阶段 | 内容 | 验收（可自动化的） |
 |---|---|---|
 | **S2.1** | 新增 `src/edu/host.rs`：`HostCommand` / `HostEvent` / `NoticeKind` / `HostSnapshot` / `SectionHost` + 纯函数 `translate` | `cargo test --lib edu::host` 全过（`translate` ≥ 8 条：逐个 `SectionMsg` 变体一个、`AllowlistApplied`/`TopicRotated`/`Closed` 各一、`AllowlistUpdate` 走 `Roster` 且 `members == 0`）；`edu_p2p_e2e` 3 条**不动**且仍全过 |
-| **S2.2** | `client_app.rs::repl` 改为 `SectionHost` 驱动；`render_event` 退化为「`translate` + 一行格式化」 | `target/smoke/run_e2e.py` 输出与 v0.7.13 **逐字一致**（重点比对 `[<前8位>#1] CS101 · 计算机2301` 与 `✅ 已认证 … 拿到 1 个教学班票据` 两行）；`cargo test` 全量 388 仍全过 |
+| **S2.2** | `client_app.rs::repl` 改为 `SectionHost` 驱动；`render_event` 退化为「`translate` + 一行格式化」 | `target/smoke/run_e2e.py` 输出与 v0.7.13 **逐字一致**（重点比对 `[<前8位>#1] CS101 · 计算机2301` 与 `✅ 已认证 … 拿到 1 个教学班票据` 两行）；`cargo test` 全量（404）仍全过 |
 | **S2.3** | 推送驱动 + `/class` 命令族：`SessionRouter.edu_hosts`、学生侧 `/class start\|stop\|list\|ask\|chat`、`HostEvent` 经 `reply_to_channel` 推到 `tui`/`wechat`/`wecom`/`telegram` | 新增单测：`/class` 前缀分流（学生 vs 老师）、`NoticeKind` 过滤、同一会话二次 `start` 不重复建连、`stop` 后宿主 task 能退出；e2e 用 `tui` channel 跑通「起宿主 → 收公告 → 上屏」 |
 | **S2.4** | 双入口收敛：`edu/mod.rs::handle_slash_command`（TUI 非 router 模式）与 `agent/router.rs::handle_edu_slash_command`（router 模式 + 渠道）合并为一份；清掉 5 处 `teacher_id = 1` 硬编码 | 合并前先把现有斜杠命令写成**表驱动快照单测**（输入 → 期望输出），合并后逐条对齐；`list_courses_by_teacher(1)` → 按 `[edu.teacher].account` 解析（与 `serve.rs:93` 同源），5 处全部消除 |
 | **S2.5** | 渠道真机验证 | 单测覆盖「格式化 + 路由」层；真机需微信/企微/TG 凭据，由你按键启动，离线只到单测层 |
@@ -1521,6 +1521,7 @@ S2.3 才动 TUI 与渠道。这样每一步都有一个「仍能跑」的中间�
 | 风险 | 怎么防 |
 |---|---|
 | `StudentRuntime` 独占 task 后，退出时任务挂着不结束 | `SectionHost::shutdown` = `send(Shutdown)` + `task.await` + 超时兜底；e2e 里断言进程能在 N 秒内退出 |
+| 驱动订阅**晚于**事件发生 → 通知丢失 | 有意为之：接入完成到界面就绪之间的通知不回放（回放会让学生误以为「刚发生」）。因此 `SectionHost::start` 后由驱动**立即**订阅，再打印欢迎语 |
 | 渠道被 `Chat` 刷屏 | `HostEvent` 带 `NoticeKind`，驱动默认只推 `Announce` / `Assignment` / `Answer`，`Chat` 与 `Question` 按需开（配置项留出） |
 | TUI 的 `poll_outbound_messages` 会顺带清 `running`/计时（`tui/mod.rs:2109-2116`） | 宿主通知与 LLM 请求是两条独立流，通知只在空闲时到达；若实测冲突，改走 `Message::system` 分支（`poll_outbound_messages` 只清 `⏳`/`🔧` 前缀的系统消息） |
 | 双入口合并引发行为回归 | 合并前先落表驱动快照单测（S2.4 第一件事），合并后逐条对齐；不一致即视为回归 |

@@ -26,9 +26,7 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::time::{timeout, Instant};
 
-use rhermes::core::{
-    Config, EduConfig, EduServeSection, EduStudentConfig, EduTeacherConfig, EduTeacherPeer,
-};
+use rhermes::core::{Config, EduConfig, EduServeSection, EduStudentConfig, EduTeacherPeer};
 use rhermes::edu::authz::AuthRegistry;
 use rhermes::edu::gossip::SectionMsg;
 use rhermes::edu::host::{HostEvent, NoticeKind, SectionHost};

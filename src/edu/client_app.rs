@@ -18,19 +18,21 @@
 //! [`join_from_config`] 是**纯逻辑**（不碰标准输入），因此可以在测试里直接调用；
 //! [`run_live`] 只是「读配置 → 调它 → 进交互台」的薄壳。
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use iroh::{EndpointAddr, EndpointId};
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::broadcast;
 
 use crate::core::{Config, EduTeacherPeer};
 
 use super::authz::AuthRegistry;
-use super::gossip::SectionMsg;
+use super::host::{self, HostEvent, SectionHost};
 use super::identity;
 use super::net::{client, P2pNode};
-use super::runtime::{Enrollment, SectionEvent, SectionKey, StudentRuntime};
+// `StudentRuntime` 仍在此处使用：`join_from_config` 负责**建连装配**
+// （那是宿主的输入），装配完成后再交给 `SectionHost` 独占驱动。
+use super::runtime::{Enrollment, SectionKey, StudentRuntime};
 use super::serve::home_dir;
 
 // `Joined` / `LiveSession` 已下沉到 `host` —— 宿主是下层，接入结果是它的输入。
@@ -190,60 +192,60 @@ pub async fn join_from_config(
 }
 
 /// 命令入口：`rhermes-stu live [--offline]`
+///
+/// 这是**第一个** [`SectionHost`] 驱动：与会话打交道的事全交给宿主，
+/// 本函数只剩「读配置 → 建连 → 起宿主 → 打印欢迎 → 进交互台 → 收尾」。
 pub async fn run_live(config_path: &Path, args: &[String]) -> anyhow::Result<()> {
     let cfg = Config::load(config_path).map_err(|e| anyhow::anyhow!("读取配置失败：{e}"))?;
     let home = home_dir(config_path);
     let offline = args.iter().any(|a| a == "--offline");
 
-    let LiveSession { mut rt, joined, student_no, display_name, failures } =
-        join_from_config(&cfg, &home, offline, true).await?;
+    let session = join_from_config(&cfg, &home, offline, true).await?;
 
-    // 白名单 / Topic 由运行时自动同步；这里只做展示
-    let labels: HashMap<SectionKey, String> = joined
-        .iter()
-        .map(|j| (j.key.clone(), format!("{} / {}", j.course_code, j.class_name)))
-        .collect();
+    // 起宿主：从这一刻起会话归宿主独占的 task，本函数只经命令 / 订阅与它打交道
+    let host = SectionHost::start(session).await?;
+    // 订阅必须尽量早 —— 宿主广播之前无订阅者的事件会被丢弃（有意），
+    // 因此不能等到欢迎语打完才订阅。
+    let events = host.subscribe();
+    let snap = host.snapshot();
 
-    for f in &failures {
+    for f in &snap.failures {
         println!("   ⚠️  接入失败：{f}");
     }
     println!();
-    println!("   📚 已接入 {} 个教学班：", joined.len());
-    for j in &joined {
+    println!("   📚 已接入 {} 个教学班：", snap.joined.len());
+    for j in &snap.joined {
         println!("      [{}] {} · {}", j.key, j.course_code, j.class_name);
     }
     println!();
     println!("   输入 help 查看命令，quit 退出。");
     println!();
 
-    repl(&mut rt, &joined, &labels, &student_no, &display_name).await;
+    repl(&host, events).await;
 
-    let _ = rt.shutdown().await;
+    let _ = host.shutdown().await;
     println!("👋 已离开课堂");
     Ok(())
 }
 
-/// 事件 + 命令双路循环
-async fn repl(
-    rt: &mut StudentRuntime,
-    joined: &[Joined],
-    labels: &HashMap<SectionKey, String>,
-    student_no: &str,
-    display_name: &str,
-) {
+/// 事件 + 命令双路循环（第一个 [`SectionHost`] 驱动）。
+///
+/// ⚠️ 与 v0.7.13 的机制差别：事件改从宿主 `broadcast` 来，回执改走 `oneshot`。
+///    事件**先到先看** —— 订阅之前发生的事件会被丢弃。这是有意的：界面还没
+///    就绪时本就无从展示，回放旧通知只会让学生以为「刚发生」。
+async fn repl(host: &SectionHost, mut events: broadcast::Receiver<HostEvent>) {
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
 
     enum Tick {
-        Event(Option<SectionEvent>),
+        Event(Option<HostEvent>),
         Line(Option<String>),
         Interrupt,
     }
 
     loop {
-        // ⚠️ 两个分支分别借用「运行时」与「标准输入」，借用在 select 结束后即释放，
-        //    因此可以在 match 里安全地可变借用 rt。
+        // `broadcast::Receiver::recv` 与 `lines.next_line` 都是取消安全的。
         let tick = tokio::select! {
-            ev = rt.next_event() => Tick::Event(ev),
+            ev = events.recv() => Tick::Event(ev.ok()),
             l = lines.next_line() => Tick::Line(l.ok().flatten()),
             _ = tokio::signal::ctrl_c() => Tick::Interrupt,
         };
@@ -254,13 +256,23 @@ async fn repl(
                 break;
             }
             Tick::Line(None) => break, // EOF
+            // 广播通道关闭（宿主 task 已退出）——等价于 v0.7.13 的 next_event()==None
             Tick::Event(None) => {
                 println!("⚠️  与教学班的连接已结束");
                 break;
             }
-            Tick::Event(Some(ev)) => render_event(ev, labels),
+            Tick::Event(Some(ev)) => {
+                if let Some(line) = host::render_event(&ev, &host.snapshot().labels) {
+                    println!("{line}");
+                }
+                // `Stopped` 不上屏，但它意味着运行时已拆除 —— 收尾
+                if ev == HostEvent::Stopped {
+                    println!("⚠️  与教学班的连接已结束");
+                    break;
+                }
+            }
             Tick::Line(Some(line)) => {
-                if !handle_command(rt, joined, &line, student_no, display_name).await {
+                if !handle_command(host, &line).await {
                     break;
                 }
             }
@@ -268,46 +280,25 @@ async fn repl(
     }
 }
 
-/// 渲染一条教学班事件
-fn render_event(ev: SectionEvent, labels: &HashMap<SectionKey, String>) {
-    let tag = |k: &SectionKey| labels.get(k).cloned().unwrap_or_else(|| k.to_string());
-    match ev {
-        SectionEvent::Message { key, msg } => {
-            println!("📨 [{}] {}", tag(&key), msg.summary());
-        }
-        SectionEvent::AllowlistApplied { key, epoch, members } => {
-            println!("🔐 [{}] 成员表已更新：{members} 人 · epoch {epoch}", tag(&key));
-        }
-        SectionEvent::TopicRotated { key, new_epoch } => {
-            println!("🔄 [{}] Topic 已轮换 → epoch {new_epoch}", tag(&key));
-        }
-        SectionEvent::Closed { key } => {
-            println!("🔌 [{}] 接收循环结束", tag(&key));
-        }
-    }
-}
-
-/// 处理一条命令；返回 `false` 表示退出
-async fn handle_command(
-    rt: &mut StudentRuntime,
-    joined: &[Joined],
-    line: &str,
-    student_no: &str,
-    display_name: &str,
-) -> bool {
+/// 处理一条命令；返回 `false` 表示退出。
+///
+/// 只读 `host.snapshot()` 拿接入列表，发消息走 `host.ask` / `host.chat`
+/// —— 驱动不再接触 `StudentRuntime`。
+async fn handle_command(host: &SectionHost, line: &str) -> bool {
     let line = line.trim();
     if line.is_empty() {
         return true;
     }
     let mut parts = line.split_whitespace();
     let cmd = parts.next().unwrap_or("");
+    let snap = host.snapshot();
 
     match cmd {
         "quit" | "exit" | "q" => return false,
         "help" | "?" => print_help(),
         "list" | "ls" => {
             println!("   课程        班级                      老师");
-            for j in joined {
+            for j in &snap.joined {
                 println!(
                     "   {:<10} {:<24} {}",
                     j.course_code,
@@ -324,18 +315,19 @@ async fn handle_command(
             }
             let (code, class) = (rest[0], rest[1]);
             let text = rest[2..].join(" ");
-            match joined
+            match snap
+                .joined
                 .iter()
                 .find(|j| j.course_code == code && j.class_name == class)
             {
                 Some(j) => {
-                    let msg = if cmd == "ask" {
-                        SectionMsg::question(student_no, display_name, "", &text)
+                    let sent = if cmd == "ask" {
+                        host.ask(&j.key, &text).await
                     } else {
-                        SectionMsg::chat(student_no, display_name, &text)
+                        host.chat(&j.key, &text).await
                     };
-                    match rt.broadcast(&j.key, &msg).await {
-                        Ok(_) => println!("   ✅ 已发送到 {} / {}", code, class),
+                    match sent {
+                        Ok(()) => println!("   ✅ 已发送到 {} / {}", code, class),
                         Err(e) => println!("   ❌ 发送失败：{e}"),
                     }
                 }
