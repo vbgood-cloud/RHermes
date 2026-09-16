@@ -1,6 +1,6 @@
 # 教育版 P2P 通信 —— 完整测试方法与路径
 
-> 适用版本：**v0.7.12+**（含 P1–P4 去中心化教学班通信 + 多老师拓扑 + 配置驱动）
+> 适用版本：**v0.7.13+**（含 P1–P4 去中心化教学班通信 + 多老师拓扑 + 配置驱动）
 > 对应设计：`docs/edu-p2p-design.md`（§4 双 ALPN / §5 Topic 隔离 / §5.4 R3 撤销 /
 > §10.7 多老师缺陷 / §10.8 身份持久化与配置驱动）
 
@@ -55,7 +55,7 @@ export RUST_LOG=rhermes=info
 
 | 层 | 范围 | 命令 | 数量 | 特征 |
 |---|---|---|---|---|
-| **L1 单元** | 纯逻辑：Topic 派生 / 签名验签 / 纪元单调 / 撤销 SQL / 身份持久化 / 配置解析 / 托管项解析 | `RH_SKIP_WINRESOURCE=1 cargo test --lib edu::` | 123 | 毫秒级，无网络 |
+| **L1 单元** | 纯逻辑：Topic 派生 / 签名验签 / 纪元单调 / 撤销 SQL / 身份持久化 / 配置解析 / 托管项解析 | `RH_SKIP_WINRESOURCE=1 cargo test --lib edu::` | 129 | 毫秒级，无网络 |
 | **L2 集成（本页主角）** | 真实 iroh 端点 + gossip + 双 ALPN，**离网** | `cargo test --test edu_p2p_e2e -- --nocapture` | 3（含 20+ 组断言） | ~21 秒，无外网 |
 | **L3 手工** | 真机多进程 / 同机不同目录 | 见 §5 | — | 验收用 |
 
@@ -73,7 +73,7 @@ export RUST_LOG=rhermes=info
 
 ```bash
 RH_SKIP_WINRESOURCE=1 cargo test
-# 期望：377 单元 + 3 edu_p2p_e2e + 2 kb_e2e = 382 passed / 0 failed
+# 期望：383 单元 + 3 edu_p2p_e2e + 2 kb_e2e = 388 passed / 0 failed
 ```
 
 ---
@@ -268,7 +268,10 @@ enabled = true
 role = "teacher"
 
 [edu.teacher]
-account = "t001"
+# ⚠️ `account` 必须与下面 `init-teacher` 的第一个参数**完全一致**。
+#    本版教务表只有 `name` 列（见 §7），所以这里填的就是教师标识（姓名或工号均可），
+#    不一致时 `addr` / `serve` 会报「教务库里没有名为 'xxx' 的老师」。
+account = "张老师"
 display_name = "张老师"
 
 [[edu.teacher.serve]]
@@ -276,25 +279,34 @@ course = "CS101"
 class  = "计算机2301"
 EOF
 
-# 建库（写 /tmp/demo-a/home/edu.db）+ 建课程 + 建班
-./rhermes-teacher.exe init
+# 建库（自动创建 /tmp/demo-a/home/）+ 建课程 + 建班
+# ⚠️ 是 `init-teacher` 而不是 `init` —— 后者被通用配置向导（API Key/模型）占用了
+# 姓名/密码可直接给参数（脚本、无 TTY 场景必须这样；只给姓名则密码交互式询问）
+./rhermes-teacher.exe init-teacher 张老师 tpw
 ./rhermes-teacher.exe course create CS101 "Python 编程基础"
 ./rhermes-teacher.exe class  create CS101 计算机2301
+# 把学生加进花名册（否则认证成功但拿不到任何票据）
+# 5 参数写法 = 脚本/CI 用：<学号> <姓名> <密码> <课程码> <班级名>
+./rhermes-teacher.exe student add 2024001 张三 pw CS101 计算机2301
+# 4 参数写法（密码交互式询问）：<学号> <姓名> <课程码> <班级名>
+# ./rhermes-teacher.exe student add 2024001 张三 CS101 计算机2301
 
 # ① 打印老师地址（学生要抄进配置）
 ./rhermes-teacher.exe addr
 #   👩‍🏫 张老师
-#      身份文件 : /tmp/demo-a/home/edu_identities/t001.key
+#      身份文件 : /tmp/demo-a/home/edu_identities/<8 位指纹>.key
 #      指纹     : <12 位 hex>
 #      老师地址 : <64 位 hex>        ← 记作 TEACHER_A
 
-# ② 启动托管服务（保持在线），记下横幅里的 ip:127.0.0.1:PORT
+# ② 启动托管服务（保持在线），记下横幅里的 <本机IP>:PORT
 ./rhermes-teacher.exe serve --offline
 #   👩‍🏫 教学班托管服务已启动
-#      身份     : t001 · <指纹>
+#      身份     : 张老师 · <指纹>
 #      老师地址 : <TEACHER_A>
-#               ip:127.0.0.1:PORT     ← 记作 PORT_A
-#      ✅ [1] CS101 / 计算机2301 · 学生 1 人 · epoch 0
+#               ip:<本机IP>:PORT      ← 记作 PORT_A（局域网双机演示时用真实网卡 IP）
+#      ✅ [1] CS101 / 计算机2301 · 学生 0 人 · epoch 0
+#                                    ↑ 学生**认证前**就是 0：白名单只收「已授权且已绑定
+#                                      EndpointId」的学生，认证成功后数字才会 +1
 #   edu> _
 ```
 
@@ -339,7 +351,7 @@ EOF
 | 学生身份文件 | 只有一份 `2024001.key`，两位老师看到**同一个 EndpointId** |
 | 老师侧日志 | 各自出现 `认证成功: 2024001 (张三) … 教学班 1 个` |
 | `edu> announce CS101 计算机2301 调课\|周日补课` | 学生端只出现 `📨 [CS101 / 计算机2301] …`，**不会串到 B 班** |
-| 重启老师（不带 `--secret_key`） | 指纹不变，学生无需重新认证 |
+| 重启老师（配置里**不写** `[edu.teacher].secret_key`） | 从身份文件读回同一把钥匙，指纹不变，学生无需重新认证 |
 
 ---
 
@@ -349,7 +361,7 @@ EOF
 # ① 编译（快）
 RH_SKIP_WINRESOURCE=1 cargo check --all-targets
 
-# ② 全量测试（382 通过：377 单元 + 3 e2e + 2 kb）
+# ② 全量测试（388 通过：383 单元 + 3 e2e + 2 kb）
 RH_SKIP_WINRESOURCE=1 cargo test
 
 # ③ P2P 端到端单独复跑（看日志）
@@ -406,3 +418,38 @@ C/D 只有在**真实双端点**下才暴露 —— 这正是 L2 端到端测试
 |---|---|
 | 身份必须持久化 | `Endpoint::builder().bind()` 默认每次随机生成身份；不落盘则老师的白名单/对端地址簿**每次重启全废**（`src/edu/identity.rs`） |
 | 文件名清洗不能塌缩 | 非法字符若一律替换成 `_`，`张三`/`李四` 都会变成 `__` → **两位老师共用一套凭据**；发生替换时须追加内容指纹 |
+
+## 附 D：v0.7.13 —— 真机 CLI 冒烟抓出的 3 个缺陷
+
+`cargo test` 全绿**不等于**装出来的二进制能用：下面三个缺陷只有「编译 → 便携目录里
+真敲命令」才会暴露，单测与 e2e 都测不到（它们走的是另一条装配路径）。
+
+| 编号 | 缺陷 | 现象 | 修法 |
+|---|---|---|---|
+| **I** | `EduStore::open` 不建父目录 | 全新便携目录里任何 `course`/`class`/`student` 命令都失败：`数据库打开失败: unable to open database file`（`home/` 还不存在） | `open` 里先 `create_dir_all(parent)`；加回归测试 `test_open_creates_missing_parent_directory` |
+| **J** | `init-teacher` 被通用 `init` 顶掉 | `rhermes-teacher init 张老师 tpw` → `error: unexpected argument '张老师' found` —— 通用配置向导 `CommonCommands::Init` 无参数、抢先匹配 | 给教师初始化显式命名 `#[command(name = "init-teacher", alias = "create-teacher")]` |
+| **K** | `student add` 固定按 4 个读参数 | 传 5 个时密码被当成课程码 → 报的是「课程 'pw1' 不存在」，**指错方向**，极难查 | 抽出纯函数 `parse_student_add` 支持 4/5 两种写法 + 4 条单测锁死语义位置 |
+
+**教训**：`student add` 的参数形状属于「装配层」，之前内联在 `handle_teacher_command`
+里没法单测 —— 现在抽成 `parse_student_add(&[String]) -> Option<StudentAdd>`，
+不碰数据库就能测。凡「按位置读 argv」的地方都该这么抽。
+
+### 复现这段冒烟的脚本
+
+`target/smoke/run_e2e.py`（不进版本库）会：建两个便携目录 → 教师建课/建班/加学生 →
+后台起 `serve --offline` 并正则解析端口 → 写学生配置 → 跑 `rhermes-stu live --offline`。
+预期关键输出：
+
+```
+[teacher] 加学生 张三           rc=0 :: ✅ 学生添加成功: 2024001 张三 (1)
+[serve] addr_id=<64hex> port=<port>
+   ✅ [1] CS101 / 计算机2301 · 学生 0 人 · epoch 0
+   ✅ [2] CS102 / 计算机2302 · 学生 0 人 · epoch 0
+🎒 学生端进入课堂
+   ✅ 已认证 <前 8 位> · 拿到 1 个教学班票据
+   📚 已接入 1 个教学班：
+      [<前 8 位>#1] CS101 · 计算机2301
+```
+
+老师侧日志同时出现 `认证成功: 2024001 (张三) endpoint=<64hex> 教学班 1 个`。
+

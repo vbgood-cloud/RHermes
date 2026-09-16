@@ -282,6 +282,54 @@ impl TeacherManager {
 // CLI 命令处理
 // ---------------------------------------------------------------------------
 
+/// `student add` 的位置参数（**纯数据**，便于单测）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StudentAdd {
+    pub student_no: String,
+    pub name: String,
+    /// `None` = 命令行没给密码 → 调用方交互式询问
+    pub password: Option<String>,
+    pub course_code: String,
+    pub class_name: String,
+}
+
+/// 解析 `student add` 的位置参数。
+///
+/// - 4 个：`<学号> <姓名> <课程码> <班级名>`       → `password = None`（交互询问）
+/// - 5 个：`<学号> <姓名> <密码> <课程码> <班级名>` → `password = Some`
+///
+/// 其余个数返回 `None`；任一必填字段为空也返回 `None`（调用方打印用法）。
+/// 5 个写法里密码若为空白串，按「未提供」处理，退化为交互询问 ——
+/// 存一个空密码只会得到一个形同虚设的凭据。
+pub fn parse_student_add(a: &[String]) -> Option<StudentAdd> {
+    let (no, name, pw, course, class_name) = match a.len() {
+        4 => (a[0].clone(), a[1].clone(), None, a[2].clone(), a[3].clone()),
+        5 => {
+            let pw = if a[2].trim().is_empty() {
+                None
+            } else {
+                Some(a[2].clone())
+            };
+            (a[0].clone(), a[1].clone(), pw, a[3].clone(), a[4].clone())
+        }
+        _ => return None,
+    };
+    if no.trim().is_empty()
+        || name.trim().is_empty()
+        || course.trim().is_empty()
+        || class_name.trim().is_empty()
+    {
+        return None;
+    }
+    Some(StudentAdd {
+        student_no: no,
+        name,
+        password: pw,
+        course_code: course,
+        class_name,
+    })
+}
+
 /// 处理教师子命令
 pub fn handle_teacher_command(args: &[String], db_path: &Path) {
     if args.is_empty() {
@@ -299,17 +347,24 @@ pub fn handle_teacher_command(args: &[String], db_path: &Path) {
 
     match args[0].as_str() {
         "init" => {
+            // 姓名 / 密码都可以从命令行给（脚本、CI、便携演示必备），
+            // 缺哪个才交互式询问。无 TTY 时交互会静默拿到空串 —— 所以参数优先。
             let name = args.get(1).cloned().unwrap_or_else(|| {
                 dialoguer::Input::new()
                     .with_prompt("教师姓名")
                     .interact_text()
                     .unwrap_or_default()
             });
-            let password = dialoguer::Password::new()
-                .with_prompt("设置密码")
-                .interact()
-                .unwrap_or_default();
-            if let Err(e) = mgr.init_teacher(&name, &password) {
+            let password = match args.get(2) {
+                Some(p) => p.clone(),
+                None => dialoguer::Password::new()
+                    .with_prompt("设置密码")
+                    .interact()
+                    .unwrap_or_default(),
+            };
+            if name.trim().is_empty() {
+                eprintln!("❌ 教师姓名不能为空（用法: rhermes-teacher init <姓名> [密码]）");
+            } else if let Err(e) = mgr.init_teacher(&name, &password) {
                 eprintln!("❌ {e}");
             }
         }
@@ -367,19 +422,35 @@ pub fn handle_teacher_command(args: &[String], db_path: &Path) {
             let action = args.get(1).map(|s| s.as_str()).unwrap_or("");
             match action {
                 "add" => {
-                    let no = args.get(2).cloned().unwrap_or_default();
-                    let name = args.get(3).cloned().unwrap_or_default();
-                    let course = args.get(4).cloned().unwrap_or_default();
-                    let class_name = args.get(5).cloned().unwrap_or_default();
-                    if no.is_empty() || name.is_empty() || course.is_empty() || class_name.is_empty() {
-                        eprintln!("用法: rhermes edu teacher student add <学号> <姓名> <课程码> <班级名>");
+                    // 两种写法都支持（按参数个数区分，不存在歧义）：
+                    //   4 个：<学号> <姓名> <课程码> <班级名>        → 密码交互式询问
+                    //   5 个：<学号> <姓名> <密码> <课程码> <班级名>  → 脚本/CI 用
+                    // 回归背景：旧实现固定按 4 个读（`args.get(2..6)`），传 5 个时
+                    // `密码` 会被当成课程码，报出来的却是「课程 X 不存在」，很难查。
+                    // → 抽出纯函数 `parse_student_add` 并用单测锁死形状。
+                    let Some(parsed) = parse_student_add(&args[2..]) else {
+                        eprintln!(
+                            "用法: rhermes teacher student add <学号> <姓名> [密码] <课程码> <班级名>"
+                        );
                         return;
-                    }
-                    let password = dialoguer::Password::new()
-                        .with_prompt(format!("为 {name} 设置密码"))
-                        .interact()
-                        .unwrap_or_else(|_| "123456".to_string());
-                    if let Err(e) = mgr.add_student(&no, &name, &password, Some(&class_name), Some(&course)) {
+                    };
+                    let StudentAdd {
+                        student_no: no,
+                        name,
+                        password,
+                        course_code: course,
+                        class_name,
+                    } = parsed;
+                    let password = match password {
+                        Some(p) => p,
+                        None => dialoguer::Password::new()
+                            .with_prompt(format!("为 {name} 设置密码"))
+                            .interact()
+                            .unwrap_or_else(|_| "123456".to_string()),
+                    };
+                    if let Err(e) =
+                        mgr.add_student(&no, &name, &password, Some(&class_name), Some(&course))
+                    {
                         eprintln!("❌ {e}");
                     }
                 }
@@ -528,5 +599,65 @@ mod tests {
             .update_class_course_override("DUP", "重名头", "desc", "x")
             .is_err());
         assert!(mgr.resolve_course_for_class("DUP", "重名头").is_err());
+    }
+
+    // ── student add 参数解析 ──
+    //
+    // 回归背景：真机冒烟时装好的二进制里，`student add 2024001 张三 pw101 CS101 计算机2301`
+    // 报的是「课程 'pw101' 不存在」—— 密码被当成课程码。这几条测试把两种写法的
+    // **语义位置**钉死，避免以后再退回「固定按 4 个读」。
+
+    fn v(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn test_parse_student_add_four_args_password_interactive() {
+        // 4 个：<学号> <姓名> <课程码> <班级名> → 密码留给交互询问
+        let got = parse_student_add(&v(&["2024001", "张三", "CS101", "计算机2301"])).unwrap();
+        assert_eq!(
+            got,
+            StudentAdd {
+                student_no: "2024001".into(),
+                name: "张三".into(),
+                password: None,
+                course_code: "CS101".into(),
+                class_name: "计算机2301".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_student_add_five_args_password_explicit() {
+        // 5 个：<学号> <姓名> <密码> <课程码> <班级名>
+        // 关键：课程码必须是 CS101（第 4 位），而不是密码 pw101（第 3 位）
+        let got =
+            parse_student_add(&v(&["2024001", "张三", "pw101", "CS101", "计算机2301"])).unwrap();
+        assert_eq!(got.password.as_deref(), Some("pw101"));
+        assert_eq!(got.course_code, "CS101");
+        assert_eq!(got.class_name, "计算机2301");
+        assert_eq!(got.student_no, "2024001");
+        assert_eq!(got.name, "张三");
+    }
+
+    #[test]
+    fn test_parse_student_add_blank_password_falls_back_to_interactive() {
+        let got =
+            parse_student_add(&v(&["2024001", "张三", "   ", "CS101", "计算机2301"])).unwrap();
+        assert_eq!(got.password, None, "空密码不应被当成有效凭据");
+    }
+
+    #[test]
+    fn test_parse_student_add_rejects_bad_shapes() {
+        // 个数不对
+        assert!(parse_student_add(&v(&[])).is_none());
+        assert!(parse_student_add(&v(&["2024001"])).is_none());
+        assert!(parse_student_add(&v(&["2024001", "张三", "CS101"])).is_none());
+        assert!(parse_student_add(&v(&["1", "2", "3", "4", "5", "6"])).is_none());
+        // 必填字段为空
+        assert!(parse_student_add(&v(&["", "张三", "CS101", "计算机2301"])).is_none());
+        assert!(parse_student_add(&v(&["2024001", " ", "CS101", "计算机2301"])).is_none());
+        assert!(parse_student_add(&v(&["2024001", "张三", "", "计算机2301"])).is_none());
+        assert!(parse_student_add(&v(&["2024001", "张三", "CS101", ""])).is_none());
     }
 }

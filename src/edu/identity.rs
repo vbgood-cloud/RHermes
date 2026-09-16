@@ -43,6 +43,10 @@ pub fn identity_dir(home: &Path) -> PathBuf {
 /// 于是两位老师共用同一个密钥文件 —— 「每位老师一套凭据」当场破产。
 /// 故：安全名原样保留（便于人工识别）；一旦发生替换，就追加**内容指纹**兜底，
 /// 保证不同账号得到不同文件名。
+///
+/// 纯中文姓名（`张老师`）清洗后是一串无意义的下划线，文件会长成
+/// `___-dfac5082.key` —— 既难看又容易让人以为是损坏文件。因此：
+/// 掐掉首尾下划线后若不再剩下可读的 ASCII 字母数字，就**只用指纹**做文件名。
 fn sanitize(owner: &str) -> String {
     let trimmed = owner.trim();
     if trimmed.is_empty() {
@@ -65,9 +69,18 @@ fn sanitize(owner: &str) -> String {
         return cleaned;
     }
 
-    // 发生过替换 → 追加短指纹，避免不同账号塌缩到同一文件名
     let digest = blake3::hash(trimmed.as_bytes()).to_hex().to_string();
-    format!("{}-{}", cleaned, &digest[..8])
+
+    // 掐掉首尾下划线：`___2201` → `2201`，`__`（纯中文）→ ``
+    let stem = cleaned.trim_matches('_');
+
+    if stem.chars().any(|c| c.is_ascii_alphanumeric()) {
+        // 还有可读部分 → 保留它 + 短指纹（防不同账号塌缩到同名）
+        format!("{stem}-{}", &digest[..8])
+    } else {
+        // 全非 ASCII（或全是符号）→ 文件名退化为指纹，避免一串下划线
+        digest[..8].to_string()
+    }
 }
 
 /// 某账号的密钥文件路径
@@ -184,19 +197,34 @@ mod tests {
         assert_ne!(a, c);
         assert_ne!(b, c);
 
-        // 前缀保留可读性，后缀是 8 位指纹
-        assert!(a.starts_with("__-"), "应保留清洗后的前缀：{a}");
-        assert_eq!(a.len(), 11, "`__-` + 8 位指纹：{a}");
+        // 纯非 ASCII 无可读前缀 → 文件名退化为 8 位指纹（不是一串下划线）
+        for s in [&a, &b, &c] {
+            assert_eq!(s.len(), 8, "应为 8 位指纹：{s}");
+            assert!(s.chars().all(|ch| ch.is_ascii_hexdigit()), "应为 hex：{s}");
+        }
 
         // 同一个账号必须稳定
         assert_eq!(sanitize("张三"), sanitize(" 张三 "));
     }
 
     #[test]
+    fn test_sanitize_owner_keeps_readable_stem_when_present() {
+        // 混排：既保留可读部分，又带指纹兜底
+        let s = sanitize("张三/2201");
+        assert!(s.starts_with("2201-"), "应保留可读尾段：{s}");
+        assert_eq!(s.len(), "2201-".len() + 8);
+        assert!(!s.contains('/'));
+    }
+
+    #[test]
     fn test_sanitize_owner_handles_path_traversal_chars() {
         let s = sanitize("../etc/passwd");
         assert!(!s.contains('/'), "文件名不得含路径分隔符：{s}");
-        assert!(!s.starts_with('.'), "不得以点开头（避免隐藏文件/相对路径）：{s}");
+        assert!(
+            !s.starts_with('.'),
+            "不得以点开头（避免隐藏文件/相对路径）：{s}"
+        );
+        assert!(!s.starts_with('_'), "不得以无意义下划线开头：{s}");
     }
 
     #[test]

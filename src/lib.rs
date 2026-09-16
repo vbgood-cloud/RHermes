@@ -194,8 +194,18 @@ pub enum TeacherCommands {
     },
     /// 📊 启动教师仪表板（Web 界面）
     Dashboard,
-    /// 🔑 初始化教师身份
-    InitTeacher,
+    /// 🔑 初始化教师身份 [姓名] [密码]（省略则交互式询问）
+    ///
+    /// ⚠️ 名字必须显式写成 `init-teacher`：`CommonCommands` 已经占了 `init`
+    /// （交互式配置向导），clap 会自动把重名的变体改成 `init-teacher` —— 但那
+    /// 是**隐式**行为，一旦 flatten 顺序变化就会静默改名。这里写死更稳。
+    #[command(name = "init-teacher", alias = "create-teacher")]
+    InitTeacher {
+        /// 教师姓名；省略则交互式询问
+        name: Option<String>,
+        /// 密码；省略则交互式询问
+        password: Option<String>,
+    },
     /// 🛰️ 长期在线托管多个课程/班级（配置驱动）
     Serve {
         /// 托管项：`<课程码> <班级>` 若干；`--all` 表示该老师名下全部；`--offline` 走离网直连
@@ -471,7 +481,12 @@ fn teacher_cmd_to_edu_args(cmd: TeacherCommands) -> Vec<String> {
             v
         }
         TeacherCommands::Dashboard => vec!["dashboard".to_string()],
-        TeacherCommands::InitTeacher => vec!["init".to_string()],
+        TeacherCommands::InitTeacher { name, password } => {
+            let mut v = vec!["init".to_string()];
+            if let Some(n) = name { v.push(n); }
+            if let Some(p) = password { v.push(p); }
+            v
+        }
         TeacherCommands::Serve { args } => prepend("serve", args),
         TeacherCommands::Addr => vec!["addr".to_string()],
     }

@@ -197,6 +197,16 @@ pub struct EduStore {
 impl EduStore {
     /// 打开/创建教育数据库
     pub fn open(path: impl AsRef<Path>) -> Result<Self, EduError> {
+        // ⚠️ 必须先建父目录：`Connection::open` **不会**创建目录，目录不存在时报
+        //    `unable to open database file`（而不是「目录不存在」，极易误导）。
+        //    便携模式（U 盘 / 全新目录）下 `home/` 一定还不存在 —— 这正是
+        //    「零安装直接跑」的必经路径。
+        if let Some(parent) = path.as_ref().parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| EduError::Db(format!("创建目录 {} 失败: {e}", parent.display())))?;
+            }
+        }
         let db = Connection::open(path.as_ref()).map_err(EduError::Open)?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
 
@@ -2068,6 +2078,26 @@ mod section_tests {
         let store = EduStore::open(tmp.path().join("edu.db")).unwrap();
         store.create_teacher("张老师", "pw").unwrap();
         (tmp, store)
+    }
+
+    /// 便携模式（U 盘 / 全新目录）下 `home/` 尚不存在 —— `open` 必须自己建。
+    ///
+    /// 回归背景：`Connection::open` 不会创建目录，报的错是
+    /// `unable to open database file`（不提「目录」二字），极易被误判成权限问题。
+    #[test]
+    fn test_open_creates_missing_parent_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        assert!(!home.exists(), "前置条件：目录尚不存在");
+
+        let store = EduStore::open(home.join("edu.db")).expect("应自动创建父目录");
+        assert!(home.is_dir(), "home/ 应被创建");
+        assert!(home.join("edu.db").exists(), "库文件应已建立");
+
+        // 建出来的库必须真的可用（表结构已就绪）
+        store.create_teacher("张老师", "pw").expect("应能写库");
+        assert_eq!(store.list_teachers().unwrap().len(), 1);
+        drop(store);
     }
 
     #[test]
