@@ -3,6 +3,8 @@
 > 适用版本：**v0.7.15+**（含 P1–P4 去中心化教学班通信 + 多老师拓扑 + 配置驱动 + 三驱动收敛 S2.1/S2.2）
 > 对应设计：`docs/edu-p2p-design.md`（§4 双 ALPN / §5 Topic 隔离 / §5.4 R3 撤销 /
 > §10.7 多老师缺陷 / §10.8 身份持久化与配置驱动）
+> **照着敲的操作手册**（教师端 × 学生端全生命周期、带期望输出与判据）见
+> `docs/edu-p2p-e2e-flow.md` —— 本页讲「原理与分层」，那页讲「怎么跑、怎么看」。
 
 ---
 
@@ -16,16 +18,17 @@ RH_SKIP_WINRESOURCE=1 cargo test --test edu_p2p_e2e -- --nocapture
 **预期末行**：
 
 ```
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
-3 个端到端用例各自覆盖一条主线：
+4 个端到端用例各自覆盖一条主线：
 
 | 用例 | 覆盖 |
 |---|---|
 | `edu_p2p_revocation_end_to_end` | 认证 → 入班 → 群发 → 越权拦截 → 白名单 → 撤销轮换 |
 | `edu_p2p_multi_teacher_end_to_end` | 一位学生同时接入**两位老师**（同一把钥匙，两班互不串台） |
 | `edu_p2p_config_driven_multi_teacher` | **配置文件**驱动：老师持久化凭据 + 学生多老师清单 |
+| `edu_p2p_section_host_drives_notices_and_send` | `SectionHost` 装配层：公告多播 / 提问真进 gossip / `shutdown` 只影响本端 |
 
 全部**不依赖外网、不需要中继**（节点绑在 loopback 上直连）。
 
@@ -56,7 +59,7 @@ export RUST_LOG=rhermes=info
 | 层 | 范围 | 命令 | 数量 | 特征 |
 |---|---|---|---|---|
 | **L1 单元** | 纯逻辑：Topic 派生 / 签名验签 / 纪元单调 / 撤销 SQL / 身份持久化 / 配置解析 / 托管项解析 | `RH_SKIP_WINRESOURCE=1 cargo test --lib edu::` | 144 | 毫秒级，无网络 |
-| **L2 集成（本页主角）** | 真实 iroh 端点 + gossip + 双 ALPN，**离网** | `cargo test --test edu_p2p_e2e -- --nocapture` | 3（含 20+ 组断言） | ~21 秒，无外网 |
+| **L2 集成（本页主角）** | 真实 iroh 端点 + gossip + 双 ALPN，**离网** | `cargo test --test edu_p2p_e2e -- --nocapture` | 4（含 20+ 组断言） | ~21 秒，无外网 |
 | **L3 手工** | 真机多进程 / 同机不同目录 | 见 §5 | — | 验收用 |
 
 其中 edu 单元测试按模块分布（2026-09-16 实测）：
