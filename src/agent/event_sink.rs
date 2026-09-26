@@ -83,12 +83,34 @@ impl ChannelSink {
         Self { channel_mgr, channel_name, chat_id, buffer: Mutex::new(String::new()) }
     }
 
+    /// 剥离思考流残留：session 层把 reasoning 用 format_thinking_block 注入正文流，
+    /// TUI 能特殊渲染，外部通道（微信/企微/QQ/web）必须剪掉，否则内部规划暴露给学生。
+    /// 正则必须匹配 session.rs::format_thinking_block 的真实输出（🤔 **思考过程**），
+    /// 回归样例见本文件 tests。
+    fn strip_thinking(text: &str) -> String {
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| {
+            regex::Regex::new(r"(?s)🤔\s*\*\*思考过程.*?(?:\r?\n\r?\n|\z)").expect("静态正则必合法")
+        });
+        let mut s = re.replace_all(text, "").to_string();
+        // 成对 <think>…</think>：flush 时已是完整文本，整块删除内容而非仅删标记
+        static THINK: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let think = THINK.get_or_init(|| {
+            regex::Regex::new(r"(?s)<think>.*?</think>").expect("静态正则必合法")
+        });
+        s = think.replace_all(&s, "").to_string();
+        // 跨 chunk 残留的孤立标记：仅删字面量
+        s = s.replace("<think>", "").replace("</think>", "");
+        s.trim_start_matches(['\r', '\n', ' ']).to_string()
+    }
+
     async fn flush_buffer(&self) {
         let text = {
             let mut buf = self.buffer.lock().unwrap();
             if buf.is_empty() { return; }
             std::mem::take(&mut *buf)
         };
+        let text = Self::strip_thinking(&text);
         if let Some(ch) = self.channel_mgr.get(&self.channel_name) {
             if let Err(e) = ch.send_message(&self.chat_id, &text).await {
                 tracing::warn!("{} flush_buffer 发送失败 (chat_id={}): {}", self.channel_name, self.chat_id, e);
@@ -137,5 +159,39 @@ impl EventSink for ChannelSink {
                 tracing::warn!("{} on_error 发送失败: {}", self.channel_name, e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// B1 回归：strip_thinking 必须剥掉 session.rs::format_thinking_block 的真实输出。
+    /// （v0.7.16 曾因编辑器二次编码把正则写成乱码，函数静默失效、一个字都剥不掉。）
+    #[test]
+    fn strip_thinking_removes_thinking_block() {
+        let sample = "🤔 **思考过程** (52字)\n> 学生问的是循环队列的入队……\n\n正文回答在这里。";
+        assert_eq!(ChannelSink::strip_thinking(sample), "正文回答在这里。");
+    }
+
+    /// CRLF 变体：session.rs 在 CRLF 工作区下会输出 \r\n 行尾。
+    #[test]
+    fn strip_thinking_handles_crlf() {
+        let sample = "🤔 **思考过程**\r\n> abc\r\n\r\n正文";
+        assert_eq!(ChannelSink::strip_thinking(sample), "正文");
+    }
+
+    /// 只有思考块 → 剥离后为空。
+    #[test]
+    fn strip_thinking_block_only() {
+        let sample = "🤔 **思考过程**\n> 全是思考\n\n";
+        assert_eq!(ChannelSink::strip_thinking(sample), "");
+    }
+
+    /// 普通文本不受影响；<think> 标签字面量仍被清理。
+    #[test]
+    fn strip_thinking_plain_text_untouched() {
+        assert_eq!(ChannelSink::strip_thinking("普通回答"), "普通回答");
+        assert_eq!(ChannelSink::strip_thinking("<think>x</think>正文"), "正文");
     }
 }

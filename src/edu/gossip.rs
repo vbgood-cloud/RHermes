@@ -266,6 +266,11 @@ impl SectionSession {
         self.topic
     }
 
+    /// 广播端克隆（供独立收包 task 回发消息，如教师 AI 答疑）。
+    pub(crate) fn sender(&self) -> iroh_gossip::api::GossipSender {
+        self.sender.clone()
+    }
+
     /// 广播一条教学班消息
     pub async fn broadcast(&self, msg: &SectionMsg) -> anyhow::Result<()> {
         let bytes = postcard::to_allocvec(msg)?;

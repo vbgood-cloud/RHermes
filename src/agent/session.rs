@@ -430,7 +430,7 @@ impl AgentSession {
             let mut timed_out = false;
 
             loop {
-                match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
+                match tokio::time::timeout(Duration::from_secs(120), rx.recv()).await {
                     Ok(Some(crate::api::ApiEvent::StreamChunk(text))) => {
                         // 过滤 <think> 标签：底层模型可能把思考内容放在 content 中
                         let filtered = text
@@ -481,8 +481,8 @@ impl AgentSession {
                     Ok(None) => break,
                     Err(_) => {
                         timed_out = true;
-                        tracing::error!("API 调用超时（30s）");
-                        self.sink.on_error("API 请求超时（30秒）").await;
+                        tracing::error!("API 调用超时（120s）");
+                        self.sink.on_error("API 请求超时（120秒）").await;
                         break;
                     }
                 }

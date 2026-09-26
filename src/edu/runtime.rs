@@ -25,6 +25,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use iroh_gossip::api::{Event, GossipReceiver};
 use iroh_gossip::{Gossip, TopicId};
 use tokio::sync::{mpsc, RwLock};
+use tokio::time::Duration;
 
 use super::allowlist::{
     apply_signed_allowlist, revoke_and_rotate, AllowlistState, RevokeOutcome, SignedAllowlist,
@@ -39,6 +40,88 @@ use super::store::EduStore;
 struct SessionSlot {
     epoch: u32,
     session: SectionSession,
+    /// 教学班 gossip 接收器：入班时存下，由 `spawn_answer_loop` 取走消费。
+    /// `None` 表示已被取走（或该会话不消费收包——旧版本行为）。
+    rx: Option<GossipReceiver>,
+}
+
+/// 教师 AI 答疑用的 Provider 配置（来自 `[providers.<default_provider>]`）。
+///
+/// `client` 在解析时用代理工厂**构建一次**并随配置克隆复用——
+/// 每次请求 `reqwest::Client::new()` 会重建连接池 + TLS 握手，且绕过代理配置。
+#[derive(Debug, Clone)]
+pub(crate) struct AiConfig {
+    pub(crate) client: reqwest::Client,
+    pub(crate) base_url: String,
+    pub(crate) api_key: String,
+    pub(crate) model: String,
+}
+
+/// 从全局配置解析教师 AI 答疑用的 Provider（取 `[agent].default_provider`）。
+///
+/// 未配置 `default_provider` / 对应 Provider 缺 `base_url` 时返回 `None`，
+/// 教师端将以「无 AI 答疑」模式运行（行为与旧版一致）。
+pub(crate) fn ai_from_config(cfg: &crate::core::Config) -> Option<AiConfig> {
+    let name = cfg.agent.default_provider.trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let p = cfg.providers.get(&name)?;
+    let client = crate::core::http_client::create_proxied_client(
+        &cfg.proxy,
+        "llm",
+        Duration::from_secs(60),
+    );
+    Some(AiConfig {
+        client,
+        base_url: p.base_url.clone()?,
+        api_key: p.api_key.clone(),
+        model: p
+            .model
+            .clone()
+            .unwrap_or_else(|| "default".to_string()),
+    })
+}
+
+/// 调用 OpenAI 兼容接口生成答疑回复。
+async fn ask_llm(ai: &AiConfig, question: &str) -> anyhow::Result<String> {
+    let url = format!("{}/chat/completions", ai.base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": ai.model,
+        "stream": false,
+        "messages": [
+            {"role": "system", "content": "你是一位耐心的一线教师，用简洁准确的中文回答学生问题。"},
+            {"role": "user", "content": question}
+        ]
+    });
+    let resp = ai
+        .client
+        .post(&url)
+        .bearer_auth(&ai.api_key)
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP {status}: {}", text.chars().take(300).collect::<String>());
+    }
+    let raw = resp.text().await?;
+    let v: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => anyhow::bail!(
+            "响应非JSON({e}): {}",
+            raw.chars().take(200).collect::<String>()
+        ),
+    };
+    let content = v["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    if content.is_empty() {
+        anyhow::bail!("LLM 返回为空");
+    }
+    Ok(content)
 }
 
 /// 教学班的全局标识（定义见 [`crate::edu::model::SectionKey`]）。
@@ -77,6 +160,10 @@ pub struct TeacherRuntime {
     registry: AuthRegistry,
     sessions: HashMap<i64, SessionSlot>,
     pub allowlist_state: AllowlistState,
+    /// 教师 AI 答疑配置（`None` = 无答疑，仅记录提问）
+    answer_ai: Option<Arc<AiConfig>>,
+    /// 教师显示名（回答署名用，来自 `edu_teachers.name`）
+    answer_name: String,
 }
 
 impl TeacherRuntime {
@@ -149,6 +236,8 @@ impl TeacherRuntime {
             registry,
             sessions: HashMap::new(),
             allowlist_state: AllowlistState::new(),
+            answer_ai: None,
+            answer_name: "老师".to_string(),
         })
     }
 
@@ -174,12 +263,21 @@ impl TeacherRuntime {
         };
         if stale {
             let topic = TopicId::from_bytes(gossip::derive_topic(&seed, epoch));
-            let (session, _rx) =
+            let (session, rx) =
                 SectionSession::host_topic(&self.node.gossip, section_id, topic).await?;
             if self.sessions.contains_key(&section_id) {
                 tracing::info!("[section {section_id}] 会话随纪元轮换重建：epoch={epoch}");
             }
-            self.sessions.insert(section_id, SessionSlot { epoch, session });
+            self.sessions.insert(
+                section_id,
+                SessionSlot {
+                    epoch,
+                    session,
+                    rx: Some(rx),
+                },
+            );
+            // 纪元重建的新接收器必须有消费者，否则提问再次无人接（B3）
+            self.spawn_answer_loop(section_id);
         }
         Ok(&self.sessions.get(&section_id).expect("刚插入").session)
     }
@@ -202,6 +300,108 @@ impl TeacherRuntime {
     pub async fn broadcast_msg(&mut self, section_id: i64, msg: &SectionMsg) -> anyhow::Result<()> {
         let s = self.ensure_session(section_id).await?;
         s.broadcast(msg).await
+    }
+
+    /// 注入 AI 答疑配置与教师显示名（serve 启动时、入班前调用一次）。
+    pub fn set_answer_config(&mut self, ai: Option<Arc<AiConfig>>, teacher_name: String) {
+        self.answer_ai = ai;
+        self.answer_name = teacher_name;
+    }
+
+    /// 为某教学班启动「收提问 → AI 答疑 → 广播回答」循环（v0.7.16 修复）。
+    ///
+    /// 旧版 `ensure_session` 把 gossip 接收器 `_rx` 直接丢弃，学生提问到达
+    /// 教师进程后无人消费（gossip 层 EmitEvent 之后静默消失）——这是
+    /// 「学生 ask 显示已发送、教师端零日志、永远等不到回答」的根因。
+    ///
+    /// 本方法从 `SessionSlot` 取走接收器并 spawn 独立 task，且在**每条重建会话
+    /// 的路径**上自动调用（首次入班 / 纪元轮换 / 撤销轮换）：
+    /// - 收到 [`SectionMsg::Question`] → **每问一个 task** 并发调 LLM（单个慢
+    ///   调用只耗自身的 60s 超时，不阻塞后续提问）→ 以 `SectionMsg::Answer`
+    ///   广播回班，署名为 [`TeacherRuntime::set_answer_config`] 注入的教师真名；
+    /// - `Chat`/`Answer` 等其余消息仅记 debug 日志（对等广播，教师自己也会收到）；
+    /// - AI 未配置（无 default_provider）时降级为只记日志，行为同旧版。
+    fn spawn_answer_loop(&mut self, section_id: i64) {
+        use futures_util::StreamExt as _;
+
+        let Some(slot) = self.sessions.get_mut(&section_id) else {
+            tracing::warn!("[section {section_id}] spawn_answer_loop：会话不存在");
+            return;
+        };
+        let Some(rx) = slot.rx.take() else {
+            tracing::warn!("[section {section_id}] spawn_answer_loop：接收器已被取走");
+            return;
+        };
+        let sender = slot.session.sender();
+        let ai = self.answer_ai.clone();
+        let teacher_name = self.answer_name.clone();
+
+        // 存活期与所属会话一致：会话被替换 → 旧 rx 随旧 Topic 关闭 → 循环自然退出
+        tokio::spawn(async move {
+            tracing::info!("[section {section_id}] 教师答疑循环已启动");
+            let mut rx = rx;
+            while let Some(ev) = rx.next().await {
+                let Ok(Event::Received(m)) = ev else {
+                    continue;
+                };
+                let Ok(msg) = postcard::from_bytes::<SectionMsg>(&m.content) else {
+                    continue; // 教师端自己的白名单/轮换广播等，静默跳过
+                };
+                match msg {
+                    SectionMsg::Question {
+                        from,
+                        display_name: student,
+                        text,
+                        ..
+                    } => {
+                        tracing::info!("[section {section_id}] 收到提问 {from}({student}): {text}");
+                        let Some(ai) = ai.as_ref() else {
+                            tracing::info!("[section {section_id}] 未配置 AI，跳过答疑");
+                            continue;
+                        };
+                        let (ai, sender, reply_name, from) = (
+                            ai.clone(),
+                            sender.clone(),
+                            teacher_name.clone(),
+                            from,
+                        );
+                        // 每问一个 task：慢 LLM 调用不阻塞收包循环
+                        tokio::spawn(async move {
+                            match ask_llm(&ai, &text).await {
+                                Ok(answer) => {
+                                    let reply = SectionMsg::answer(
+                                        "teacher", &reply_name, &from, &answer,
+                                    );
+                                    match postcard::to_allocvec(&reply) {
+                                        Ok(bytes) => {
+                                            if let Err(e) = sender.broadcast(bytes.into()).await {
+                                                tracing::warn!(
+                                                    "[提问者 {from}] 回答广播失败: {e}"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    "[提问者 {from}] 已广播 AI 回答"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => tracing::warn!(
+                                            "[提问者 {from}] 回答序列化失败: {e}"
+                                        ),
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("[提问者 {from}] LLM 调用失败: {e:#}");
+                                }
+                            }
+                        });
+                    }
+                    other => {
+                        tracing::debug!("[section {section_id}] 收到班内消息：{}", other.summary());
+                    }
+                }
+            }
+            tracing::info!("[section {section_id}] 教师答疑循环退出");
+        });
     }
 
     /// **P3**：发布作业文件（blobs 内容寻址 + gossip 通知）
@@ -243,7 +443,7 @@ impl TeacherRuntime {
         reason: &str,
     ) -> anyhow::Result<RevokeOutcome> {
         let store = EduStore::open(&self.db_path)?;
-        let (outcome, new_session) = {
+        let (outcome, new_session, rx) = {
             let key = self.node.endpoint.secret_key();
             revoke_and_rotate(
                 &store,
@@ -261,8 +461,11 @@ impl TeacherRuntime {
             SessionSlot {
                 epoch: outcome.new_epoch,
                 session: new_session,
+                rx: Some(rx),
             },
         );
+        // 轮换出的新会话同样要有消费者，否则撤销后提问再次无人接（B3）
+        self.spawn_answer_loop(section_id);
         tracing::info!(
             "[section {section_id}] 已撤销 {username}：epoch {} → {}",
             outcome.old_epoch,
@@ -817,5 +1020,22 @@ mod tests {
             store.get_section(sec.id).unwrap().unwrap().topic_epoch,
             1
         );
+    }
+
+    /// B3/B4 配套：AI 配置解析——未配置/指向不存在的 provider → None（降级只记录）；
+    /// 配置齐全 → Some，client 走代理工厂只建一次。
+    #[test]
+    fn test_ai_from_config_resolution() {
+        let mut cfg = crate::core::Config::default();
+        assert!(ai_from_config(&cfg).is_none(), "未配置 default_provider 应为 None");
+        cfg.agent.default_provider = "nope".into();
+        assert!(ai_from_config(&cfg).is_none(), "不存在的 provider 应为 None");
+        cfg.agent.default_provider = "deepseek".into();
+        let p = cfg.providers.entry("deepseek".into()).or_default();
+        p.base_url = Some("https://api.deepseek.com/v1".into());
+        p.model = Some("deepseek-chat".into());
+        let ai = ai_from_config(&cfg).expect("配置齐全应解析出 AiConfig");
+        assert_eq!(ai.base_url, "https://api.deepseek.com/v1");
+        assert_eq!(ai.model, "deepseek-chat");
     }
 }

@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use iroh::{EndpointId, PublicKey, SecretKey, Signature};
 use iroh_gossip::Gossip;
+use iroh_gossip::api::GossipReceiver;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -389,7 +390,7 @@ pub async fn revoke_and_rotate(
     section_id: i64,
     username: &str,
     reason: &str,
-) -> anyhow::Result<(RevokeOutcome, SectionSession)> {
+) -> anyhow::Result<(RevokeOutcome, SectionSession, GossipReceiver)> {
     let section = store
         .get_section(section_id)?
         .ok_or_else(|| anyhow::anyhow!("教学班 {section_id} 不存在"))?;
@@ -458,7 +459,7 @@ pub async fn revoke_and_rotate(
     let allowlist = SignedAllowlist::build(store, section_id, new_epoch, &teacher_ep)?
         .sign(secret_key);
 
-    let (new_session, _rx) =
+    let (new_session, rx) =
         SectionSession::host(gossip, section_id, &seed, new_epoch).await?;
     new_session
         .broadcast_allowlist(section_id, new_epoch, &allowlist)
@@ -473,6 +474,7 @@ pub async fn revoke_and_rotate(
             allowlist,
         },
         new_session,
+        rx,
     ))
 }
 

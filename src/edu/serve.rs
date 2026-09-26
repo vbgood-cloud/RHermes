@@ -32,7 +32,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::core::{Config, EduServeSection};
 
 use super::identity;
-use super::runtime::TeacherRuntime;
+use super::runtime::{self, TeacherRuntime};
 use super::store::{EduStore, SectionRow, Teacher};
 
 /// 一个待托管的教学班（含展示用的课程码）
@@ -270,23 +270,44 @@ pub async fn run_serve(config_path: &Path, args: &[String]) -> anyhow::Result<()
     }
     println!();
 
+    // ── 教师 AI 答疑 Provider（修复 v0.7.16：旧版收到学生提问无人消费）──
+    let ai = runtime::ai_from_config(&cfg).map(std::sync::Arc::new);
+    match &ai {
+        Some(a) => println!(
+            "   🤖 AI 答疑：{} @ {}（模型 {}）",
+            "已启用",
+            a.base_url,
+            a.model
+        ),
+        None => println!("   🤖 AI 答疑：未配置（[agent].default_provider）——仅记录提问"),
+    }
+    println!();
+
+    // AI 答疑配置 + 教师真名注入；答疑循环随每条会话创建路径自动启动（含轮换重建）
+    rt.set_answer_config(ai.clone(), teacher.name.clone());
+
     // ── 逐班入班：建会话 + 广播白名单 ──
     for s in sections.iter_mut() {
         match rt.ensure_session(s.section_id).await {
-            Ok(_) => match rt.publish_allowlist(s.section_id).await {
-                Ok(signed) => {
-                    s.online = true;
-                    println!(
-                        "   ✅ [{}] {} / {} · 学生 {} 人 · epoch {}",
-                        s.section_id,
-                        s.course_code,
-                        s.class_name,
-                        signed.student_count(),
-                        signed.epoch
-                    );
+            Ok(_) => {
+                match rt.publish_allowlist(s.section_id).await {
+                    Ok(signed) => {
+                        s.online = true;
+                        println!(
+                            "   ✅ [{}] {} / {} · 学生 {} 人 · epoch {}",
+                            s.section_id,
+                            s.course_code,
+                            s.class_name,
+                            signed.student_count(),
+                            signed.epoch
+                        );
+                    }
+                    Err(e) => println!(
+                        "   ⚠️  [{}] {} 白名单广播失败：{e}",
+                        s.section_id, s.class_name
+                    ),
                 }
-                Err(e) => println!("   ⚠️  [{}] {} 白名单广播失败：{e}", s.section_id, s.class_name),
-            },
+            }
             Err(e) => println!("   ❌ [{}] {} 入班失败：{e}", s.section_id, s.class_name),
         }
     }
