@@ -10,7 +10,7 @@ RHermes = Reasonix + Hermes，Rust 版自进化终端 AI 编程 Agent。核心�
 
 ```bash
 cargo build --release        # release 构建
-cargo test                   # 运行全部测试（370+ 个）
+cargo test                   # 运行全部测试（410+ 个）
 cargo test tool_name         # 运行单个测试（按名称过滤）
 cargo clippy                 # lint 检查
 cargo fmt                    # 格式化代码

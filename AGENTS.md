@@ -12,7 +12,7 @@ DeepSeek API 驱动的终端 AI Agent，三段式 Context 缓存优化、并行�
 |------|------|
 | `cargo build` | 编译 debug |
 | `cargo build --release` | 编译 release |
-| `cargo test` | 运行全部 370+ 个单元测试 |
+| `cargo test` | 运行全部 410+ 个单元测试 |
 
 ### 应用命令（三个 bin 共享通用子命令，各有特有命令）
 

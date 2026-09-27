@@ -102,6 +102,9 @@ pub struct Config {
     /// 知识库学习配置（遗忘曲线参数）
     #[serde(default)]
     pub knowledge: KnowledgeConfig,
+    /// Jev 决策模型配置（D18 判断层）
+    #[serde(default)]
+    pub jev: JevConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +171,65 @@ impl Default for ProxyConfig {
             url: None,
             no_proxy: Vec::new(),
             rules: HashMap::new(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Jev 决策模型配置（D18 判断层）
+// ---------------------------------------------------------------------------
+
+fn default_jev_model() -> String {
+    "jev-latest".into()
+}
+
+fn default_jev_base_url() -> String {
+    "https://api.typesafe.ai".into()
+}
+
+fn default_jev_timeout() -> u64 {
+    5
+}
+
+fn default_jev_min_confidence() -> f64 {
+    0.6
+}
+
+/// Jev 决策模型配置（判断层，详见 docs/decisions/D18-jev-judge.md）
+///
+/// 定位：与 DeepSeek（生成层）互补的高频结构化判断；
+/// 未启用 / 未配置 key / 调用失败时，所有集成点一律回退现有行为。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JevConfig {
+    /// 是否启用（false 或缺省 → 全部集成点走回退路径）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 模型；阈值调优后应锁定版本（如 jev-1.13.0），jev-latest 别名会漂移
+    #[serde(default = "default_jev_model")]
+    pub model: String,
+    /// API 地址；备选网关 OpenRouter: https://openrouter.ai（请求体同构）
+    #[serde(default = "default_jev_base_url")]
+    pub base_url: String,
+    /// API Key（仅从 .env 的 TYPESAFE_API_KEY 读取，永不写入 config.toml）
+    #[serde(default, skip)]
+    pub api_key: String,
+    /// 请求超时（秒）——判断层硬上限，超时即回退
+    #[serde(default = "default_jev_timeout")]
+    pub timeout_secs: u64,
+    /// choice 门控阈值：confidence 低于此值视为"拿不准"，回退原方案
+    #[serde(default = "default_jev_min_confidence")]
+    pub min_confidence: f64,
+}
+
+impl Default for JevConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            model: default_jev_model(),
+            base_url: default_jev_base_url(),
+            api_key: String::new(),
+            timeout_secs: default_jev_timeout(),
+            min_confidence: default_jev_min_confidence(),
         }
     }
 }
@@ -852,6 +914,7 @@ impl Default for Config {
             edu: EduConfig::default(),
             liteparse: LiteParseSettings::default(),
             knowledge: KnowledgeConfig::default(),
+            jev: JevConfig::default(),
         }
     }
 }
@@ -895,6 +958,12 @@ impl Config {
                         }
                         continue;
                     }
+                    // TYPESAFE_API_KEY → jev.api_key（D18 判断层）
+                    // continue 避免被下方通用逻辑误注册为 LLM provider
+                    if key == "TYPESAFE_API_KEY" {
+                        cfg.jev.api_key = value.clone();
+                        continue;
+                    }
                     // 通用格式: {PROVIDER}_API_KEY → providers.{provider_lower}.api_key
                     if let Some(rest) = key.strip_suffix("_API_KEY") {
                         if !rest.is_empty() {
@@ -926,7 +995,12 @@ impl Config {
             }
         }
 
-        // 3. 向后兼容：如果 [providers] 为空但 [api] 有配置，自动迁移
+        // 3. D18: Jev 判断层默认走代理（api.typesafe.ai 国内默认不可达）；显式配置优先
+        if cfg.jev.enabled {
+            cfg.proxy.rules.entry("jev".to_string()).or_insert(true);
+        }
+
+        // 4. 向后兼容：如果 [providers] 为空但 [api] 有配置，自动迁移
         if cfg.providers.is_empty() && !cfg.api.model.is_empty() {
             let mut deepseek = ProviderConfig::default();
             if !cfg.api_key.is_empty() {
@@ -1646,6 +1720,7 @@ mod tests {
             edu: EduConfig::default(),
             liteparse: LiteParseSettings::default(),
             knowledge: KnowledgeConfig::default(),
+            jev: JevConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&original).unwrap();

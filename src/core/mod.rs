@@ -20,6 +20,8 @@ pub use config::ProviderConfig;
 pub use config::ScheduledTaskConfig;
 pub use config::TelegramConfig;
 pub use config::ProxyMode;
+pub use config::ProxyConfig;
+pub use config::JevConfig;
 pub use config::WasmPluginConfig;
 pub use config::WeChatConfig;
 pub use config::WeComConfig;
