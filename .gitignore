@@ -32,3 +32,7 @@ session.json
 # 临时文件 / 调试输出
 nul
 tmpclaude-*
+
+# 构建产物 / 临时目录 / 参赛材料
+.tmp*/
+outputs/
