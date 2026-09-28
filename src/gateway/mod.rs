@@ -108,6 +108,9 @@ async fn gateway_start(config_path: &Path) -> Result<(), String> {
         let _ = crate::tools::set_global_skill_engine(Arc::clone(se));
     }
 
+    // D18 P1: 判断层（与 TUI 模式一致；未启用 → None 全回退）
+    crate::judge::set_global_judge(crate::judge::Judge::from_config(&config));
+
     // 调试系统
     let session_debug = if config.debug.enabled {
         let mut sd = crate::debug::SessionDebug::new();

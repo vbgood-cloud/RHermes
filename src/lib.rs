@@ -803,6 +803,9 @@ async fn run_code(resume: bool, role_hint: Option<&str>) {
         let _ = crate::tools::set_global_config(config.clone());
     }
 
+    // D18 P1: 初始化判断层（未启用/未配置 key → None，全部集成点走回退）
+    crate::judge::set_global_judge(crate::judge::Judge::from_config(&config));
+
     // 设置全局显示配置（供 read_pdf 等工具使用）
     crate::tools::set_display_config(config.display.clone());
 

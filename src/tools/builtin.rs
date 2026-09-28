@@ -1682,6 +1682,9 @@ fn memory_safety_check(content: &str) -> Result<(), String> {
 /// 记忆工具：读写管理 MEMORY.md 和 USER.md（双文件存储）
 pub struct Memory;
 
+/// D18 P1: 记忆保存判断问法（P0 实测 winnow:e4b 方向正确率 100%，勿随意改动）
+const MEMORY_SAVE_QUESTION: &str = "该内容是否具有跨会话的长期价值（用户偏好、事实、配置、联系人等知识）？排除：任务进度、临时 TODO、已完成的工作日志、一次性操作记录。";
+
 impl Memory {
     /// 从磁盘读取全部内容
     fn read_all(path: &std::path::Path) -> String {
@@ -1760,6 +1763,17 @@ impl Tool for Memory {
                 let entry = format!("§ {}", content);
                 Self::safety_check(&entry)
                     .map_err(|e| ToolError::ExecutionFailed(e))?;
+
+                // D18 P1: 判断层过滤临时信息（Noul 0.7 门限）
+                // 失败/模糊 → 照常落库（fail-open，宁多存不丢）
+                if let Some(judge) = crate::judge::global_judge() {
+                    if let Some(false) = judge.noul(&content, MEMORY_SAVE_QUESTION, 0.7).await {
+                        tracing::info!("判断层评估为临时信息，跳过保存: {}", content);
+                        return Ok(
+                            "⏭ 已评估为临时信息（任务进度/TODO/一次性记录），未保存。若确有长期价值，请在内容中说明后重试。".into(),
+                        );
+                    }
+                }
 
                 let mut current = Self::read_all(&file_path);
 

@@ -1161,6 +1161,19 @@ impl Config {
         s.push_str("# 请求失败最大重试次数\n");
         s.push_str(&format!("max_retries = {}\n\n", d.request.max_retries));
 
+        // ── Jev 判断层（D18）──
+        s.push_str("# ── Jev 判断层（D18，详见 docs/decisions/D18-jev-judge.md）──\n");
+        s.push_str("# 高频结构化判断（如记忆保存过滤）；未启用时全部走原有行为\n");
+        s.push_str("# API Key 放同目录 .env: TYPESAFE_API_KEY=xxx\n");
+        s.push_str("[jev]\n");
+        s.push_str(&format!("enabled = {}\n", d.jev.enabled));
+        s.push_str("# 模型（阈值调优后应锁定版本；内网 Ollama 如 winnow:e4b）\n");
+        s.push_str(&format!("model = {:?}\n", d.jev.model));
+        s.push_str("# 端点（官方 https://api.typesafe.ai；内网 Ollama 兼容端点均可）\n");
+        s.push_str(&format!("base_url = {:?}\n", d.jev.base_url));
+        s.push_str(&format!("timeout_secs = {}\n", d.jev.timeout_secs));
+        s.push_str(&format!("min_confidence = {}\n\n", d.jev.min_confidence));
+
         // ── 记忆配置 ──
         s.push_str("# ── 记忆与笔记配置 ──\n");
         s.push_str("[memory]\n");

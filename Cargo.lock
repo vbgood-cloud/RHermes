@@ -5933,7 +5933,7 @@ dependencies = [
 
 [[package]]
 name = "rhermes"
-version = "0.7.19"
+version = "0.7.20"
 dependencies = [
  "anyhow",
  "argon2",
