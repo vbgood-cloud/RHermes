@@ -88,18 +88,24 @@ struct EvalRow {
 #[ignore = "需要 TYPESAFE_API_KEY 与外网访问；D18 P0 门槛测试"]
 async fn p0_chinese_quality_gate() {
     let api_key = std::env::var("TYPESAFE_API_KEY")
-        .expect("未设置 TYPESAFE_API_KEY 环境变量（从 console.typesafe.ai/keys 获取）");
+        .expect("未设置 TYPESAFE_API_KEY 环境变量（从 console.typesafe.ai/keys 获取，或内网 kev 的 key）");
 
-    // P0 直连官方端点（评估环境不走代理配置）；超时放宽到 30s 避免网络抖动误判
+    // base_url 可覆盖（如内网 kev: $env:JEV_BASE_URL = "http://10.126.126.3:8009"）
+    let base_url =
+        std::env::var("JEV_BASE_URL").unwrap_or_else(|_| "https://api.typesafe.ai".to_string());
+    // model 可覆盖（如内网 Ollama: $env:JEV_MODEL = "winnow:e4b"）
+    let model = std::env::var("JEV_MODEL").unwrap_or_else(|_| "jev-latest".to_string());
+
+    // P0 直连端点（评估环境不走代理配置）；超时放宽到 30s 兼容本地推理延迟
     let judge = Judge::new(
         JudgeClient::new(
             &ProxyConfig::default(),
-            "https://api.typesafe.ai",
+            &base_url,
             &api_key,
             std::time::Duration::from_secs(30),
         ),
         0.0, // P0 阶段不做门控，观察原始分布
-        "jev-latest",
+        model,
     );
 
     // 并发评估全部样本（限 5 并发，避免限流）
