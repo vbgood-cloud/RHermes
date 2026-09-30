@@ -59,6 +59,18 @@ pub enum SkillStatus {
     Archived,
 }
 
+impl SkillStatus {
+    /// D18 P2: 判断层标签 ↔ 枚举（未知标签返回 None → 保留时间规则结论）
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "active" => Some(Self::Active),
+            "stale" => Some(Self::Stale),
+            "archived" => Some(Self::Archived),
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Curator
 // ---------------------------------------------------------------------------
@@ -83,8 +95,79 @@ impl Curator {
         }
     }
 
-    /// 运行完整的 curator 检查流程
+    /// 运行完整的 curator 检查流程（纯时间规则，测试与兼容入口）
     pub fn run(&self) -> CuratorReport {
+        self.run_inner(std::collections::HashMap::new())
+    }
+
+    /// 运行完整检查（D18 P2：判断层 fan-out 评估增强）
+    ///
+    /// 判断层对每个技能做 Choice(active/stale/archived) 评估；
+    /// confidence 达标的结论覆盖时间规则，未达标/失败/未启用 → 全部走时间规则。
+    pub async fn run_with_judge(&self) -> CuratorReport {
+        let mut overrides = std::collections::HashMap::new();
+        if crate::judge::global_judge().is_some() {
+            // 预扫描一遍供判断层评估（run_inner 内部会再扫一遍，低频任务可接受）
+            let states = self.scan_skill_states();
+            overrides = self.judge_overrides(&states).await;
+        }
+        self.run_inner(overrides)
+    }
+
+    /// 判断层批量评估（一次 fan-out 调用覆盖全部技能）
+    async fn judge_overrides(
+        &self,
+        states: &[(String, PathBuf, SkillStatus)],
+    ) -> std::collections::HashMap<String, SkillStatus> {
+        let Some(judge) = crate::judge::global_judge() else {
+            return std::collections::HashMap::new();
+        };
+
+        let mut questions = std::collections::HashMap::new();
+        for (name, path, _) in states {
+            let telemetry = crate::agent::UsageTelemetry::load(path);
+            let days = telemetry.days_since_last_used().unwrap_or(-1);
+            questions.insert(
+                format!("s_{name}"),
+                crate::judge::Question::choice(
+                    format!("技能「{name}」已 {days} 天未使用，应处于哪个生命周期状态？"),
+                    std::collections::HashMap::from([
+                        ("active".to_string(), "仍被频繁需要，最近有使用或明确有持续需求".to_string()),
+                        ("stale".to_string(), "疑似过时，一段时间未用但需求可能仍在，待观察".to_string()),
+                        ("archived".to_string(), "依赖已废弃或场景已结束，应归档".to_string()),
+                    ]),
+                ),
+            );
+        }
+        if questions.is_empty() {
+            return std::collections::HashMap::new();
+        }
+
+        let state_text = "技能库生命周期巡检：按每个问题的技能名称与最近使用天数独立评估。";
+        let Ok(resp) = judge.ask(state_text, questions).await else {
+            tracing::warn!("D18 P2: 判断层评估失败，全部走时间规则");
+            return std::collections::HashMap::new();
+        };
+
+        let min_conf = judge.min_confidence();
+        let mut out = std::collections::HashMap::new();
+        for (name, _, _) in states {
+            if let Some(ans) = resp.answers.get(&format!("s_{name}")) {
+                if let Some((choice, conf)) = ans.as_choice() {
+                    if conf >= min_conf {
+                        if let Some(status) = SkillStatus::from_label(choice) {
+                            out.insert(name.clone(), status);
+                        }
+                    }
+                }
+            }
+        }
+        tracing::info!("D18 P2: 判断层覆盖 {} / {} 个技能的生命周期判定", out.len(), states.len());
+        out
+    }
+
+    /// 检查核心（overrides 为判断层结论，key = 技能名）
+    fn run_inner(&self, overrides: std::collections::HashMap<String, SkillStatus>) -> CuratorReport {
         let start = Instant::now();
         let mut report = CuratorReport::new();
 
@@ -104,7 +187,14 @@ impl Curator {
         }
 
         // 3. 扫描技能状态
-        let states = self.scan_skill_states();
+        let mut states = self.scan_skill_states();
+
+        // D18 P2: 判断层结论覆盖时间规则（仅覆盖 confidence 达标的条目）
+        for (name, _, status) in states.iter_mut() {
+            if let Some(judged) = overrides.get(name) {
+                *status = judged.clone();
+            }
+        }
 
         // 4. 归档过期的技能
         for (name, skill_path, status) in &states {

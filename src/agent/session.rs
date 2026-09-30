@@ -18,6 +18,9 @@ use crate::core::Message;
 use crate::provider::Transport;
 use crate::tools::{ToolCall, ToolDispatcher};
 
+/// D18 P3a: 修复后 tool_calls 可信度问法
+const REPAIR_TRUST_QUESTION: &str = "以下工具调用是从模型损坏输出中修复还原的，其语义是否完整可信（工具选择合理、参数明确无缺失）？";
+
 /// Session 配置
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -248,6 +251,38 @@ impl AgentSession {
                 let conv_len = pr.conversation_length + user_msg.len();
                 let mut score = evaluate_reflection(user_msg, conv_len);
                 score.calculate_overall();
+
+                // D18 P3b: 判断层档位评估覆盖 overall（连续分语义弱 → 三档位中点映射）
+                // 失败/置信度不足 → 保持启发式分数（回退）
+                if let Some(judge) = crate::judge::global_judge() {
+                    let mut qs = std::collections::HashMap::new();
+                    qs.insert(
+                        "grade".to_string(),
+                        crate::judge::Question::score(
+                            "该学习反思回答处于哪一档？",
+                            vec![
+                                "未达标：空洞敷衍，无具体内容".to_string(),
+                                "合格：有具体内容但深度一般".to_string(),
+                                "优秀：深入具体，有洞察或自我纠正".to_string(),
+                            ],
+                        ),
+                    );
+                    if let Ok(resp) = judge.ask(user_msg, qs).await {
+                        if let Some((s, conf)) =
+                            resp.answers.get("grade").and_then(|a| a.as_score())
+                        {
+                            if conf >= judge.min_confidence() {
+                                // 档位中点映射（禁插值，D18 §3.6）
+                                score.overall = match s.round() as i64 {
+                                    0 => 0.25,
+                                    1 => 0.6,
+                                    _ => 0.95,
+                                };
+                                tracing::debug!("D18 P3b: 反思档位={:.1} conf={:.2}", s, conf);
+                            }
+                        }
+                    }
+                }
 
                 // 存入 outbox 供 router 落库
                 self.reflection_outbox = Some(ReflectionRecord {
@@ -508,6 +543,33 @@ impl AgentSession {
                 // 记录修复动作
                 for action in &repaired.actions {
                     tracing::debug!("护栏修复: {:?}", action);
+                }
+
+                // D18 P3a: 修复过的 tool_calls 做语义可信度判断
+                // 仅在明确不可信（p ≤ 0.25）时注入纠正重试；模糊/失败 → 走后续 validation（回退）
+                if !repaired.actions.is_empty() && !repaired.tool_calls.is_empty() {
+                    let state = repaired
+                        .tool_calls
+                        .iter()
+                        .map(|c| format!("工具 {} 参数 {}", c.name, c.arguments))
+                        .collect::<Vec<_>>()
+                        .join("；");
+                    let mut judge_reject = false;
+                    if let Some(j) = crate::judge::global_judge() {
+                        judge_reject =
+                            j.noul(&state, REPAIR_TRUST_QUESTION, 0.75).await.unwrap_or(false);
+                    }
+                    if judge_reject
+                        && self.guardrail_retry_count < self.config.guardrails_max_retries
+                    {
+                        tracing::warn!("D18 P3a: 修复后的 tool_calls 语义不可信，注入纠正重试");
+                        self.context.push_to_log(Message::new(
+                            crate::tui::Role::System,
+                            "上一轮工具调用经修复后语义仍不完整或不可信，请重新输出完整、参数明确的标准 tool_calls。",
+                        ));
+                        self.guardrail_retry_count += 1;
+                        continue;
+                    }
                 }
 
                 // 如果有 dispatcher（持有 registry），执行校验

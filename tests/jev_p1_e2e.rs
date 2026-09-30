@@ -94,3 +94,55 @@ async fn p1_memory_gate_end_to_end() {
     let _ = std::fs::remove_file(&md);
     println!("\n✅ D18 P1 端到端通过：临时信息被拒（未落库）、长期价值落库（MEMORY.md 已验证）");
 }
+
+/// D18 P2 端到端：判断层参与技能生命周期巡检
+///
+/// - "expired-api-v0.6-migration"（95 天未用）：时间规则必判 Archived（>90），强断言
+/// - "deepseek-prefix-cache-tuning"（45 天未用）：时间规则判 Stale；判断层结论打印人工检视
+#[tokio::test]
+#[ignore = "需要内网 winnow 端点可达"]
+async fn p2_curator_judge_override() {
+    let config = winnow_config();
+    let judge = Judge::from_config(&config).expect("判断层应启用");
+    set_global_judge(Some(judge));
+
+    // 临时技能目录 + 两个长期未用的技能
+    let tmp = tempfile::TempDir::new().unwrap();
+    for (name, days) in [
+        ("expired-api-v0.6-migration", 95i64),
+        ("deepseek-prefix-cache-tuning", 45),
+    ] {
+        let content = format!("---\ndescription: \"{name}\"\n---\n\n# {name}\n\nBody\n");
+        std::fs::write(tmp.path().join(format!("{name}.md")), content).unwrap();
+        let usage = rhermes::agent::UsageTelemetry {
+            use_count: 5,
+            view_count: 0,
+            patch_count: 0,
+            last_used_at: Some((chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339()),
+            created_at: None,
+            archived_at: None,
+            pinned: false,
+        };
+        std::fs::write(
+            tmp.path().join(format!("{name}.usage.json")),
+            serde_json::to_string_pretty(&usage).unwrap(),
+        )
+        .unwrap();
+    }
+
+    let curator = rhermes::agent::Curator::new(tmp.path().to_path_buf(), config);
+    let report = curator.run_with_judge().await;
+
+    println!("\n[P2 巡检报告] {}", report.format());
+    println!("[P2 归档列表] {:?}", report.archived);
+    println!("[P2 过期列表] {:?}", report.stale);
+
+    assert!(report.errors.is_empty(), "巡检不应有错误: {:?}", report.errors);
+    // 强断言：语义明确该归档的技能被处理（无论来自时间规则还是判断层）
+    assert!(
+        report.archived.iter().any(|n| n.contains("v0.6")),
+        "过期 API 迁移技能应被归档，实际归档: {:?}",
+        report.archived
+    );
+    println!("✅ D18 P2 端到端通过：判断层参与巡检且语义归档生效");
+}

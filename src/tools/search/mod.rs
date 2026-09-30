@@ -176,6 +176,8 @@ impl MultiEngineSearcher {
         // 3. 依次尝试引擎（每个引擎最多重试 2 次）
         for engine in &self.engines {
             if let Some(results) = self.try_engine_with_retry(engine.as_ref(), query, max_results).await {
+                // D18 P3c: 判断层相关性预筛（失败/全滤空 → 保留原结果）
+                let results = judge_filter_results(query, results).await;
                 let engine_name = engine.name().to_string();
                 let formatted = format!("🔍 搜索引擎: {}\n{}", engine_name, format_results(query, &results));
                 self.cache.put(&cache_key, formatted.clone()).await;
@@ -239,6 +241,58 @@ impl MultiEngineSearcher {
         }
         None
     }
+}
+
+/// D18 P3c: 判断层相关性预筛（一次 fan-out 判断全部结果）
+///
+/// 回退语义：未启用/失败/答案缺失 → 保留该条；过滤后为空 → 返回全部被滤条目（宁多勿少）
+async fn judge_filter_results(query: &str, results: Vec<SearchResult>) -> Vec<SearchResult> {
+    let Some(judge) = crate::judge::global_judge() else {
+        return results;
+    };
+    if results.len() <= 1 {
+        return results; // 单条结果不过滤
+    }
+
+    let mut questions = std::collections::HashMap::new();
+    for (i, r) in results.iter().enumerate() {
+        let snippet: String = r.snippet.chars().take(200).collect();
+        questions.insert(
+            format!("r{i}"),
+            crate::judge::Question::noul(format!(
+                "用户查询「{query}」。搜索结果标题「{}」摘要「{snippet}」——该结果与查询意图相关吗？",
+                r.title
+            )),
+        );
+    }
+
+    let Ok(resp) = judge.ask("搜索结果相关性过滤，按每个问题独立判断。", questions).await else {
+        tracing::debug!("D18 P3c: 判断层不可用，保留全部结果");
+        return results;
+    };
+
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for (i, r) in results.into_iter().enumerate() {
+        let relevant = resp
+            .answers
+            .get(&format!("r{i}"))
+            .and_then(|a| a.as_noul())
+            .map(|p| p >= 0.5)
+            .unwrap_or(true);
+        if relevant {
+            kept.push(r);
+        } else {
+            dropped.push(r);
+        }
+    }
+
+    if kept.is_empty() {
+        tracing::info!("D18 P3c: 过滤后为空，回退全量结果（{} 条）", dropped.len());
+        return dropped;
+    }
+    tracing::info!("D18 P3c: 相关性预筛 {} 留 {} 条", query, kept.len());
+    kept
 }
 
 /// 格式化搜索结果

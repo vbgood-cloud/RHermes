@@ -42,6 +42,11 @@ impl Judge {
         Self { client, min_confidence, model: model.into() }
     }
 
+    /// confidence 门控阈值（fan-out 调用方自行比对用）
+    pub fn min_confidence(&self) -> f64 {
+        self.min_confidence
+    }
+
     /// 从配置构建；未启用或未配置 key 返回 None（= 全部集成点走回退）
     pub fn from_config(config: &Config) -> Option<Self> {
         if !config.jev.enabled || config.jev.api_key.is_empty() {

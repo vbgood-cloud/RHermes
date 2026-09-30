@@ -828,7 +828,7 @@ async fn run_code(resume: bool, role_hint: Option<&str>) {
     // 运行 Curator 技能生命周期管理
     tracing::info!("Curator 技能检查...");
     let curator = crate::agent::Curator::new(skills_dir.clone(), config.clone());
-    let curator_report = curator.run();
+    let curator_report = curator.run_with_judge().await;
     tracing::info!("{}", curator_report.message);
 
     // 安全工作目录初始化
