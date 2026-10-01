@@ -528,7 +528,7 @@ impl SessionRouter {
                     if let Some(session) = self.sessions.get_mut(&key) {
                         session.exit_kb_mode();
                         let kickoff = format!(
-                            "[系统] 用户结束了「{t}」的学习。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径（浏览器打开）连同简短学习小结一起给用户，然后停止教学行为。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。"
+                            "[系统] 用户结束了「{t}」的学习。请先调用 kb_graph(topic=\"{t}\") 更新知识图谱（学习后节点掌握度已变化），再调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把两个 HTML 文件路径（图谱 + 战绩，浏览器打开）连同简短学习小结一起给用户，然后停止教学行为。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。"
                         );
                         session.handle_message(&kickoff).await;
                     }
@@ -552,7 +552,7 @@ impl SessionRouter {
                 Some(t) => {
                     if let Some(session) = self.sessions.get_mut(&key) {
                         let kickoff = format!(
-                            "[系统] 用户想看「{t}」的阶段总结（不退出学习模式）。请调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把 HTML 文件路径连同阶段性小结（已点亮节点、平均掌握度、薄弱点、下一步建议）一起给用户，然后询问是继续下一个知识点还是休息。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。"
+                            "[系统] 用户想看「{t}」的阶段总结（不退出学习模式）。请先调用 kb_graph(topic=\"{t}\") 更新知识图谱（反映当前掌握度），再调用 kb_stats(topic=\"{t}\", html=true) 生成 Bento 战绩，把两个 HTML 文件路径（图谱 + 战绩，浏览器打开）连同阶段性小结（已点亮节点、平均掌握度、薄弱点、下一步建议）一起给用户，然后询问是继续下一个知识点还是休息。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。"
                         );
                         session.handle_message(&kickoff).await;
                     }
