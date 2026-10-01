@@ -2428,6 +2428,9 @@ fn str_arg(args: &Value, key: &str) -> Result<String, ToolError> {
 fn sanitize_filename(name: &str) -> String {
     name.chars().map(|c| match c {
         'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
+        // Unicode 字母数字（中文/日韩文等）是合法文件名字符，保留原样
+        c if c.is_alphanumeric() => c,
+        // 空格/标点/路径分隔符/控制字符等仍替换为下划线
         _ => '_',
     }).collect()
 }
@@ -2662,6 +2665,18 @@ pub async fn shutdown_mcp() {
 mod tests {
     use super::*;
 
+    /// 知识图谱文件名清洗：中文/Unicode 字母数字保留，非法字符替换（修复：中文曾全部变下划线）
+    #[test]
+    fn test_sanitize_filename_unicode() {
+        // 中文主题名原样保留
+        assert_eq!(super::sanitize_filename("机器学习"), "机器学习");
+        assert_eq!(super::sanitize_filename("数据结构与算法"), "数据结构与算法");
+        // 空格/斜杠/标点/危险字符仍替换为下划线
+        assert_eq!(super::sanitize_filename("数据结构/算法 v2"), "数据结构_算法_v2");
+        assert_eq!(super::sanitize_filename("a<b>:c"), "a_b__c");
+        // ASCII 行为不变
+        assert_eq!(super::sanitize_filename("a-B_3"), "a-B_3");
+    }
 
     #[test]
     fn test_read_file_metadata() {
