@@ -331,6 +331,8 @@ impl AgentSession {
 
         let mut round = 0u32;
         let mut tool_call_counter: u32 = 0;
+        // 空响应兜底重试计数（模型只调工具未给文字/直接空响应时，nudge 后重试）
+        let mut empty_response_retries: u32 = 0;
         // edu 反思用：收集本次对话使用的所有工具名
         let mut tools_used_this_turn: Vec<String> = Vec::new();
         loop {
@@ -749,6 +751,23 @@ impl AgentSession {
                 if let Ok(mut dbg) = d.lock() {
                     dbg.record_round(round, user_msg, &final_text, 0);
                 }
+            }
+
+            // 空响应兜底：模型只调工具（如判分）后未输出文字、或直接空响应时，
+            // 注入 nudge 重试（最多 2 次）；仍空则显式提示，避免用户侧"没反应"
+            if final_text.is_empty() {
+                if empty_response_retries < 2 {
+                    empty_response_retries += 1;
+                    tracing::warn!("空响应（第 {empty_response_retries} 次），注入 nudge 重试");
+                    self.context.push_to_log(Message::new(
+                        crate::tui::Role::System,
+                        "你上一轮没有输出任何文字内容给用户。请直接用中文文字回复用户，不要只调用工具或留空。",
+                    ));
+                    continue;
+                }
+                tracing::error!("空响应重试 {} 次仍为空，显式提示用户", empty_response_retries);
+                self.sink.on_chunk("⚠ 模型返回了空响应（可能输出被截断），请重发消息或换个问法。").await;
+                self.sink.on_done().await;
             }
 
             if !final_text.is_empty() {
