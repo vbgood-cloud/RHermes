@@ -665,7 +665,7 @@ impl SessionRouter {
                         format!("  {f}\n    → {method}")
                     }).collect();
                     let fl = fl.join("\n");
-                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件（按标注方式），大文本文件用 read_file 分段读完，再用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。\n建库纪律：kb_create 必须成功，若调用失败（参数不合法/输出被截断等）必须分析原因修正后重新调用，直到建库成功，禁止放弃；内容过长时先用 kb_create 建核心骨架（8-15 个节点），再用 kb_append(topic=\"{d_stem}\", nodes=..., edges=...) 分批追加剩余节点。\n注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。\n\n===== 文件列表（含读取方式）=====\n{fl}");
+                    let d_kickoff = format!("[学习模式·目录建库] 请遍历目录 {file_path} 下的 {fc} 个文件，构建知识库「{d_stem}」并开始教学。\n要求：逐个读完全部文件（按标注方式），大文本文件用 read_file 分段读完，再用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。\n库名纪律：kb_create 与 kb_append 的 topic 必须原样使用「{d_stem}」（中文名直接支持），禁止翻译成英文、拼音或下划线。\n建库纪律：kb_create 必须成功，若调用失败（参数不合法/输出被截断等）必须分析原因修正后重新调用，直到建库成功，禁止放弃；内容过长时先用 kb_create 建核心骨架（8-15 个节点），再用 kb_append(topic=\"{d_stem}\", nodes=..., edges=...) 分批追加剩余节点。\n注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。\n\n===== 文件列表（含读取方式）=====\n{fl}");
                     let d_notice = format!("📚 学习模式：{d_stem}（目录 {fc} 个文件）\n正在遍历并构建知识库…");
                     (d_stem, d_kickoff, d_notice, true)
                 } else if m.is_file() {
@@ -709,7 +709,7 @@ impl SessionRouter {
                                 )
                             };
                             let hint = if rest_hint.is_empty() { String::new() } else { format!("用户补充要求：{rest_hint}。") };
-                            let kickoff = format!("[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。\n建库纪律：kb_create 必须成功，若调用失败（参数不合法/输出被截断等）必须分析原因修正后重新调用，直到建库成功，禁止放弃；内容过长时先用 kb_create 建核心骨架（8-15 个节点），再用 kb_append(topic=\"{stem}\", nodes=..., edges=...) 分批追加剩余节点。\n注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。{content_block}");
+                            let kickoff = format!("[学习模式·文件建库] 请基于文件为用户构建知识库「{stem}」并开始教学。{hint}\n要求：通读内容，抽取 8-40 个知识点，用 kb_create 建库，kb_graph 出图，kb_learn 开始教学。\n库名纪律：kb_create 与 kb_append 的 topic 必须原样使用「{stem}」（中文名直接支持），禁止翻译成英文、拼音或下划线。\n建库纪律：kb_create 必须成功，若调用失败（参数不合法/输出被截断等）必须分析原因修正后重新调用，直到建库成功，禁止放弃；内容过长时先用 kb_create 建核心骨架（8-15 个节点），再用 kb_append(topic=\"{stem}\", nodes=..., edges=...) 分批追加剩余节点。\n注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。{content_block}");
                             let notice = if parts.is_empty() {
                                 format!("📚 学习模式：{stem}（来源文件 {size_kb}KB）\n正在读取并构建知识库…")
                             } else {
@@ -742,7 +742,7 @@ impl SessionRouter {
                 }
                 None => {
                     let hint = if topic_hint.is_empty() { String::new() } else { format!("用户主题提示：{topic_hint}。") };
-                    let kickoff = format!("[学习模式·新建] 知识库「{name}」尚不存在。{hint}请询问用户想学的具体主题或资料路径，然后按 knowledge-base-tutor 技能用 kb_create 建库（节点规模由内容决定），kb_graph 出图后开始教学。注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
+                    let kickoff = format!("[学习模式·新建] 知识库「{name}」尚不存在。{hint}请询问用户想学的具体主题或资料路径，然后按 knowledge-base-tutor 技能用 kb_create 建库（节点规模由内容决定），kb_graph 出图后开始教学。\n库名纪律：kb_create 的 topic 必须原样使用「{name}」（中文名直接支持，存储与图谱文件名都会保留中文），禁止翻译成英文、拼音或改写为下划线形式；后续 kb_graph/kb_learn/kb_quiz 等全部沿用该名。\n注意：不要向用户展示你的思考过程、计划步骤或任何内部推理，直接给出最终结果。回复必须全部使用中文。");
                     (name.clone(), kickoff, format!("📚 学习模式：{name}（新库）\n请告诉我想学的主题，或提供资料路径。"), false)
                 }
             }

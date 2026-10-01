@@ -2017,7 +2017,7 @@ pub struct KbCreate;
 impl Tool for KbCreate {
     fn name(&self) -> String { "kb_create".into() }
     fn description(&self) -> String {
-        "创建知识库。参数: topic(库名), nodes(JSON数组[{name,summary}]), edges(JSON数组[{from,to,relation}]), source(topic|file:路径)。节点规模由内容决定，关系类型: 依赖/包含/相关。".into()
+        "创建知识库。参数: topic(库名), nodes(JSON数组[{name,summary}]), edges(JSON数组[{from,to,relation}]), source(topic|file:路径)。topic 必须使用用户提供的原名（中文名直接支持，无需转英文或下划线）。节点规模由内容决定，关系类型: 依赖/包含/相关。".into()
     }
     fn parallel_safe(&self) -> bool { false }
     fn parameters(&self) -> Vec<ParamDef> {
