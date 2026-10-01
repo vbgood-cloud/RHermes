@@ -54,10 +54,10 @@ RHermes 采用**可移动模式（Portable Mode）**：所有配置与数据都�
 
 > ⚠️ **它没有 `--config` 参数**。程序以"可执行文件所在目录"为锚点自动定位配置。所以**换目录就等于换了一套配置和数据**——这也是它 USB 可运行的原因。
 
-#### 步骤 1：运行初始化向导 `setup`
+#### 步骤 1：运行初始化向导 `init`
 
 ```bash
-rhermes setup
+rhermes init
 ```
 
 向导会依次引导你完成首次配置：
@@ -70,7 +70,7 @@ rhermes setup
 
 一路确认即可，向导会自动在 exe 同目录生成 `config.toml` 并写入配置。
 
-> 💡 若你的版本提示没有 `setup` 子命令，改用 `rhermes init`——它是同一套初始化向导。
+> 💡 命令帮助里它就是 **`⚙️ 交互式初始化向导（API Key / 模型）`**。若你的构建版本里加过别名，`setup` 也可能等价，但**以 `init` 为准**。
 
 #### 步骤 2（可选）：手工核对配置与 API Key
 
@@ -83,7 +83,16 @@ DEEPSEEK_API_KEY=sk-********************************
 
 学习模式的讲解与出题都依赖主模型，因此**必须先有一个可用的模型与 Key**；否则 `/learn` 只能做本地操作（list/export/import/reset），无法建库与教学。
 
-> 📌 其他与命令的关系：`config init` 只生成带注释的配置模板；`gateway setup` 配通道；`mcp setup` 配 MCP。**首次初始化用 `setup` 即可。**
+> 📌 **别把三个"初始化"搞混**（它们都是**子命令**，只能跟着主命令写）：
+>
+> | 命令 | 作用 |
+> |------|------|
+> | `rhermes init` | ⚙️ **首次初始化向导**（API Key / 模型）——**本文用这个** |
+> | `rhermes config init` | 生成带注释的 `config.toml` **模板**（不含交互） |
+> | `rhermes gateway setup` | 配置通道路由（微信 / 企微 / Telegram） |
+> | `rhermes mcp setup` | 配置 MCP Server |
+>
+> ⚠️ **没有 `rhermes setup` 这个顶层命令**（实测 v0.7.22 会报 `error: unrecognized subcommand 'setup'`）；带 `setup` 的只有 `gateway setup` 与 `mcp setup`。首次配置请用 **`rhermes init`**。
 
 #### 步骤 3：确认 `[knowledge]` 段（可省略）
 
@@ -181,6 +190,7 @@ rhermes gateway status  # 查看运行状态
 
 - 扫码后，用微信给自己（或"文件传输助手"）发一条消息，RHermes 会自动接收处理；
 - 直接在微信里发 `/learn <路径或名称>`，即可在微信上建库、学习、`/summary`、`/stop`，行为与 TUI 完全一致；
+- **导入也一样**：在微信里发 `/learn import <路径>`（或中文 `/learn 导入 <路径>`）即可导入知识库，回执与 TUI 相同——**不必切回电脑**（详见 §1.5）；
 - 微信通道下 `/learn` 建库期间会收到**每分钟心跳**（TUI 因有实时进度条而跳过）。
 
 > ⚠️ **注意事项**
@@ -229,11 +239,11 @@ rhermes                   # 进入 TUI 交互模式
 **三步演示（完整可照抄）**
 
 ```bash
-# 步骤 1：把 .kb.json 文件放好
+# 步骤 1：把 .kb.json 文件放好（放在"运行 rhermes 的那台电脑"上）
 #   ① 自己导出的：默认就落在 <exe_dir>/home/knowledge/exports/ 下，无需搬运
 #   ② 别人给的：建议放到 <exe_dir>/home/ 的子目录，如 home/materials/，便于随程序一起迁移
 
-# 步骤 2：进入 TUI，执行导入
+# 步骤 2：执行导入
 rhermes
 ```
 ```
@@ -252,6 +262,19 @@ rhermes
 # 步骤 3：开始学（导入不会自动进入学习模式，需再发一次 /learn）
 /learn 计算机网络
 ```
+
+> 📱 **导入不只在 TUI —— 微信里同样可以**
+>
+> `/learn` 的全部子命令（含 `import`）在**所有通道通用**：TUI、微信（个号/企微）、Telegram 行为完全一致。**在微信里把下面这条当普通消息发出去即可**：
+>
+> ```
+> /learn import home/materials/计算机网络.kb.json
+> ```
+>
+> - 微信里发完，同样会回你上面那条 `✅ 导入成功…` 回执；要换名就带上 `--as 新名`；接着再发一条 `/learn 计算机网络` 就开始学；
+> - ⚠️ **路径指的是"运行 rhermes 的那台电脑"上的路径，不是手机上的路径**——所以 `.kb.json` 必须放在那台电脑的 `home/` 下（或工作目录下），手机端只是把命令发过去；
+> - 导入是**纯本地操作、零 token**，微信上执行基本即发即回，不依赖模型速度（**进入学习模式后才需要模型**）；
+> - 微信通道怎么配见 §1.3。企业微信、Telegram 用法照此类推。
 
 想确认库里到底有哪些，先看一眼清单：
 
@@ -272,8 +295,8 @@ rhermes
 /learn import home/materials/计算机网络.kb.json --as 计算机网络2
 ```
 
-> ✅ 导入用**中文写法**也行：`/learn 导入 <路径>`。
-> ✅ 导入不受"工作目录白名单"限制（它直接读文件，走的是本地通道），但把文件放进 `home/` 子目录仍是最省心的做法。
+> ✅ 导入用**中文写法**也行（各通道一致）：`/learn 导入 <路径>`。
+> ✅ 导入不受"工作目录白名单"限制（它直接读文件，走本地通道，与模型无关），但把文件放进 `home/` 子目录仍是最省心的做法。
 > ✅ 导入采用**事务写入**：任一步失败整体回滚，不会留下半成品库；文件损坏或版本不匹配会明确报错。
 > 📌 文件里**不包含**原始分段资料（`sources/`），但教学只依赖节点摘要，**不影响续学**。
 
@@ -371,6 +394,9 @@ effective_mastery < review_floor  →  到期复习
 `/learn` 在 TUI、微信、企业微信、Telegram 上**行为一致**（同一套路由与会话）。
 
 - 微信通道的配置步骤见 **§1.3 快速配置微信通道**（扫码登录即可）；企微 / Telegram 同理，先在 `gateway setup` 中启用对应通道；
+- **所有子命令（建库 / 学习 / `list` / `export` / `import` / `reset` / `summary` / `stop`）在各通道通用**，直接当消息发出去即可——**包括导入**：微信里发 `/learn import <路径>` 就行，不必回到电脑上操作（示例见 §1.5）；
+- ⚠️ 路径始终是**运行 rhermes 的那台电脑**上的路径；手机端（微信/Telegram）只是把命令发过去，文件得放在那台电脑的 `home/` 下；
+- 建库、讲解、出题依赖模型 → 需要模型与 Key；而 `list` / `export` / `import` / `reset` 是**纯本地零 token**，任何通道都是即发即回；
 - 非 TUI 通道在建库期间会收到**每分钟心跳**（TUI 因有实时工具进度而跳过）；
 - TUI 有实时工具进度条，能看到 `kb_create` 正在跑；外部通道只能看到心跳，请耐心等待大文件建库。
 
@@ -381,6 +407,7 @@ effective_mastery < review_floor  →  到期复习
 | 提示找不到配置 / 读的是空配置 | 配置不在 exe 同目录 | 把 `config.toml`、`.env` 放到与 `rhermes.exe` **同级** |
 | `/learn` 建库时报模型相关错误 | Key 未填或模型不可用 | 检查 `.env`；`rhermes config check` |
 | 改了 `review_floor` 不生效 | 修改了非当前 exe 目录的配置 | 确认改的是**运行中那个 exe** 旁边的 `config.toml` |
+| `error: unrecognized subcommand 'setup'` | 顶层没有 `setup` 命令 | 改用 `rhermes init`（首次初始化向导）；`setup` 只存在于 `gateway setup` / `mcp setup` |
 | 换了盘后知识库"消失" | 数据在旧目录的 `home/` 下 | 把整个 `home/` 连同程序一起迁移 |
 
 ---
@@ -439,10 +466,10 @@ effective_mastery < review_floor  →  到期复习
 #### 路径 ④：导入已有库
 
 ```
-/learn import D:\备份\计算机网络-20260930-1600.kb.json
+/learn import home/materials/计算机网络-20260930-1600.kb.json
 ```
 
-详见 §3.8。
+任何通道都能执行（微信里直接发这条消息也行），详见 **§1.5** 与 §3.8。
 
 ### 3.3 大文件分段机制（为什么大文件也不会漏内容）
 
@@ -767,6 +794,10 @@ new_stability = S × 分档系数 × ef_mult    # 钳制 [0.5, 180]
 - **原因**：设计上**不打包**（教学只依赖节点摘要，续学不受影响）。完整打包（zip）列为后续扩展。
 - **解决**：需要的原始资料请单独拷贝 `sources/<库名>/` 目录。
 
+**E5｜导入必须回到电脑上用 TUI 吗？**
+- **不必**。`/learn import` 在**所有通道通用**：TUI、微信、企业微信、Telegram 都行——**在微信里把命令当消息发出去即可**，回执与 TUI 相同（详见 §1.5）。
+- ⚠️ 但**路径是运行 rhermes 那台电脑上的路径**（不是手机路径），所以 `.kb.json` 要放在那台电脑的 `home/` 下（或工作目录下）。
+
 ### F. 性能与成本类
 
 **F1｜哪些命令不花 token？**
@@ -818,7 +849,8 @@ new_stability = S × 分档系数 × ef_mult    # 钳制 [0.5, 180]
 教师：/learn D:\讲义\计算机网络.docx        # 建库
       /learn export 计算机网络 --kb          # 纯库导出（不含教师自己的学习记录）
       ↓ 把生成的 .kb.json 发给学生
-学生：/learn import D:\计算机网络-xxx.kb.json # 从零开始学，进度互不干扰
+学生：/learn import home/materials/计算机网络-xxx.kb.json  # 从零开始学，进度互不干扰
+      （微信里把这条当消息发出去也能导入，见 §1.5）
 ```
 
 - 用 `--kb` 而非完整版，避免把教师的掌握度/测验史带给学生；
@@ -879,8 +911,8 @@ new_stability = S × 分档系数 × ef_mult    # 钳制 [0.5, 180]
 ### 附录 C · 完整实操剧本（从零到导出）
 
 ```
-# 1) 首次配置
-rhermes setup
+# 1) 首次配置（初始化向导是 init，不是 setup）
+rhermes init
 #   向导会依次完成：创建数据目录 → 选择 AI 提供商 → 确认 API 地址 → 配置 API Key → 选择模型
 #   （如需手工核对，API Key 可写在与 exe 同目录的 .env）
 rhermes config check
@@ -892,7 +924,7 @@ rhermes config check
 rhermes
 ```
 
-在 TUI 中依次输入并观察输出：
+在 TUI 中依次输入并观察输出（**以下 `/learn` 开头的命令，在微信等通道里当消息发出去效果一致**）：
 
 ```
 /learn home/materials/线性代数.pdf
@@ -918,7 +950,7 @@ rhermes
 /learn export 线性代数 --kb       # 纯库版（分享他人从零学）
 
 # 5) 换机恢复
-/learn import D:\备份\线性代数-20261001-0830.kb.json
+/learn import home/materials/线性代数-20261001-0830.kb.json
 ```
 
 ---
