@@ -268,6 +268,18 @@ pub struct WeComConfig {
     /// 是否启用
     #[serde(default)]
     pub enabled: bool,
+    /// 接入模式（D19）：stream = 智能机器人长连接（免回调）；poll = 旧 webhook+轮询（缺省回落）
+    #[serde(default)]
+    pub mode: WeComMode,
+    /// 智能机器人 BotID（stream 模式）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bot_id: String,
+    /// 智能机器人 Secret（stream 模式，仅从 .env 的 WECOM_BOT_SECRET 读取）
+    #[serde(default, skip)]
+    pub bot_secret: String,
+    /// 长连接网关地址（默认官方 wss://openws.work.weixin.qq.com；测试可指向本地 mock）
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub ws_url: String,
     /// Webhook URL（发送消息用）
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub webhook_url: String,
@@ -293,10 +305,29 @@ pub struct WeComConfig {
 
 fn default_wecom_poll_interval() -> u64 { 5 }
 
+/// 企微接入模式（D19）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum WeComMode {
+    /// 智能机器人 WebSocket 长连接（免回调）
+    Stream,
+    /// 旧链路：webhook 发送 + message/list 轮询（缺省回落，保兼容）
+    Poll,
+}
+
+impl Default for WeComMode {
+    fn default() -> Self {
+        Self::Poll
+    }
+}
+
 impl Default for WeComConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            mode: WeComMode::default(),
+            bot_id: String::new(),
+            bot_secret: String::new(),
+            ws_url: String::new(),
             webhook_url: String::new(),
             corp_id: String::new(),
             agent_id: String::new(),
@@ -979,6 +1010,11 @@ impl Config {
                     // SEARCH_PROXY → search.proxy
                     if key == "SEARCH_PROXY" {
                         cfg.search.proxy = Some(value.clone());
+                    }
+                    // WECOM_BOT_SECRET → channels.wecom.bot_secret（D19 stream 模式）
+                    if key == "WECOM_BOT_SECRET" {
+                        cfg.channels.wecom.bot_secret = value.clone();
+                        continue;
                     }
                     // TELEGRAM_BOT_TOKEN → channels.telegram.bot_token
                     if key == "TELEGRAM_BOT_TOKEN" {
