@@ -1,6 +1,8 @@
 # /learn 知识库导出与导入
 
 > v0.7.3 新增。把知识库（及学习记录）导出为单个 `.kb.json` 文件，跨机器备份、换机迁移、分享给他人从零学习。
+>
+> **当前导出格式版本：3**（见 §「导出文件格式」的版本演进说明）。
 
 ![工作图](./assets/learn-export-import-flow.svg)
 
@@ -18,12 +20,12 @@
 
 两条命令均为**纯本地数据操作，不经过 LLM**——router 拦截层直接处理（与 `/learn list` 同模式），零 token、瞬间完成。
 
-## 导出文件格式（v1）
+## 导出文件格式（v3）
 
 ```json
 {
   "format": "rhermes-kb",
-  "version": 1,
+  "version": 3,
   "exported_at": "2026-09-03 16:00:00",
   "topic":  { "name": "数据结构", "source": "file:指导书.pdf" },
   "graph": {
@@ -31,12 +33,22 @@
     "edges": [{ "from": "树", "to": "二叉树", "relation": "包含" }]
   },
   "learning": {
-    "nodes":    [{ "name": "二叉树", "mastery": 65, "review_count": 3, "quiz_count": 3, "last_review": "..." }],
+    "nodes":    [{ "name": "二叉树", "mastery": 65, "review_count": 3, "quiz_count": 3,
+                    "last_review": "...", "stability": 4.2,
+                    "next_review_at": "...", "easiness": 2.6 }],
     "quiz_log": [{ "node": "二叉树", "question": "...", "answer": "...", "score": 80, "created_at": "..." }],
     "sessions": [{ "node": "二叉树", "created_at": "..." }]
   }
 }
 ```
+
+**版本演进**（`EXPORT_VERSION`，定义在 `src/knowledge/store.rs`）
+
+| 版本 | 新增字段 | 兼容性 |
+|:---:|------|--------|
+| 1 | 初版（v0.7.3） | — |
+| 2 | `stability`（遗忘曲线半衰期 S） | 新字段带 `#[serde(default)]`，**可读旧文件** |
+| 3 | `easiness`（SM-2 难度系数 EF） | 同上，向后兼容 |
 
 **关键设计**：表间关联一律用 **node name**（库内 `UNIQUE(topic_id, name)` 保证唯一），不导出自增 ID——导入时重新生成，天然避免 ID 冲突。`--kb` 模式省略整个 `learning` 字段。测验历史全量导出，以维持 24h 防刷分逻辑行为一致。
 
@@ -57,7 +69,7 @@
 | 文件 | 内容 |
 |------|------|
 | `src/knowledge/store.rs` | `KbExport` 系列 serde 结构体、`export_topic()`、`import_topic()`、`ImportReport`、roundtrip 测试 |
-| `src/knowledge/mod.rs` | `exports_dir()`、`EXPORT_FORMAT`/`EXPORT_VERSION` 常量 |
+| `src/knowledge/mod.rs` | `exports_dir()` 路径工厂；`EXPORT_FORMAT` / `EXPORT_VERSION` 常量则定义在 `store.rs` |
 | `src/agent/router.rs` | `handle_kb_export_command()` / `handle_kb_import_command()`、dispatch 拦截分支 |
 
 ## 典型场景

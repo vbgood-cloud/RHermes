@@ -1,6 +1,22 @@
 # RHermes 帮助文档
 
-> **版本**: v0.3.0 | **语言**: Rust 2024 Edition | **协议**: MIT | **源文件**: 54+ (.rs)
+> ⚠️ **本文档是 v0.3.0 的历史快照**（2026-06-09，54 个 `.rs`），**多处内容已与当前实现不符**。
+> 请以下列**现行文档**为准：
+>
+> | 想了解 | 看这个 |
+> |--------|--------|
+> | 全局架构 / 数据流 / 命令树 / 死代码清单 | `docs/architecture.md` |
+> | 单模块纵深（调度器/插件/MCP/Provider/判断层/Gateway/通道） | `docs/modules/` |
+> | 功能清单 | `FEATURES.md` |
+> | 已修正的偏差明细 | `docs/doc-code-audit-report.md` |
+>
+> 已知与现版的主要出入举例：
+> - 规模：v0.3.0 的「54+ 文件」→ 现 **110 个 `.rs` / 47,677 行**
+> - 工具：「内置工具仍为 17 个」→ 现 **33 个**（含 `kb_*` / Office / liteparse / `run_plugin`）
+> - Provider：「**加权轮询**」→ 实为 **主 provider 优先 + 熔断降级轮询**（`weight` 字段从不被读取）
+> - 本文未涵盖：`/learn` 知识库学习、edu 教育版 P2P、Jev 判断层（D18）、Gateway 通道扩展
+
+> **版本**: v0.3.0（历史） | **语言**: Rust 2024 Edition | **协议**: MIT | **源文件**: 54+ (.rs)
 
 ---
 
@@ -37,7 +53,7 @@ RHermes 是一个**终端 AI 编码 Agent**，基于 Rust 构建，支持多种 
 
 | 特性 | 说明 |
 |------|------|
-| **Provider Pool** | 多 AI Provider 负载均衡 + 熔断器（Closed/HalfOpen/Open）+ 加权轮询 |
+| **Provider Pool** | 多 AI Provider 熔断 + **主备自动切换**（Closed/HalfOpen/Open） |
 | 三层上下文 + Prefix Cache | Immutable Prefix + Append-Only Log + Volatile Scratch，三层 System Prompt 冻结，优化 DeepSeek 前缀缓存命中 |
 | 并行工具调度 | `JoinSet` + `Semaphore` 并发执行，按 `parallel_safe` 标志分组 |
 | **MCP 客户端** | 完整 Model Context Protocol，支持 stdio / SSE / 直连 POST 三种传输，远程工具自动注册到 ToolRegistry |
@@ -311,9 +327,10 @@ Closed ──────────────→ Open
 - 半开恢复：冷却时间过后自动转 HalfOpen，允许一次试探
 - 非重试错误（401/400）：立即返回，不浪费重试次数
 
-#### 加权轮询
+#### 选择策略（⚠️ 本文旧称「加权轮询」，实为「主备降级」）
 
-`next_healthy()` 跳过不健康的 Provider，按顺序选择下一个。
+`next_healthy()`：**主 provider（`providers[0]`）健康就一直用它**；仅当它熔断时，才在备选之间轮转。
+`ProviderEntry.weight` 字段**只写不读**，无加权语义（详见 `docs/modules/provider.md`）。
 
 #### 退避重试
 
@@ -722,7 +739,11 @@ rate_limit_secs = 1
 
 ## 15. 内置工具参考
 
-内置工具仍为 17 个（同 v0.2.0），但 v0.3.0 新增了 **MCP 远程工具**动态注入：
+> ⚠️ **下表为 v0.3.0 的 17 个内置工具，已过时**。当前共 **33 个**面向模型的工具
+> （新增：`kb_*` 7 个 · Office `read/write_docx|excel|pptx` 6 个 · liteparse `parse_document`/`check_document_complexity`/`screenshot_document` 3 个 · `run_plugin`），
+> 完整清单见 `docs/architecture.md` §六。
+>
+> 内置工具（v0.3.0 时点）为 17 个，另有 **MCP 远程工具**动态注入：
 
 | 类别 | 工具 |
 |------|------|
@@ -852,4 +873,4 @@ RHermes/
 
 ---
 
-*文档生成时间: 2026-06-09 | 基于 RHermes v0.3.0 源码*
+*文档生成时间: 2026-06-09 | 基于 RHermes v0.3.0 源码 —— ⚠️ 历史快照，见文首横幅*

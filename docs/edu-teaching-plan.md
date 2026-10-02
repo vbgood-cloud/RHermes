@@ -1,5 +1,16 @@
 # 教学任务安排与课程同步 — 详细实现方案
 
+> **✅ 设计已落地**（v0.7.27 复核）
+>
+> 本方案的库侧设计**均已实现**，对应表与接口：
+> - `edu_class_publish`（`class_id` / `course_id` / `content_type` / `content_id` / `published_at` / `published_by`）→ `is_published()` / `get_published_lessons()` / `get_published_assignments()`
+> - `edu_assignments` / `edu_submissions`（含 `teacher_score` / `teacher_feedback` / `evaluated_at`）
+> - `edu_lessons_v2`（课次可见性控制）
+> - `edu_class_course_overrides`（课程模板 → 头导入后可独立修改，见 `docs/edu-class-course-override.md`）
+>
+> ⚠️ **入口说明**：作业/提交/反馈的**操作入口是斜杠命令**（`/assignment` `/assignments` `/submit` `/feedback`），
+> 教师 CLI（`rhermes-teacher`）**没有** `assignment` 子命令；教师端作业**文件分发**（blobs）尚无 CLI 入口。
+
 > **分支**: `edu` | **基于**: Phase 1-9 已完成的基础
 
 ## 1. 需求总结

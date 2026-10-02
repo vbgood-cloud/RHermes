@@ -1,5 +1,13 @@
 # 学生→教师 连接方案（详细）
 
+> **⚠️ 历史规划文档（已被取代）**
+>
+> 本文档描述的是 **iroh P2P 落地前**的早期连接设想，**连接方案已由 `docs/edu-p2p-design.md` 的 iroh P2P 架构取代**。
+> 保留仅供参考，请勿据本文实施。差异要点：
+> - 文中「axum Web 服务器 :8080（HTTP 降级备选）」**未实现为对话通道** —— `WebChannel` 全项目未被构造，`send_message` 为空实现（见 `docs/edu-guide.md` 通道成熟度）
+> - 现行方案：双 ALPN（`/class-auth/1.0` 开放 + `/class-app/1.0` 受控）+ iroh-gossip Topic 隔离 + 签名白名单
+> - 现行教师端入口是 `rhermes-teacher serve`，学生端是 `rhermes-stu live`
+
 > **分支**: `edu` | **基于**: Phase 1-9 + iroh P2P (Phase 8)
 
 ## 连接架构

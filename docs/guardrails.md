@@ -42,11 +42,16 @@ API 响应 → RepairPipeline (修复) → ResponseValidator (校验) → 执行
 - `FlattenRepair::flatten(args)` — 递归压平
 - `FlattenRepair::unflatten(flat)` — 递归还原
 
+> ⚠️ **该工序未接入生产路径**：`RepairPipeline::repair_with_api()` 只调用 Scavenge / Truncation / Storm，
+> 从不调用 `FlattenRepair`。因此 `RepairAction::Flattened` / `RestoredNested` 在生产运行中
+> **永不产生**，仅有单测覆盖。本节描述的是**设计意图**，不是当前行为。
+
 ### 工序 2：Scavenge（工具调用回收）
 
 **问题**：DeepSeek 有时在 `reasoning_content`、`think` 块或代码块中生成了 tool-call JSON，但未在 `tool_calls` 字段中正式发出。
 
-**方案**：用正则从文本中匹配并提取遗失的 tool-call。支持四种模式：
+**方案**：用字符串定位 + `serde_json::from_str` 提取遗失的 tool-call
+（**不是正则解析** —— 正则仅用于 `event_sink::strip_thinking` 剥思考块）。支持四种模式：
 
 | 模式 | 匹配格式 | 模型来源 |
 |------|---------|---------|
@@ -75,10 +80,13 @@ API 响应 → RepairPipeline (修复) → ResponseValidator (校验) → 执行
 
 **方案**：滑动窗口追踪 `(tool_name, args_signature, Instant)`，在窗口内重复超过阈值则抑制。
 
-| 参数 | 默认值 | 说明 |
+| 参数 | 配置默认值 | 说明 |
 |------|--------|------|
 | `window_secs` | 60 | 滑动窗口大小 |
 | `max_repeats` | 3 | 窗口内允许的最大重复次数 |
+
+> ⚠️ 上表是 `[agent]` **配置项**的默认值。`StormSuppression::default()`（结构体自身默认）是
+> `5s / 1 次` —— 只有在经过 config + session 构造时才取 60/3；单测或直接 `default()` 得到的是 5/1。
 
 `StormSuppression` 跨轮次持久（存储在 `RepairPipeline` 中），可累计统计 `suppressed_count()`。
 
@@ -208,7 +216,7 @@ guardrails_storm_max_repeats = 3
 
 | 级别 | 日志内容 | 含义 |
 |------|---------|------|
-| `DEBUG` | `护栏修复: Flattened` | 参数被压平/还原 |
+| `DEBUG` | `护栏修复: Flattened` | 参数被压平/还原（⚠️ 生产路径不会出现，见 §二 工序 1） |
 | `DEBUG` | `护栏修复: Scavenged("tool_name")` | 从文本中回收了遗失调用 |
 | `DEBUG` | `护栏修复: TruncationFixed` | JSON 截断被修复 |
 | `DEBUG` | `护栏修复: StormSuppressed("id")` | 重复调用被抑制 |
@@ -238,7 +246,7 @@ guardrails_storm_max_repeats = 3
 | 纯文本回复（无 tool_calls） | 不需要护栏，跳过 |
 | Dispatcher 为 None（简化模式） | RepairPipeline 执行但**校验跳过** |
 | 重试次数耗尽（> `max_retries`） | 不再注入纠正消息，剩余 valid_calls 直接放行 |
-| 校验全拦截（所有 calls 非法） | 记录 WARN 日志，`continue` 等下一轮模型响应 |
+| 校验全拦截（所有 calls 非法） | 记录 WARN 日志「护栏：所有工具调用被校验拦截」，**不 `continue` 重试**，直接落入本轮最终文本回复 |
 
 **护栏生效的完整前提**：`guardrails_enabled = true` + 有 `tool_calls` + 有 `Dispatcher` + 未超重试上限。
 

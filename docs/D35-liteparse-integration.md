@@ -2,7 +2,9 @@
 
 > 决策编号: D35
 > 日期: 2026-07-17
-> 状态: 设计完成
+> 状态: **已实施**
+> 落地形态：8 个文档类工具已注册 —— `parse_document` · `read_pdf` · `read_docx` · `read_excel` · `read_pptx` ·
+> `write_docx` · `write_excel` · `check_document_complexity` · `screenshot_document`（见 `src/tools/liteparse.rs` 与 `src/tools/office/`）
 > 前置: D8 (Office 文档工具), D24 (统一插件系统)
 
 ## 背景

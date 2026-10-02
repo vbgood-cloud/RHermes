@@ -3,7 +3,8 @@
 > 目标：在现有 `src/edu/` 之上，用 **iroh 1.0.2 P2P 网络栈**实现「课程 → 教学班 → 成员」三级模型，
 > 支持作业分发、答疑讨论、班内学生互通，并以**独立认证协议 + EndpointId 白名单**保证只有已认证学生才能通信。
 >
-> 状态：**设计待确认**（本文档只做设计与选项，不改动生产代码）
+> 状态：**设计已定稿，主体已实现**（P1–P4 落地；§12 三驱动收敛 S2.1 ✅ / S2.2 ⏳ / S2.3–S2.5 ⬜）。
+> 本文档保留**设计推演与决策依据**；具体命令与成熟度以 `docs/edu-guide.md` 为准，测试以 `docs/edu-p2p-e2e-flow.md` 为准。
 >
 > 依赖基线：`iroh 1.0.2`（已在树） / `iroh-gossip 0.101`（依赖 iroh ^1） / `iroh-blobs 0.103`（依赖 iroh ^1）
 
@@ -1312,7 +1313,7 @@ rhermes-stu live --offline      # 离网/局域网
 | TUI 内驱动 | `/class` 复用同一宿主，通知经 `reply_to_channel("tui", ..)` 上屏 | §12.4 / S2.3 |
 | 渠道驱动 | 微信 / 企微 / Telegram 各挂一份宿主，推送沿用 `reply_to_channel` | §12.4 / S2.3 |
 | 双入口收敛 | `edu::handle_edu` 与 `handle_slash_command` 两套实现合并 | §12.5 / S2.4 |
-| `teacher_id = 1` 硬编码 | 5 处写死（`edu/mod.rs` 3 处、`router.rs` 1 处、`dashboard.rs` 1 处） | §12.5 / S2.4 |
+| `teacher_id = 1` 硬编码 | **12 处**写死（`edu/mod.rs` 5 处、`router.rs` 3 处、`edu/teacher.rs` 3 处、`dashboard.rs` 1 处；另有 8 处测试夹具不计） | §12.5 / S2.4 |
 
 ---
 
@@ -1500,7 +1501,7 @@ impl SectionHost {
 | **S2.1** | 新增 `src/edu/host.rs`：`HostCommand` / `HostEvent` / `NoticeKind` / `HostSnapshot` / `SectionHost` + 纯函数 `translate` | `cargo test --lib edu::host` 全过（`translate` ≥ 8 条：逐个 `SectionMsg` 变体一个、`AllowlistApplied`/`TopicRotated`/`Closed` 各一、`AllowlistUpdate` 走 `Roster` 且 `members == 0`）；`edu_p2p_e2e` 3 条**不动**且仍全过 |
 | **S2.2** | `client_app.rs::repl` 改为 `SectionHost` 驱动；`render_event` 退化为「`translate` + 一行格式化」 | `target/smoke/run_e2e.py` 输出与 v0.7.13 **逐字一致**（重点比对 `[<前8位>#1] CS101 · 计算机2301` 与 `✅ 已认证 … 拿到 1 个教学班票据` 两行）；`cargo test` 全量（404）仍全过 |
 | **S2.3** | 推送驱动 + `/class` 命令族：`SessionRouter.edu_hosts`、学生侧 `/class start\|stop\|list\|ask\|chat`、`HostEvent` 经 `reply_to_channel` 推到 `tui`/`wechat`/`wecom`/`telegram` | 新增单测：`/class` 前缀分流（学生 vs 老师）、`NoticeKind` 过滤、同一会话二次 `start` 不重复建连、`stop` 后宿主 task 能退出；e2e 用 `tui` channel 跑通「起宿主 → 收公告 → 上屏」 |
-| **S2.4** | 双入口收敛：`edu/mod.rs::handle_slash_command`（TUI 非 router 模式）与 `agent/router.rs::handle_edu_slash_command`（router 模式 + 渠道）合并为一份；清掉 5 处 `teacher_id = 1` 硬编码 | 合并前先把现有斜杠命令写成**表驱动快照单测**（输入 → 期望输出），合并后逐条对齐；`list_courses_by_teacher(1)` → 按 `[edu.teacher].account` 解析（与 `serve.rs:93` 同源），5 处全部消除 |
+| **S2.4** | 双入口收敛：`edu/mod.rs::handle_slash_command`（TUI 非 router 模式）与 `agent/router.rs::handle_edu_slash_command`（router 模式 + 渠道）合并为一份；清掉 **12 处** `teacher_id = 1` 硬编码 | 合并前先把现有斜杠命令写成**表驱动快照单测**（输入 → 期望输出），合并后逐条对齐；`list_courses_by_teacher(1)` → 按 `[edu.teacher].account` 解析（与 `serve.rs:93` 同源），12 处全部消除 |
 | **S2.5** | 渠道真机验证 | 单测覆盖「格式化 + 路由」层；真机需微信/企微/TG 凭据，由你按键启动，离线只到单测层 |
 
 **顺序不可颠倒**：S2.1 不碰任何 UI（纯新增）→ S2.2 证明宿主等价于原 REPL →

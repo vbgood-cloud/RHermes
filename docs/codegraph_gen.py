@@ -7,7 +7,7 @@
 import os, re, json
 from collections import defaultdict
 
-ROOT = os.path.expanduser("~/lab/RHermes")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
 
 # ── 1. 收集所有 .rs 文件 ──
@@ -93,7 +93,7 @@ with open(os.path.join(ROOT, "docs/codegraph.json"), "w", encoding="utf-8") as f
 # ── 6. 输出 Markdown（Mermaid 图）──
 md = []
 md.append("# RHermes Codegraph\n")
-md.append("> v0.7.0 · 87 .rs · ~34,500 行 · 自动生成（`python3 docs/codegraph_gen.py` 或询问 Agent 重新生成）\n")
+md.append("> 自动生成：`python3 docs/codegraph_gen.py`（或让 Agent 重新生成）—— **请勿手工编辑本文件**\n")
 
 total = graph["totals"]
 md.append("## 总览\n")

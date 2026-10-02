@@ -1,6 +1,9 @@
 # /learn 大文件学习：分段读取与分段建库
 
 > 版本：v0.7.2 · 模块：`src/agent/router.rs` / `src/tools/builtin.rs` / `src/tools/liteparse.rs`
+>
+> ✅ 已按 v0.7.27 代码复核：文中机制（24000 字符分流、`CHUNK_CHARS = 20000`、分段落盘路径、
+> `kb_append` 重名跳过、`read_file` 放行 `data_root`）**均与当前实现一致**，无改动。
 
 ## 背景问题
 

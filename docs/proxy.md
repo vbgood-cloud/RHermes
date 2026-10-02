@@ -62,15 +62,23 @@ create_proxied_client(config, feature, timeout)
 
 仅在 `mode = "auto"` 时生效。
 
-| 功能 | key | 默认值 | 影响范围 |
+| 功能 | key | 生成模板默认值 | 影响范围 |
 |------|------|--------|---------|
-| AI API 调用 | `llm` | `false` | DeepSeekTransport（所有 Provider） |
-| 网络搜索 | `web_search` | `false` | DuckDuckGo / Bing / Serper 搜索引擎 |
-| 网页抓取 | `web_fetch` | `false` | WebFetch 工具 |
+| AI API 调用 | `llm` | `true` | `DeepSeekTransport`（所有 Provider）+ edu 教师答疑运行时 |
+| 网络搜索 | `web_search` | `true` | DuckDuckGo / Bing / Serper 搜索引擎 |
+| 网页抓取 | `web_fetch` | `true` | `web_fetch` 工具 |
+| 判断层（Jev） | `jev` | —（缺省即 `false`） | D18 判断层 HTTP 客户端 |
 | 微信通道 | `wechat` | `false` | 微信 iLink Bot |
 | 企业微信 | `wecom` | `false` | 企业微信 Webhook + 消息轮询 |
-| Telegram | `telegram` | `true` | Telegram Bot API（预留） |
-| 子进程 | `command` | `false` | run_command 注入 HTTP_PROXY 环境变量 |
+| Telegram | `telegram` | `true` | Telegram Bot API |
+| 子进程 | `command` | `false` | `run_command` 注入 HTTP_PROXY 环境变量 |
+
+> ⚠️ **默认值的两个层次**（容易混淆）：
+> 1. **`rhermes init` 生成的 `config.toml`**：会显式写出上表第 3 列的 `[proxy.rules]`（`llm/web_search/web_fetch/telegram = true`，其余 `false`）。
+> 2. **Rust 层的 `ProxyConfig::default()`**：`rules` 是**空 HashMap**，`need_proxy()` 用 `.unwrap_or(false)` —— 因此**若 `config.toml` 里完全没有 `[proxy]` 节，所有 feature 一律不走代理**（`mode` 仍为 `auto`）。
+>
+> 换言之：想用代理，**必须**在配置里明确写出 `url` 与目标 feature 的 `= true`。
+> `jev` 未出现在生成模板中，需要时手动添加 `jev = true`。
 
 ## no_proxy 域名排除
 

@@ -12,9 +12,12 @@
 - **源文件**：`src/agent/session.rs`
 - **关键功能**：
   - `handle_message()` 单入口处理外部消息（TUI/微信/企微等共享同一逻辑）
-  - 最大轮次控制（防死循环）
-  - 自适应压缩（达到 80% token 阈值自动压缩历史）
-  - 工具调用护栏重试（最大 3 次）
+  - 最大轮次控制（防死循环）：`max_rounds` 默认 50
+  - 自适应压缩（达到 80% token 阈值自动压缩历史为六段式摘要）
+  - 工具调用护栏重试（最大 3 次）；全局工具调用硬上限 `MAX_TOTAL_TOOL_CALLS = 200`
+  - 空响应兜底：连续空回复最多补问 2 次（v0.7.25）
+  - 动态工具筛选 `select_tools()`（命中不足 5 个时回退全量）与思考强度推断 `infer_reasoning_effort()`
+  - 工具输出按工具分级截断（run_command 5000 / web_search 4000 / web_fetch 8000 / read_file 10000 / 默认 5000 字符）
   - 教育模式：工具白名单 + 学习模式切换（explore/scaffold/locked）
   - 教育反思闭环：自动生成反思提示、评分并落库
 
@@ -25,11 +28,12 @@
   - **Session Memory** — 当前会话上下文（自动管理）
   - **Working Memory** — 跨会话活跃知识（当前项目相关）
   - **Long-term Memory** — 持久化知识库（永久保存）
-  - FTS5 全文索引搜索（`search_memories()`）
-  - 记忆条目 CRUD（创建/读取/更新/删除）
-  - Nudge 机制（定期提示用户查看和管理记忆）
-  - 最近记忆统计（`recent_memories()`）
-  - 支持 tag 标签分类和按项目过滤
+  - FTS5 全文索引搜索（`search()`）
+  - 记忆条目操作（`store` 创建 / `get` 读取 / `search`+`list` 检索 / `delete` 删除；**无 update**）
+  - Nudge 机制（`should_nudge`，默认间隔 300s）
+  - 最近记忆查询（`recent()`）
+  - 用户画像聚合（`load_profile` / `save_profile` / `aggregate_profile`）与 MEMORY.md 导出
+  - 会话消息落库与回放（`save_session_messages` / `load_session_messages`）
 
 ### 1.3 MemoryManager — 记忆编排层
 - **描述**：MemoryProvider trait + 内置+外部 Provider 路由
@@ -51,9 +55,10 @@
   - 进化建议：基于使用数据自动优化
   - UsageTelemetry sidecar（`.usage.json` 与 `.md` 同目录）
   - 技能创建、更新、搜索、列举
-  - 技能补丁/维护功能
-  - SkillManager：CRUD + 运行时管理
-  - 内置 4 种技能分类：explore / research / review / security-review
+  - 技能补丁/维护功能（`create` / `create_with_category` / `update_skill` / `delete` / `record_patch`）
+  - Pinned 保护（`is_pinned` / `set_pinned`）与浏览/补丁记账（`record_view` / `record_patch`）
+  - 健康度判定：成功率 >0.5 为健康、<0.3 需关注；使用 >10 次且成功率 >0.95 触发进化建议
+  - 技能名仅允许字母数字与 `_` `-`
 
 ### 1.5 Curator — 自治技能生命周期管理
 - **描述**：自动管理技能状态生命周期
@@ -61,7 +66,7 @@
 - **功能点**：
   - 三态状态机：`active → stale(30天) → archived(90天)`
   - 启动时自动检查和执行
-  - LLM Review Pass：扫描同前缀/同域技能群，合并到 umbrella skill
+  - ⚠️ LLM Review Pass（umbrella 合并）：仅存 `UmbrellaAction` 枚举占位，**未实现**
   - CuratorMarker 防止重复执行
   - 归档目录 (`_archived/`)
   - Pinned 技能保护（防止 curator 误触）
@@ -98,10 +103,10 @@
 - **描述**：主 Agent 将子任务委托给独立的子 Agent 执行
 - **源文件**：`src/agent/task.rs`
 - **功能点**：
-  - 隔离的 tokio task 中运行
-  - 并行调研 / 深度分析 / 嵌套任务
-  - 共享 ProviderPool
-  - 递归深度限制控制
+  - 隔离的 tokio task 中运行（`run_sub_agent`，max_tokens 2048）
+  - 并行执行（`run_parallel`）
+  - 自动提炼（`auto_refine_skill` 最多 8 轮 / `auto_refine_memory`，max_tokens 2048）
+  - 使用 `Arc<dyn Transport>`（**非** ProviderPool）；**无递归深度限制**
 
 ### 1.10 EventSink — 事件抽象层
 - **描述**：Agent Loop 事件输出与消费端解耦
@@ -110,6 +115,18 @@
   - `TuiSink` — 通过 mpsc channel 推送给 TUI 渲染
   - `ChannelSink` — 通过 ChannelManager 发送到微信/企微等外部通道
   - 事件类型：chunk / tool_calls / tool_result / done / error / usage / balance / typing
+  - `strip_thinking` — 双正则剥离思考块（`🤔 **思考过程**` 与 `<think>…</think>`）
+
+### 1.11 Judge — Jev 判断层（D18，`judge/`）
+- **描述**：把高频结构化判断外包给 System One 决策模型，纯增益、非硬依赖
+- **源文件**：`src/judge/mod.rs`、`src/judge/client.rs`、`src/judge/types.rs`
+- **功能点**：
+  - `Judge::ask(state, HashMap<String, Question>)` — **fan-out 一问多答**，一次请求拿多个判断
+  - 三种问法 `Question`：`Noul`（是非）/ `Choice`（多选一，criteria ≤255）/ `Score`（有序档位 2–10，**禁插值**）
+  - 门控 `min_confidence()`（默认 0.6）：置信不足一律返回 `None` → 调用方回退启发式
+  - `from_config` 在 `enabled=true` 且 api_key 非空时才启用；全局单例 `set_global_judge` / `global_judge`
+  - 客户端重试 1 次、4xx 不重试、超时默认 5s；失败全部吞成 `None`，无 panic 路径
+  - **五处集成点**：① 记忆保存门控（noul，阈值 0.7）② 技能巡检 `Curator::run_with_judge()` ③ 修复后 tool_calls 可信度（noul，阈值 0.75）④ 学习反思三档位（0.25/0.6/0.95）⑤ 搜索结果相关性预筛（p<0.5 滤除，过滤后为空则回退全量）
 
 ---
 
@@ -193,14 +210,14 @@
 - **描述**：并行/串行工具调度引擎
 - **源文件**：`src/tools/dispatcher.rs`
 - **功能点**：
-  - `JoinSet` 并发调度标记为 `parallel_safe` 的工具
-  - 串行调度非 parallel_safe 的工具
-  - 粘性参数注入
-  - 全局状态初始化（workspace / config / skill_engine / 等）
-  - 调用超时控制（全局 120s 超时）
+  - **连续**的 `parallel_safe` 调用聚为一个 JoinSet 批次并发执行；遇到非并行工具先等批次完成再串行执行（屏障语义）
+  - 未知工具名也走串行分支，最终由 `execute_tool_call` 返回「未知工具」错误
+  - 并发上限 `max_concurrency` 默认 **10**（`with_max_concurrency` 可覆盖），每批次用 Semaphore 限流
+  - ⚠️ **并行批次结果按完成顺序返回，不保证等于调用顺序** → 调用方必须按 `ToolResult.call_id` 对齐，不能按下标
+  - 子任务 panic 会产出 `ToolResult::error("unknown","unknown", …)`（此时 call_id 丢失）
   - 全局工具定义获取（`all_tool_defs()`）
 
-### 3.3 内置工具 — 25 个工具（+MCP 动态 +Wasm 插件）
+### 3.3 内置工具 — 33 个（+MCP 动态 +Wasm 插件）
 
 | 工具名 | 描述 | 源文件 |
 |--------|------|--------|
@@ -220,6 +237,14 @@
 | `skill_patch` | 修改/优化已有技能 | `src/tools/builtin.rs` |
 | `skill_manage` | 管理技能（归档/还原/删除/移动/启用/禁用） | `src/tools/builtin.rs` |
 | `memory` | 长期记忆系统（搜索/注入/写入/提取/备忘/列表） | `src/tools/builtin.rs` |
+| `kb_create` | 创建知识库 | `src/tools/builtin.rs` |
+| `kb_append` | 向知识库追加知识点（大文件分段建库） | `src/tools/builtin.rs` |
+| `kb_graph` | 生成知识图谱 HTML | `src/tools/builtin.rs` |
+| `kb_learn` | 取下一个学习/复习节点（按遗忘曲线调度） | `src/tools/builtin.rs` |
+| `kb_quiz` | 记录测验并更新掌握度（EMA + SM-2） | `src/tools/builtin.rs` |
+| `kb_stats` | 学习统计（Bento 战绩面板） | `src/tools/builtin.rs` |
+| `kb_list` | 列出所有知识库 | `src/tools/builtin.rs` |
+| `kb_reset` | 复位学习进度 | `src/tools/builtin.rs` |
 | `read_pdf` | PDF 文件读取 | `src/tools/builtin.rs` |
 | `read_excel` | 读取 Excel (.xlsx) 文件（calamine） | `src/tools/office/excel.rs` |
 | `write_excel` | 写入 Excel (.xlsx) 文件（rust_xlsxwriter） | `src/tools/office/excel.rs` |
@@ -229,7 +254,10 @@
 | `parse_document` | LiteParse 文档解析（PDF/DOCX/图片 → 文本/Markdown） | `src/tools/liteparse.rs` |
 | `screenshot_document` | 文档页面截图 | `src/tools/liteparse.rs` |
 | `check_document_complexity` | 判断文档是否需要 OCR | `src/tools/liteparse.rs` |
-| `run_plugin` | 调用已加载插件（`__list__` 列出；Wasm 沙盒/SKILL.md 技能） | `src/tools/builtin.rs` |
+| `run_plugin` | 调用已加载插件（`__list__` 列出；Wasm 沙盒/SKILL.md 技能）。⚠️ **仅在确实加载到插件时才注册** | `src/tools/builtin.rs` |
+
+> 另有动态注册：MCP 工具前缀 `mcp__{server}__{tool}`、Wasm 插件工具前缀 `wasm_{name}`。
+> 注：3 个 LiteParse 工具（`parse_document` / `screenshot_document` / `check_document_complexity`）**无条件注册**，是否可用取决于运行时 `init_liteparse()` 是否成功；这与 D35 文档描述的「enabled=false 则不注册」不同。
 
 ### 3.4 文档解析（LiteParse）
 - **描述**：基于 liteparse Rust crate 的文档解析工具
@@ -294,11 +322,12 @@
 - **源文件**：`src/provider/pool.rs`
 - **功能点**：
   - `ProviderPool` — 多 Provider 管理器
-  - **加权轮询**调度算法
-  - **熔断器**：连续失败阈值熔断，冷却后自动恢复
-  - 健康检测：定期 ping 摘除不健康节点
-  - Provider 指标统计（请求数/成功率/平均延迟）
-  - 支持多 Provider 配置：不同 model/base_url/api_key 组合
+  - 调度策略：**主 provider 优先**（`providers[0]` 健康就一直用它），仅在主 provider 熔断时才在备选之间轮转
+  - ⚠️ `ProviderEntry.weight` 字段存在但**从不被读取** —— 不存在加权轮询；`factory` 设置的 10:1 权重无效
+  - **熔断器**三态（Closed / HalfOpen / Open）：连续失败 **3** 次断开、冷却 **30s** 后半开；成功即复位
+  - 重试：可重试错误指数退避 `500×2^(n-1)` ms，最多 **3** 次（`max_retries()` 硬编码，未关联 `config.request.max_retries`）；4xx 不重试
+  - 所有 Provider 共用 `DeepSeekTransport`，统一按 OpenAI 兼容 `/chat/completions` 发请求
+  - ⚠️ OmniRoute 的 `x-omniroute-*` 注释元数据**已解析但从不发送**（`ApiEvent::ProviderMeta` 无生产者）
 
 ### 5.2 Transport trait — 协议抽象
 - **描述**：将 API 调用抽象为 Transport trait
@@ -323,10 +352,11 @@
 - **描述**：统一的 Channel trait 和消息收发接口
 - **源文件**：`src/channel/mod.rs`
 - **功能点**：
-  - `Channel` trait (connect / disconnect / send / recv / status / name)
-  - `ChannelManager` — 多通道管理器（启动/停止/路由）
-  - `InboundMessage` — 统一入站消息格式
-  - `ChannelStatus` — 通道运行时状态快照（connected/msg_count/error）
+  - `Channel` trait：`start` / `send_message` / `name` / `send_formatted`（默认回退纯文本）/ `login_qrcode`（默认 None）/ `status` / `send_typing`
+  - `ChannelManager` — 注册 / `start_all` / 广播 / 查状态 / 关闭；写 `home/channel_status.json`
+  - `InboundMessage` — 统一入站消息格式（channel / chat_id / sender_id / content / timestamp_ms / metadata）
+  - `ChannelStatus` — 通道运行时状态快照（connected / msg_count / last_error），由 `ChannelState` 原子量维护
+  - ⚠️ `OutboundMessage` 类型定义后全仓零引用（死类型）
 
 ### 6.2 TUI 通道
 - **描述**：ratatui 终端交互界面
@@ -335,7 +365,7 @@
   - 双面板布局（输入区 + 输出区）
   - Markdown 渲染（`src/tui/markdown.rs`）
   - 键盘输入：Normal/Insert/Select/Command 模式
-  - 命令模式 (`/model`, `/clear`, `/export` 等斜杠命令)
+  - 命令模式（`/model`、`/clear`、`/learn`、`/summary` 等斜杠命令）
   - 滚屏与分页
   - 流式输出实时渲染
   - QR 码生成（`src/tui/qrcode.rs`）
@@ -372,14 +402,16 @@
 - **描述**：QQ 官方 Bot API 接入（沙箱环境支持）
 - **源文件**：`src/channel/qq/mod.rs`、`src/channel/qq/api.rs`
 - **功能点**：
-  - 群消息（GROUP_AT_MESSAGE_CREATE）
-  - 私聊消息（C2C_MESSAGE_CREATE）
-  - 文本/图片 Markdown 消息发送
-  - 沙箱环境支持
+  - app_id/app_secret 换 access token（缓存，提前 60s 过期）→ WSS Gateway
+  - op10 Hello → Identify（intents = 1 | (1<<25) | (1<<30)）→ op11 心跳 ACK → op0 Dispatch
+  - 群消息（GROUP_AT_MESSAGE_CREATE）/ 私聊（C2C_MESSAGE_CREATE）；发送先试群接口再试 C2C
+  - 沙箱环境开关（`sandbox.api.sgroup.qq.com` ↔ `api.sgroup.qq.com`）
+- ⚠️ **已知缺口**：① `state_connected()` 恒返回 `false` → `status()` 永远报「未连接」；② setup 向导、`channel list`、配置模板**均不含 QQ**，只能手改 config + `.env`；③ 每次 Hello 都 spawn 新心跳任务且无退出条件（重连会累积）；④ 仅 gateway 模式注册
 
-### 6.7 Web 通道
-- **描述**：Webhook/HTTP 接口通道
+### 6.7 Web 通道（❌ 半成品，暂不可用）
+- **描述**：axum HTTP 接口通道（内嵌 HTML + `POST /api/chat` + `GET /api/reply/:chat_id`）
 - **源文件**：`src/channel/web/mod.rs`
+- **状态**：⚠️ 未完成 —— ① `send_message` 为空实现；② 回复缓存 `replies` 只读不写，前端轮询永远拿空；③ **无任何调用方**（TUI / gateway 均未注册）；④ 无 `WebConfig`，端口无配置入口；⑤ `admin_token` 生成后从未校验
 
 ---
 
@@ -397,14 +429,16 @@
   - 日志级别设置
 
 ### 7.2 MCP 传输层
-- **描述**：SSE 和 stdio 两种传输模式
-- **源文件**：`src/mcp/sse_transport.rs`
+- **描述**：stdio / SSE / Direct 三种传输，按配置自动降级
+- **源文件**：`src/mcp/transport.rs`（stdio）、`src/mcp/sse_transport.rs`（SSE / Direct）
 - **功能点**：
-  - `McpSseTransport` — SSE (HTTP 流式) 传输
-  - `McpDirectTransport` — Direct HTTP 传输
-  - JSON-RPC 请求/响应/通知收发
-  - 通知接收通道
-  - 请求取消
+  - `McpTransport`（stdio）— 启动子进程走 stdin/stdout，Windows 隐藏窗口；`command` 存在时优先
+  - `McpSseTransport` — GET 探测 + 等 `endpoint` 事件拿 message_url，响应经 SSE 流按 id 路由
+  - `McpDirectTransport` — SSE 探测失败时回退，直接 POST JSON-RPC（兼容非标准 Server）
+  - 握手 `initialize`（protocolVersion 2024-11-05）→ `notifications/initialized` → `tools/list`；调用 `tools/call`
+  - 请求超时 120s，超时发 `notifications/cancelled`
+  - ⚠️ **热刷新有局限**：`notifications/tools/list_changed` 只更新 adapter 内部快照，**已注册进 ToolRegistry 的工具条目不会增删**，需重启才生效
+  - 健康检查：首次等 30s，之后每 300s 一轮；调用失败自动重连一次再重试
 
 ### 7.3 McpToolWrapper — MCP 工具包装器
 - **描述**：将 MCP 远程工具的调用包装为 Tool trait 实现
@@ -488,7 +522,7 @@
   - `rhermes init` — 交互式初始化向导
   - `rhermes debug export <session-id>` — 导出调试报告
   - `rhermes gateway <start|stop|status|channel|setup>` — 守护进程管理
-  - `rhermes mcp <add|remove|list|import>` — MCP 客户端管理
+  - `rhermes mcp setup|remove|list|import` — MCP 客户端管理（**无 `add`**，添加走交互式 `setup`）
   - `rhermes config init|check` — 配置管理
   - `rhermes edu student|teacher` — 教育模式
 
@@ -607,14 +641,15 @@ rhermes edu teacher             # 启动教师模式
 
 | 维度 | 数量 |
 |------|------|
-| 顶层模块 | 15 个（含 plugin/） |
-| 内置工具 | 25 个 + MCP 动态 + Wasm 插件 |
+| 顶层模块 | 15 个目录 + cost.rs / debug.rs / init.rs / lib.rs / main.rs |
+| 代码规模 | 110 个 `.rs` / 47,677 行 |
+| 内置工具 | 33 个（另 `run_plugin` 条件注册、`wasm_*`、`mcp__*` 动态） |
 | 搜索引擎 | 5 种（Bing/DuckDuckGo/SearXNG/Serper/百度） |
-| 通信通道 | 6 种（TUI/微信/企微/Telegram/QQ/Web） |
-| MCP 传输 | 2 种（SSE/Direct HTTP）+ resources/list/read + 工具热刷新 |
-| 教育子模块 | 10 个 |
-| 单元测试 | 267 个 |
-| 危险命令黑名单 | 70+ 模式 |
+| 通信通道 | 6 种在册；稳定可用 4 种（TUI/微信/企微/Telegram），QQ 未收尾、Web 半成品 |
+| MCP 传输 | 3 种（stdio/SSE/Direct） |
+| 教育子模块 | 25 个文件（21 个顶层 + net/ 4 个） |
+| 测试 | 414 单元 + 6 集成 = 420 |
+| 危险命令黑名单 | 75 条（48 危险模式 + 27 链式绕过） |
 | 学习模式 | 3 种（explore/scaffold/locked） |
 | 代理模式 | 3 种（all/off/auto） |
 | 成本等级 | 3 级（auto/flash/pro） |

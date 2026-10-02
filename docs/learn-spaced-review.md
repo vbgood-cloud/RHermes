@@ -83,17 +83,24 @@ new_stability = clamp(current × stability_factor(score) × ef_mult, S_MIN, S_MA
 ```
 ① 到期复习（effective < floor）：effective ASC（最遗忘的优先）
 ② 未学过（mastery = 0）：layer ASC → id ASC
-③ 弱巩固（60 ≤ effective < 80）：effective ASC
+③ 弱巩固（review_floor ≤ effective < 80）：effective ASC
 ④ None（effective ≥ 80）：学习完成
 ```
 
+> ⚠️ 阶段③的**下界是可配置的 `review_floor`**（默认 60），不是硬编码 60；上界才是硬编码 `80`。
+
 ### SVG 自动变浅
 
-`src/knowledge/svg.rs::mastery_stage()` 使用 `effective_mastery` 而非历史 mastery：
+`mastery_stage()` 实际是**四档**（`svg.rs` 四色，按 `effective_mastery` 着色而非历史 mastery）：
 
-- effective ≥ 80 → 实色（精通）
-- effective 60–79 → 中等色（弱巩固）
-- effective < 60 → 浅色（遗忘，需复习）
+| effective | 档位 | 颜色 |
+|:---------:|------|------|
+| 0 | 未学 | 基底色 |
+| 1–49 | 初识 | 浅色 |
+| 50–79 | 掌握中 | 中等色 |
+| ≥ 80 | 精通 | 实色 |
+
+配合衰减，`effective` 掉档时颜色自动变浅（如 90 分放 30 天后可能落到 50–79 档）。
 
 每次打开图谱，节点颜色自动反映「今天还记得多少」。
 
@@ -134,11 +141,11 @@ ALTER TABLE nodes ADD COLUMN easiness REAL DEFAULT 2.5;
 | 位置 | 变化 |
 |------|------|
 | `kb_learn` | 标题区显示 effective vs 历史 mastery（如「当前 45%（原 90%）—— 已显著遗忘，请复习」）；并显示 `难度 EF`（1.3–2.8，越低越难），Agent 据此调整讲解深度 |
-| `kb_stats` | 新增「遗忘风险」段，列出 `effective < floor` 的节点及 retention% |
+| `kb_stats` | 输出「🔁 到期该复习」（列出 `effective < floor` 的节点）与「📈 遗忘曲线」两段 |
 | `kb_graph` | 节点颜色随 effective 自动变浅；图例标注「颜色 = 当前真实掌握度」 |
 | `kb_reset` | 重置时同时清空 `stability = 1.0, next_review_at = NULL, easiness = 2.5` |
 | TUI `/learn` | 显示遗忘曲线提示与当前 `review_floor` 值 |
-| Bento 面板 | 2×3 → **2×4** 网格：终端在框线外新增「待复习 N 个 · 最紧急 X（m%）· 平均保持率 r%」一行；HTML 面板新增「⏰ 待复习」「💧 平均保持率」两格（复用 `KbStats` 已有的 `due_reviews`/`due_review_names`/`avg_retention`） |
+| Bento 面板 | 终端版 **3 列 × 2 行**框阵 + 框外「待复习 N 个 · 最紧急 X（m%）· 平均保持率 r%」一行；HTML 版 **4 列 × 2 行**，含「⏰ 待复习」「💧 平均保持率」两格（复用 `KbStats` 的 `due_reviews` / `due_review_names` / `avg_retention`） |
 
 ## 测试
 
@@ -155,4 +162,6 @@ ALTER TABLE nodes ADD COLUMN easiness REAL DEFAULT 2.5;
 - `test_bento_html` / `test_terminal_bento`：2×4 网格与新「待复习 / 平均保持率」渲染
 - `kb_e2e::kb_full_workflow`：端到端验证 build → learn → quiz → graph → stats 全链路
 
-合计 **307 单元测试 + 2 集成测试**全通过。
+合计 **414 单元测试 + 6 集成测试 = 420** 全通过。
+
+> 计数口径：2026-10-02 按 `grep -c '#\[test\]|#\[tokio::test\]'` 实测。本文写作时（v0.7.8）计数为 307 + 2。

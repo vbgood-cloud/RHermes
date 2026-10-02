@@ -1,5 +1,9 @@
 # D35 实现提示词 — LiteParse 文档解析工具
 
+> ⚠️ **本文件是历史工作指令**（已执行完毕，保留作实现记录）。
+> 当前状态：**已实施**（8 个文档类工具已注册，见 `docs/D35-liteparse-integration.md`）。
+> 需要了解现状请以 `src/tools/liteparse.rs` / `src/tools/office/` 与 `docs/architecture.md` §六 为准。
+
 > 决策编号: D35
 > 前置: D8 (Office 工具), D24 (统一插件), D14 (安全加固)
 > 依赖: liteparse crate v2.6+

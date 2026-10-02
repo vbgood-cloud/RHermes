@@ -2,15 +2,16 @@
   "version": "0.7.0",
   "generated": "2026-08-18",
   "totals": {
-    "files": 87,
-    "lines": 34566,
-    "pub_fns": 496,
-    "tests": 267,
+    "files": 110,
+    "lines": 47787,
+    "pub_fns": 725,
+    "tests": 414,
     "traits": [
       "Channel",
       "EventSink",
       "MemoryProvider",
       "Plugin",
+      "RegistrarClient",
       "SearchEngine",
       "Tool",
       "Transport"
@@ -19,9 +20,9 @@
   "modules": {
     "agent": {
       "files": 11,
-      "lines": 5717,
-      "pub_fns": 100,
-      "tests": 58,
+      "lines": 6779,
+      "pub_fns": 107,
+      "tests": 65,
       "traits": [
         "EventSink",
         "MemoryProvider"
@@ -31,6 +32,7 @@
         "channel",
         "core",
         "edu",
+        "knowledge",
         "provider",
         "tools"
       ]
@@ -70,9 +72,9 @@
     },
     "core": {
       "files": 7,
-      "lines": 2892,
-      "pub_fns": 48,
-      "tests": 32,
+      "lines": 3254,
+      "pub_fns": 50,
+      "tests": 36,
       "traits": [],
       "deps": [
         "tui"
@@ -95,16 +97,20 @@
       "deps": []
     },
     "edu": {
-      "files": 10,
-      "lines": 5430,
-      "pub_fns": 104,
-      "tests": 57,
-      "traits": [],
-      "deps": []
+      "files": 25,
+      "lines": 13318,
+      "pub_fns": 256,
+      "tests": 145,
+      "traits": [
+        "RegistrarClient"
+      ],
+      "deps": [
+        "core"
+      ]
     },
     "gateway": {
       "files": 2,
-      "lines": 815,
+      "lines": 818,
       "pub_fns": 2,
       "tests": 0,
       "traits": [],
@@ -123,9 +129,27 @@
         "core"
       ]
     },
+    "judge": {
+      "files": 3,
+      "lines": 705,
+      "pub_fns": 17,
+      "tests": 10,
+      "traits": [],
+      "deps": [
+        "core"
+      ]
+    },
+    "knowledge": {
+      "files": 5,
+      "lines": 2205,
+      "pub_fns": 42,
+      "tests": 37,
+      "traits": [],
+      "deps": []
+    },
     "lib": {
       "files": 1,
-      "lines": 1005,
+      "lines": 1060,
       "pub_fns": 4,
       "tests": 0,
       "traits": [],
@@ -168,7 +192,7 @@
     },
     "provider": {
       "files": 4,
-      "lines": 811,
+      "lines": 942,
       "pub_fns": 12,
       "tests": 0,
       "traits": [
@@ -195,9 +219,9 @@
     },
     "tools": {
       "files": 17,
-      "lines": 6315,
-      "pub_fns": 56,
-      "tests": 36,
+      "lines": 6878,
+      "pub_fns": 60,
+      "tests": 37,
       "traits": [
         "Tool",
         "SearchEngine"
@@ -205,13 +229,14 @@
       "deps": [
         "api",
         "core",
+        "knowledge",
         "mcp"
       ]
     },
     "tui": {
       "files": 4,
-      "lines": 2611,
-      "pub_fns": 13,
+      "lines": 2858,
+      "pub_fns": 18,
       "tests": 19,
       "traits": [],
       "deps": [
@@ -219,18 +244,19 @@
         "api",
         "channel",
         "core",
+        "knowledge",
         "tools"
       ]
     }
   },
   "files": {
     "agent/curator.rs": {
-      "lines": 504,
+      "lines": 594,
       "deps": [
         "core"
       ],
       "mods": [],
-      "pub_fns": 4,
+      "pub_fns": 5,
       "pub_structs": [
         "UmbrellaAction",
         "SkillStatus",
@@ -241,7 +267,7 @@
       "tests": 7
     },
     "agent/event_sink.rs": {
-      "lines": 142,
+      "lines": 198,
       "deps": [
         "api",
         "channel"
@@ -255,7 +281,7 @@
       "pub_traits": [
         "EventSink"
       ],
-      "tests": 0
+      "tests": 4
     },
     "agent/guardrails.rs": {
       "lines": 212,
@@ -348,16 +374,17 @@
       "tests": 19
     },
     "agent/router.rs": {
-      "lines": 721,
+      "lines": 1433,
       "deps": [
         "agent",
         "channel",
         "edu",
+        "knowledge",
         "provider",
         "tools"
       ],
       "mods": [],
-      "pub_fns": 5,
+      "pub_fns": 7,
       "pub_structs": [
         "SessionRouter"
       ],
@@ -365,7 +392,7 @@
       "tests": 0
     },
     "agent/session.rs": {
-      "lines": 869,
+      "lines": 1073,
       "deps": [
         "agent",
         "api",
@@ -375,14 +402,14 @@
         "tools"
       ],
       "mods": [],
-      "pub_fns": 8,
+      "pub_fns": 12,
       "pub_structs": [
         "SessionConfig",
         "AgentSession",
         "ReflectionRecord"
       ],
       "pub_traits": [],
-      "tests": 0
+      "tests": 3
     },
     "agent/skill.rs": {
       "lines": 956,
@@ -642,14 +669,15 @@
       "tests": 0
     },
     "core/config.rs": {
-      "lines": 1853,
+      "lines": 2208,
       "deps": [],
       "mods": [],
-      "pub_fns": 8,
+      "pub_fns": 10,
       "pub_structs": [
         "Config",
         "ProxyMode",
         "ProxyConfig",
+        "JevConfig",
         "ChannelsConfig",
         "WeComConfig",
         "WeChatConfig",
@@ -672,10 +700,15 @@
         "AgentConfig",
         "ConfigError",
         "EduConfig",
-        "LiteParseSettings"
+        "EduStudentConfig",
+        "EduTeacherPeer",
+        "EduTeacherConfig",
+        "EduServeSection",
+        "LiteParseSettings",
+        "KnowledgeConfig"
       ],
       "pub_traits": [],
-      "tests": 14
+      "tests": 18
     },
     "core/context.rs": {
       "lines": 552,
@@ -705,7 +738,7 @@
       "tests": 0
     },
     "core/mod.rs": {
-      "lines": 34,
+      "lines": 41,
       "deps": [],
       "mods": [
         "archive",
@@ -772,6 +805,20 @@
       "pub_traits": [],
       "tests": 6
     },
+    "edu/allowlist.rs": {
+      "lines": 805,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 17,
+      "pub_structs": [
+        "AllowlistEntry",
+        "SignedAllowlist",
+        "AllowlistState",
+        "RevokeOutcome"
+      ],
+      "pub_traits": [],
+      "tests": 10
+    },
     "edu/auth.rs": {
       "lines": 211,
       "deps": [
@@ -782,6 +829,39 @@
       "pub_structs": [
         "AuthResult"
       ],
+      "pub_traits": [],
+      "tests": 5
+    },
+    "edu/authz.rs": {
+      "lines": 356,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 15,
+      "pub_structs": [
+        "MemberBinding",
+        "AuthRegistry",
+        "WhitelistHook"
+      ],
+      "pub_traits": [],
+      "tests": 4
+    },
+    "edu/blobs.rs": {
+      "lines": 180,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 3,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "edu/client_app.rs": {
+      "lines": 434,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 3,
+      "pub_structs": [],
       "pub_traits": [],
       "tests": 5
     },
@@ -825,14 +905,64 @@
       "pub_traits": [],
       "tests": 5
     },
+    "edu/gossip.rs": {
+      "lines": 401,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 19,
+      "pub_structs": [
+        "SectionMsg",
+        "SectionSession"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "edu/host.rs": {
+      "lines": 745,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 9,
+      "pub_structs": [
+        "Joined",
+        "LiveSession",
+        "NoticeKind",
+        "HostEvent",
+        "HostCommand",
+        "HostSnapshot",
+        "SectionHost"
+      ],
+      "pub_traits": [],
+      "tests": 15
+    },
+    "edu/identity.rs": {
+      "lines": 300,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 7,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 9
+    },
     "edu/mod.rs": {
-      "lines": 737,
+      "lines": 990,
       "deps": [],
       "mods": [
         "auth",
+        "authz",
+        "allowlist",
+        "blobs",
+        "client_app",
         "course",
         "dashboard",
+        "gossip",
+        "host",
+        "identity",
+        "model",
+        "net",
         "reflection",
+        "registrar",
+        "runtime",
+        "serve",
         "setup",
         "store",
         "teacher"
@@ -842,8 +972,79 @@
       "pub_traits": [],
       "tests": 0
     },
+    "edu/model.rs": {
+      "lines": 229,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 4,
+      "pub_structs": [
+        "MemberRole",
+        "Course",
+        "Section",
+        "Member",
+        "SectionKey",
+        "SectionTicket",
+        "SessionIdentity"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "edu/net/app_proto.rs": {
+      "lines": 321,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "AppRequest",
+        "AppResponse",
+        "AppHandler"
+      ],
+      "pub_traits": [],
+      "tests": 2
+    },
+    "edu/net/auth_proto.rs": {
+      "lines": 234,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 1,
+      "pub_structs": [
+        "AuthRequest",
+        "AuthResponse",
+        "AuthHandler"
+      ],
+      "pub_traits": [],
+      "tests": 2
+    },
+    "edu/net/client.rs": {
+      "lines": 188,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 5,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "edu/net/mod.rs": {
+      "lines": 282,
+      "deps": [],
+      "mods": [
+        "app_proto",
+        "auth_proto",
+        "client"
+      ],
+      "pub_fns": 13,
+      "pub_structs": [
+        "P2pNode"
+      ],
+      "pub_traits": [],
+      "tests": 1
+    },
     "edu/p2p.rs": {
-      "lines": 759,
+      "lines": 762,
       "deps": [],
       "mods": [],
       "pub_fns": 18,
@@ -871,6 +1072,52 @@
       "pub_traits": [],
       "tests": 10
     },
+    "edu/registrar.rs": {
+      "lines": 686,
+      "deps": [
+        "edu"
+      ],
+      "mods": [],
+      "pub_fns": 6,
+      "pub_structs": [
+        "SectionSpec",
+        "StudentSpec",
+        "HttpRegistrar",
+        "CsvRegistrar",
+        "SyncReport"
+      ],
+      "pub_traits": [
+        "RegistrarClient"
+      ],
+      "tests": 7
+    },
+    "edu/runtime.rs": {
+      "lines": 1042,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 28,
+      "pub_structs": [
+        "SectionEvent",
+        "TeacherRuntime",
+        "Enrollment",
+        "StudentRuntime"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "edu/serve.rs": {
+      "lines": 629,
+      "deps": [
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 5,
+      "pub_structs": [
+        "ServedSection"
+      ],
+      "pub_traits": [],
+      "tests": 8
+    },
     "edu/setup.rs": {
       "lines": 427,
       "deps": [
@@ -886,10 +1133,10 @@
       "tests": 0
     },
     "edu/store.rs": {
-      "lines": 1556,
+      "lines": 2225,
       "deps": [],
       "mods": [],
-      "pub_fns": 42,
+      "pub_fns": 57,
       "pub_structs": [
         "EduError",
         "Teacher",
@@ -903,26 +1150,29 @@
         "ClassPublish",
         "ClassCourseOverride",
         "Submission",
-        "EduStore"
+        "EduStore",
+        "SectionRow",
+        "StudentSectionRow"
       ],
       "pub_traits": [],
-      "tests": 15
+      "tests": 21
     },
     "edu/teacher.rs": {
-      "lines": 533,
+      "lines": 664,
       "deps": [
         "edu"
       ],
       "mods": [],
-      "pub_fns": 13,
+      "pub_fns": 14,
       "pub_structs": [
-        "TeacherManager"
+        "TeacherManager",
+        "StudentAdd"
       ],
       "pub_traits": [],
-      "tests": 5
+      "tests": 9
     },
     "gateway/mod.rs": {
-      "lines": 565,
+      "lines": 568,
       "deps": [
         "channel",
         "core"
@@ -957,8 +1207,126 @@
       "pub_traits": [],
       "tests": 0
     },
+    "judge/client.rs": {
+      "lines": 234,
+      "deps": [
+        "core",
+        "judge"
+      ],
+      "mods": [],
+      "pub_fns": 3,
+      "pub_structs": [
+        "JudgeError",
+        "JudgeClient"
+      ],
+      "pub_traits": [],
+      "tests": 4
+    },
+    "judge/mod.rs": {
+      "lines": 216,
+      "deps": [
+        "core"
+      ],
+      "mods": [
+        "client",
+        "types"
+      ],
+      "pub_fns": 8,
+      "pub_structs": [
+        "Judge"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "judge/types.rs": {
+      "lines": 255,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 6,
+      "pub_structs": [
+        "Question",
+        "JudgeRequest",
+        "TypedAnswer",
+        "JudgeUsage",
+        "JudgeResponse"
+      ],
+      "pub_traits": [],
+      "tests": 3
+    },
+    "knowledge/bento.rs": {
+      "lines": 234,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 5
+    },
+    "knowledge/layout.rs": {
+      "lines": 188,
+      "deps": [
+        "knowledge"
+      ],
+      "mods": [],
+      "pub_fns": 3,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 6
+    },
+    "knowledge/mod.rs": {
+      "lines": 70,
+      "deps": [],
+      "mods": [
+        "bento",
+        "layout",
+        "store",
+        "svg"
+      ],
+      "pub_fns": 7,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 0
+    },
+    "knowledge/store.rs": {
+      "lines": 1454,
+      "deps": [],
+      "mods": [],
+      "pub_fns": 28,
+      "pub_structs": [
+        "NodeIn",
+        "EdgeIn",
+        "NodeRow",
+        "EdgeRow",
+        "GraphSnapshot",
+        "NextNode",
+        "KbStats",
+        "KbExport",
+        "TopicOut",
+        "GraphOut",
+        "NodeOut",
+        "EdgeOut",
+        "LearningOut",
+        "LearnNodeOut",
+        "QuizLogOut",
+        "SessionOut",
+        "ImportReport"
+      ],
+      "pub_traits": [],
+      "tests": 19
+    },
+    "knowledge/svg.rs": {
+      "lines": 259,
+      "deps": [
+        "knowledge"
+      ],
+      "mods": [],
+      "pub_fns": 2,
+      "pub_structs": [],
+      "pub_traits": [],
+      "tests": 7
+    },
     "lib.rs": {
-      "lines": 1005,
+      "lines": 1060,
       "deps": [
         "channel",
         "core",
@@ -974,6 +1342,8 @@
         "edu",
         "gateway",
         "init",
+        "judge",
+        "knowledge",
         "mcp",
         "plugin",
         "provider",
@@ -1168,7 +1538,7 @@
       "tests": 5
     },
     "provider/factory.rs": {
-      "lines": 202,
+      "lines": 214,
       "deps": [
         "core",
         "provider"
@@ -1193,7 +1563,7 @@
       "tests": 0
     },
     "provider/pool.rs": {
-      "lines": 300,
+      "lines": 309,
       "deps": [
         "api",
         "provider"
@@ -1207,7 +1577,7 @@
       "tests": 0
     },
     "provider/transport.rs": {
-      "lines": 295,
+      "lines": 405,
       "deps": [
         "api",
         "core"
@@ -1241,14 +1611,15 @@
       "tests": 0
     },
     "tools/builtin.rs": {
-      "lines": 2299,
+      "lines": 2787,
       "deps": [
         "api",
+        "knowledge",
         "mcp",
         "tools"
       ],
       "mods": [],
-      "pub_fns": 17,
+      "pub_fns": 20,
       "pub_structs": [
         "ReadFile",
         "SearchContent",
@@ -1267,14 +1638,22 @@
         "SkillPatch",
         "Memory",
         "SkillManage",
+        "KbCreate",
+        "KbAppend",
+        "KbGraph",
+        "KbLearn",
+        "KbQuiz",
+        "KbStatsTool",
+        "KbList",
+        "KbReset",
         "RunPlugin",
         "McpConnectReport"
       ],
       "pub_traits": [],
-      "tests": 9
+      "tests": 10
     },
     "tools/dispatcher.rs": {
-      "lines": 328,
+      "lines": 350,
       "deps": [
         "core",
         "tools"
@@ -1288,13 +1667,13 @@
       "tests": 6
     },
     "tools/liteparse.rs": {
-      "lines": 293,
+      "lines": 304,
       "deps": [
         "core",
         "tools"
       ],
       "mods": [],
-      "pub_fns": 1,
+      "pub_fns": 2,
       "pub_structs": [
         "ParseDocument",
         "ScreenshotDocument",
@@ -1322,7 +1701,7 @@
       "tests": 0
     },
     "tools/office/excel.rs": {
-      "lines": 309,
+      "lines": 295,
       "deps": [
         "tools"
       ],
@@ -1336,7 +1715,7 @@
       "tests": 1
     },
     "tools/office/mod.rs": {
-      "lines": 40,
+      "lines": 56,
       "deps": [],
       "mods": [
         "excel",
@@ -1362,7 +1741,7 @@
       "tests": 2
     },
     "tools/office/word.rs": {
-      "lines": 364,
+      "lines": 350,
       "deps": [
         "tools"
       ],
@@ -1433,7 +1812,7 @@
       "tests": 0
     },
     "tools/search/mod.rs": {
-      "lines": 259,
+      "lines": 313,
       "deps": [],
       "mods": [
         "bing",
@@ -1506,7 +1885,7 @@
       "tests": 3
     },
     "tui/channel.rs": {
-      "lines": 76,
+      "lines": 90,
       "deps": [
         "channel",
         "tui"
@@ -1529,12 +1908,13 @@
       "tests": 8
     },
     "tui/mod.rs": {
-      "lines": 2164,
+      "lines": 2397,
       "deps": [
         "agent",
         "api",
         "channel",
         "core",
+        "knowledge",
         "tools",
         "tui"
       ],
@@ -1543,7 +1923,7 @@
         "channel",
         "qrcode"
       ],
-      "pub_fns": 9,
+      "pub_fns": 14,
       "pub_structs": [
         "AppCommand",
         "Role",
