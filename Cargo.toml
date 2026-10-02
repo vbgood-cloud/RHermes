@@ -1,6 +1,6 @@
 ﻿[package]
 name = "rhermes"
-version = "0.7.31"
+version = "0.7.32"
 edition = "2024"
 description = "Reasonix 閻ㄥ嫮娓?Token 閼插矁鍊?+ Hermes 閻ㄥ嫯鍤滄潻娑樺婢堆嗗壋 + Rust 閻ㄥ嫰娴傚鈧柨鈧銊︾仸"
 authors = ["RHermes Contributors"]

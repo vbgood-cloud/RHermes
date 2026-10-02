@@ -67,8 +67,13 @@ impl SdkWecomStreamApi {
     /// SDK 的 `connect()` 在 WS 握手 + 发出 auth 帧后即返回 Ok——认证被拒时
     /// 服务端会稍后直接 reset 连接（真机实测 ~100ms），表现为「假成功」。
     /// 认证成功的可靠信号是 `is_connected()`（内部即 `state == Authenticated`，
-    /// 由 subscribe ack 置位）；本方法轮询该状态最多 8s，
-    /// 未确认即报错并给出三类定向排查指引。
+    /// 由 subscribe ack 置位）。
+    ///
+    /// ⚠ 实现约束：`is_connected()` 用 tokio Mutex 的 `blocking_lock()`，
+    /// **不能在 async 上下文调用**（会 panic "Cannot block the current thread
+    /// from within a runtime"，真机实测）。因此连接用 `spawn_blocking` 线程里的
+    /// `Handle::block_on`（合法），轮询用普通线程 `thread::sleep`（合法），
+    /// SDK 后台任务（心跳/接收循环）仍由外部 runtime 驱动。
     pub async fn connect_verified(&self) -> Result<(), String> {
         // 断线原因上日志（诊断互踢/网络抖动）
         self.client
@@ -77,23 +82,27 @@ impl SdkWecomStreamApi {
             })
             .await;
 
-        self.client
-            .connect()
-            .await
-            .map_err(|e| format!("wecom 长连接失败: {e}"))?;
-
-        for _ in 0..80 {
-            if self.client.is_connected() {
-                return Ok(()); // state == Authenticated（收到 subscribe ack errcode=0）
+        let client = self.client.clone();
+        tokio::task::spawn_blocking(move || {
+            let handle = tokio::runtime::Handle::current();
+            handle
+                .block_on(client.connect())
+                .map_err(|e| format!("wecom 长连接失败: {e}"))?;
+            for _ in 0..80 {
+                if client.is_connected() {
+                    return Ok(()); // state == Authenticated（收到 subscribe ack errcode=0）
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-        Err(
-            "认证未确认（服务端未接受订阅，连接被重置或无响应）。常见原因：① BotID/Secret 有误（Secret 仅创建时可见，注意完整复制）；\
-             ② 企微后台创建机器人时选择了「回调模式」而非「使用长连接」（两者互斥，需重建机器人）；\
-             ③ 已有另一实例占用了该机器人的唯一长连接"
-                .into(),
-        )
+            Err(
+                "认证未确认（服务端未接受订阅，连接被重置或无响应）。常见原因：① BotID/Secret 有误（Secret 仅创建时可见，注意完整复制）；\
+                 ② 企微后台创建机器人时选择了「回调模式」而非「使用长连接」（两者互斥，需重建机器人）；\
+                 ③ 已有另一实例占用了该机器人的唯一长连接"
+                    .into(),
+            )
+        })
+        .await
+        .map_err(|_| "认证校验线程异常".to_string())?
     }
 }
 
@@ -273,19 +282,43 @@ impl Channel for WeComStreamChannel {
 // 向导辅助（D19：配置入口统一长连接）
 // ---------------------------------------------------------------------------
 
-/// 试连校验（同步上下文可用）：独立线程 + 独立 runtime，
-/// 真连企微官方网关做 subscribe 认证。
+/// 试连校验（同步上下文可用）：独立线程 + **多线程** runtime。
+///
+/// 必须用多线程 runtime：`block_on` 返回后 worker 线程继续驱动 SDK 的
+/// 心跳/接收循环（单线程 current_thread runtime 会全部挂起，永远等不到 ack）。
+/// `is_connected()` 的 `blocking_lock()` 在该独立线程上合法。
+/// 试连完成后主动断开，避免占用机器人的唯一长连接。
 pub fn try_connect_blocking(bot_id: &str, secret: &str) -> Result<(), String> {
     let (b, s) = (bot_id.to_string(), secret.to_string());
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|e| format!("创建运行时失败: {e}"))?;
-        rt.block_on(async {
-            let api = SdkWecomStreamApi::new(&b, &s, "wss://openws.work.weixin.qq.com");
-            api.connect().await
-        })
+        let result = (|| -> Result<(), String> {
+            let mut opts = WSClientOptions::new(b.clone(), s.clone());
+            opts.ws_url = Some("wss://openws.work.weixin.qq.com".to_string());
+            let client = WSClient::new(opts);
+            rt.block_on(client.connect())
+                .map_err(|e| format!("wecom 长连接失败: {e}"))?;
+            for _ in 0..80 {
+                if client.is_connected() {
+                    client.disconnect(); // 试连即断，不占用唯一连接
+                    return Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            client.disconnect();
+            Err(
+                "认证未确认（服务端未接受订阅，连接被重置或无响应）。常见原因：① BotID/Secret 有误（Secret 仅创建时可见，注意完整复制）；\
+                 ② 企微后台创建机器人时选择了「回调模式」而非「使用长连接」（两者互斥，需重建机器人）；\
+                 ③ 已有另一实例占用了该机器人的唯一长连接"
+                    .into(),
+            )
+        })();
+        let _ = rt.shutdown_timeout(std::time::Duration::from_secs(2));
+        result
     })
     .join()
     .map_err(|_| "试连线程异常".to_string())?
