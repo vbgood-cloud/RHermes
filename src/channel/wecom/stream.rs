@@ -125,6 +125,11 @@ pub struct NativeStreamApi {
 
 impl NativeStreamApi {
     pub fn new(bot_id: &str, secret: &str, ws_url: &str) -> Self {
+        // rustls CryptoProvider：进程级一次性显式安装（幂等）。
+        // 依赖树同时存在 aws-lc-rs 与 ring 时"自动确定"必然失败并 panic
+        // （真机实测 tokio-rt-worker panic）——显式装 ring 一劳永逸。
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         let shared = Arc::new(Shared {
             state: Mutex::new(LinkState::Disconnected),
             text_handlers: Mutex::new(Vec::new()),
