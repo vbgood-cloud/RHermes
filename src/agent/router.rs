@@ -26,6 +26,85 @@ struct StudentIdentity {
     class_id: Option<i64>,
 }
 
+/// S2.3: 学生课堂宿主条目 —— 宿主本体 + 推送 task（HostEvent → 渠道上屏）
+struct EduHostEntry {
+    host: crate::edu::host::SectionHost,
+    push_task: tokio::task::JoinHandle<()>,
+}
+
+/// S2.3: 学生侧 `/class` 命令族是否应由本路由拦截（角色断言）。
+///
+/// 老师侧 `/class` 是班级管理（`handle_teacher_slash`），学生侧是课堂会话 ——
+/// 两者命令同名但语义互斥，靠 `[edu].role`（每进程一个）区分，不可能同时命中。
+fn is_student_class_command(role: &str, input: &str) -> bool {
+    role == "student" && input.trim().starts_with("/class")
+}
+
+/// S2.3: 推送过滤 —— 默认只推 公告/作业/回答 + 元事件；
+/// `Question` / `Chat` 量大易刷屏，本批不推（设计 §12.7，配置项留待后续）。
+fn should_push_event(ev: &crate::edu::host::HostEvent) -> bool {
+    use crate::edu::host::{HostEvent, NoticeKind};
+    match ev {
+        HostEvent::Notice { kind, .. } => {
+            !matches!(kind, NoticeKind::Question | NoticeKind::Chat)
+        }
+        _ => true, // Roster / Rotated / Closed / Stopped 均低频重要
+    }
+}
+
+/// S2.3: 从宿主快照的标签表按「课程码 + 班级名」找班键
+/// （标签格式由 `host::build_labels` 生成：`"{course_code} / {class_name}"`）
+fn find_section_key(
+    snap: &crate::edu::host::HostSnapshot,
+    code: &str,
+    class: &str,
+) -> Option<crate::edu::model::SectionKey> {
+    snap.labels
+        .iter()
+        .find(|(_, label)| label.contains(code) && label.contains(class))
+        .map(|(k, _)| k.clone())
+}
+
+/// S2.3: 课堂推送 task —— 订阅宿主广播，按 [`should_push_event`] 过滤后
+/// 经 `reply_to_channel` 同款通路（`channel_mgr.get(channel).send_message`）上屏。
+///
+/// 宿主关闭 → 广播通道关闭 → `recv` 返回 `Err` → task 自然退出。
+async fn class_push_loop(
+    mut rx: tokio::sync::broadcast::Receiver<crate::edu::host::HostEvent>,
+    labels: std::collections::HashMap<crate::edu::model::SectionKey, String>,
+    channel_mgr: Arc<crate::channel::ChannelManager>,
+    channel: String,
+    chat_id: String,
+) {
+    loop {
+        match rx.recv().await {
+            Ok(ev) => {
+                if !should_push_event(&ev) {
+                    continue;
+                }
+                if let Some(text) = crate::edu::host::render_event(&ev, &labels) {
+                    if let Some(ch) = channel_mgr.get(&channel) {
+                        let _ = ch.send_message(&chat_id, &text).await;
+                    }
+                }
+            }
+            // 广播通道关闭（宿主 task 已退出）
+            Err(_) => break,
+        }
+    }
+}
+
+/// S2.3: 启动推送 task（`handle_student_class::start` 专用）
+fn spawn_class_push(
+    rx: tokio::sync::broadcast::Receiver<crate::edu::host::HostEvent>,
+    labels: std::collections::HashMap<crate::edu::model::SectionKey, String>,
+    channel_mgr: Arc<crate::channel::ChannelManager>,
+    channel: String,
+    chat_id: String,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(class_push_loop(rx, labels, channel_mgr, channel, chat_id))
+}
+
 /// 会话路由器 — 按 `channel:chat_id` 管理 AgentSession
 /// 知识库学习模式命令种类（dispatch 拦截层使用）
 enum KbCommand {
@@ -58,6 +137,8 @@ pub struct SessionRouter {
     student_ids: std::collections::HashMap<String, StudentIdentity>,
     /// 教育模式角色："teacher" / "student" / ""
     edu_role: String,
+    /// S2.3: 学生课堂宿主（`channel:chat_id` → 宿主 + 推送 task）
+    edu_hosts: HashMap<String, EduHostEntry>,
     /// 教育数据库路径
     edu_db_path: std::path::PathBuf,
     /// TUI 事件发送端（tui 会话用 TuiSink 渲染到终端）
@@ -242,6 +323,7 @@ impl SessionRouter {
             setup_states: std::collections::HashMap::new(),
             student_ids: std::collections::HashMap::new(),
             edu_role: String::new(),
+            edu_hosts: HashMap::new(),
             tui_event_tx: None,
             volatile_text: String::new(),
             edu_db_path: config_path
@@ -330,6 +412,17 @@ impl SessionRouter {
                 self.handle_kb_mode_command(&inbound, cmd).await;
                 return;
             }
+        }
+
+        // S2.3: 学生侧 /class 命令族 —— 需异步建连，先于同步 slash 分发拦截。
+        // 老师侧 /class 是班级管理（handle_teacher_slash），靠 role 分流互斥（见 is_student_class_command）
+        if is_student_class_command(&self.edu_role, &inbound.content) {
+            let host_key = format!("{}:{}", inbound.channel, inbound.chat_id);
+            let reply = self
+                .handle_student_class(&host_key, &inbound.channel, &inbound.chat_id, &inbound.content)
+                .await;
+            self.reply_to_channel(&inbound.channel, &inbound.chat_id, &reply).await;
+            return;
         }
 
         // 拦截教育模式斜杠命令
@@ -1361,6 +1454,10 @@ impl SessionRouter {
             help.push_str("  /profile — 查看学习档案\n");
             help.push_str("  /report — 生成成长报告\n");
             help.push_str("  /mode [explore|scaffold] — 查看/切换学习模式\n");
+            help.push_str("  /class start [--offline] — 接入教学班（进课堂）\n");
+            help.push_str("  /class list — 查看已接入的班\n");
+            help.push_str("  /class ask|chat <码> <班> <文本> — 向班提问/发言\n");
+            help.push_str("  /class stop — 退出课堂\n");
         }
         help
     }
@@ -1414,6 +1511,104 @@ impl SessionRouter {
     }
 
     /// 直接回复到外部通道（不经过 AgentSession）
+    /// S2.3: 学生侧 `/class` 命令族处理（start / stop / list / ask / chat）。
+    ///
+    /// 宿主生命周期绑定 `channel:chat_id`：同一会话二次 `start` 拒绝（不重复建连，
+    /// 见设计 §12.5 验收），`stop` 优雅拆除宿主并终止推送 task。
+    async fn handle_student_class(&mut self, key: &str, channel: &str, chat_id: &str, input: &str) -> String {
+        let parts: Vec<&str> = input.trim().split_whitespace().collect();
+        let sub = parts.get(1).copied().unwrap_or("");
+        match sub {
+            "start" => {
+                if self.edu_hosts.contains_key(key) {
+                    return "⚠ 已在课堂中。先 /class stop 退出，再重新接入。".into();
+                }
+                let offline = parts.iter().any(|p| *p == "--offline");
+                let cfg = match crate::core::Config::load(&self.config_path) {
+                    Ok(c) => c,
+                    Err(e) => return format!("❌ 读取配置失败：{e}"),
+                };
+                let home = crate::edu::serve::home_dir(&self.config_path);
+                self.reply_to_channel(channel, chat_id, "⏳ 正在接入教学班（P2P 打洞可能需要数秒）…").await;
+                match crate::edu::client_app::join_from_config(&cfg, &home, offline, false).await {
+                    Ok(live) => match crate::edu::host::SectionHost::start(live).await {
+                        Ok(host) => {
+                            // 订阅必须紧随 start（早于任何等待）——宿主广播无订阅者的事件会被丢弃（有意）
+                            let labels = host.snapshot().labels.clone();
+                            let push_task = spawn_class_push(
+                                host.subscribe(),
+                                labels,
+                                Arc::clone(&self.channel_mgr),
+                                channel.to_string(),
+                                chat_id.to_string(),
+                            );
+                            let snap = host.snapshot().clone();
+                            self.edu_hosts.insert(key.to_string(), EduHostEntry { host, push_task });
+                            let mut buf = format!("📚 已接入 {} 个教学班：", snap.joined.len());
+                            for j in &snap.joined {
+                                buf.push_str(&format!("\n  [{}] {} · {}", j.key, j.course_code, j.class_name));
+                            }
+                            for f in &snap.failures {
+                                buf.push_str(&format!("\n  ⚠ 接入失败：{f}"));
+                            }
+                            buf.push_str("\n\n/class ask|chat <课程码> <班级> <文本> 发言；/class stop 退出。");
+                            buf
+                        }
+                        Err(e) => format!("❌ 课堂宿主启动失败：{e:#}"),
+                    },
+                    Err(e) => format!("❌ 接入失败：{e:#}"),
+                }
+            }
+            "stop" => match self.edu_hosts.remove(key) {
+                Some(entry) => {
+                    // 优雅停：宿主拆除运行时；推送 task 在广播通道关闭后自然退出，abort 兜底
+                    if let Err(e) = entry.host.shutdown().await {
+                        tracing::warn!("[class] 宿主停机异常（已忽略）: {e:#}");
+                    }
+                    entry.push_task.abort();
+                    "👋 已退出课堂。".into()
+                }
+                None => "当前不在课堂中。用 /class start 接入。".into(),
+            },
+            "list" => match self.edu_hosts.get(key) {
+                Some(entry) => {
+                    let snap = entry.host.snapshot();
+                    let mut buf = format!("📚 当前接入 {} 个教学班：", snap.joined.len());
+                    for (k, label) in &snap.labels {
+                        buf.push_str(&format!("\n  [{}] {}", k, label));
+                    }
+                    buf
+                }
+                None => "当前不在课堂中。用 /class start 接入。".into(),
+            },
+            "ask" | "chat" => {
+                let Some(entry) = self.edu_hosts.get(key) else {
+                    return "当前不在课堂中。用 /class start 接入。".into();
+                };
+                let (Some(code), Some(class)) = (parts.get(2).copied(), parts.get(3).copied()) else {
+                    return "用法: /class ask|chat <课程码> <班级> <文本>".into();
+                };
+                let text = parts[4..].join(" ");
+                if text.is_empty() {
+                    return "文本不能为空。用法: /class ask|chat <课程码> <班级> <文本>".into();
+                }
+                let Some(k) = find_section_key(entry.host.snapshot(), code, class) else {
+                    return format!("未找到班级 {code} / {class}。/class list 查看已接入的班。");
+                };
+                let result = if sub == "ask" {
+                    entry.host.ask(&k, &text).await
+                } else {
+                    entry.host.chat(&k, &text).await
+                };
+                match result {
+                    Ok(()) => "✅ 已发送".into(),
+                    Err(e) => format!("❌ 发送失败：{e:#}"),
+                }
+            }
+            _ => "用法：\n  /class start [--offline] — 接入配置的全部教学班\n  /class stop — 退出课堂\n  /class list — 查看已接入的班\n  /class ask|chat <课程码> <班级> <文本> — 向班提问/发言".into(),
+        }
+    }
+
     async fn reply_to_channel(&self, channel: &str, chat_id: &str, text: &str) {
         if let Some(ch) = self.channel_mgr.get(channel) {
             let _ = ch.send_message(chat_id, text).await;
@@ -1428,5 +1623,76 @@ impl SessionRouter {
     /// 热切换模型（所有 session 共享同一个 transport，切换后立即生效）
     pub fn set_model(&self, model: &str) {
         self.transport.set_model(model);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S2.3 测试（设计 §12.5 验收）：/class 角色分流、NoticeKind 过滤、班键匹配
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edu::host::{HostEvent, HostSnapshot, NoticeKind};
+    use crate::edu::model::SectionKey;
+
+    /// 角色断言：学生侧 /class 拦截，老师侧（班级管理）不拦——二者命令同名语义互斥
+    #[test]
+    fn test_student_class_command_role_split() {
+        assert!(is_student_class_command("student", "/class start"));
+        assert!(is_student_class_command("student", "/class ask CS101 计算机2301 什么是递归"));
+        assert!(is_student_class_command("student", "  /class stop  "));
+        // 老师侧 /class 是班级管理，绝不能被学生课堂分支拦截
+        assert!(!is_student_class_command("teacher", "/class create CS101 计算机2301"));
+        assert!(!is_student_class_command("teacher", "/class list"));
+        // 非课堂命令不拦
+        assert!(!is_student_class_command("student", "/courses"));
+        assert!(!is_student_class_command("student", "老师好"));
+        // 未知角色不拦
+        assert!(!is_student_class_command("", "/class start"));
+    }
+
+    /// 推送过滤：默认只推 公告/作业/回答 + 元事件；Question/Chat 不推（防刷屏）
+    #[test]
+    fn test_should_push_event_filter() {
+        let key = SectionKey::new(iroh::SecretKey::generate().public(), 1);
+        for (kind, expect) in [
+            (NoticeKind::Announce, true),
+            (NoticeKind::Assignment, true),
+            (NoticeKind::Answer, true),
+            (NoticeKind::Question, false),
+            (NoticeKind::Chat, false),
+        ] {
+            let ev = HostEvent::Notice { key: key.clone(), kind, text: "t".into() };
+            assert_eq!(should_push_event(&ev), expect, "kind={kind:?}");
+        }
+        assert!(should_push_event(&HostEvent::Roster { key: key.clone(), epoch: 1, members: Some(3) }));
+        assert!(should_push_event(&HostEvent::Rotated { key: key.clone(), new_epoch: 2 }));
+        assert!(should_push_event(&HostEvent::Closed { key: key.clone() }));
+        assert!(should_push_event(&HostEvent::Stopped));
+    }
+
+    /// 班键匹配：按「课程码 + 班级名」在标签表里定位 SectionKey
+    #[test]
+    fn test_find_section_key_by_label() {
+        let k1 = SectionKey::new(iroh::SecretKey::generate().public(), 1);
+        let k2 = SectionKey::new(iroh::SecretKey::generate().public(), 2);
+        let snap = HostSnapshot {
+            student_no: "2024001".into(),
+            display_name: "测试".into(),
+            joined: vec![],
+            labels: std::collections::HashMap::from([
+                (k1.clone(), "CS101 / 计算机2301".into()),
+                (k2.clone(), "CS102 / 数据科学2401".into()),
+            ]),
+            failures: vec![],
+        };
+        assert_eq!(find_section_key(&snap, "CS101", "计算机2301").as_ref(), Some(&k1));
+        assert_eq!(find_section_key(&snap, "CS102", "数据科学2401").as_ref(), Some(&k2));
+        // 模糊子串也允许（班级名部分匹配）
+        assert_eq!(find_section_key(&snap, "CS101", "计算机").as_ref(), Some(&k1));
+        // 找不到 → None（ask/chat 分支据此报「未找到班级」）
+        assert_eq!(find_section_key(&snap, "CS999", "计算机2301"), None);
+        assert_eq!(find_section_key(&snap, "CS101", "不存在"), None);
     }
 }
