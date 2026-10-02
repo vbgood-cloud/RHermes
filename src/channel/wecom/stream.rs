@@ -235,6 +235,54 @@ impl Channel for WeComStreamChannel {
 }
 
 // ---------------------------------------------------------------------------
+// 向导辅助（D19：配置入口统一长连接）
+// ---------------------------------------------------------------------------
+
+/// 试连校验（同步上下文可用）：独立线程 + 独立 runtime，
+/// 真连企微官方网关做 subscribe 认证。
+pub fn try_connect_blocking(bot_id: &str, secret: &str) -> Result<(), String> {
+    let (b, s) = (bot_id.to_string(), secret.to_string());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("创建运行时失败: {e}"))?;
+        rt.block_on(async {
+            let api = SdkWecomStreamApi::new(&b, &s, "wss://openws.work.weixin.qq.com");
+            api.connect().await
+        })
+    })
+    .join()
+    .map_err(|_| "试连线程异常".to_string())?
+}
+
+/// 把 `WECOM_BOT_SECRET` 写入 .env（替换旧行；同时清理旧 WECOM_SECRET 残留）
+pub fn write_bot_secret_to_env(
+    config_path: &std::path::Path,
+    secret: &str,
+) -> Result<(), String> {
+    let env_path = config_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(".env");
+    let existing = std::fs::read_to_string(&env_path).unwrap_or_default();
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.starts_with("WECOM_SECRET=") && !t.starts_with("WECOM_BOT_SECRET=")
+        })
+        .map(|l| l.to_string())
+        .collect();
+    if !lines.is_empty() && !lines.last().map(|l| l.is_empty()).unwrap_or(true) {
+        lines.push(String::new());
+    }
+    lines.push(format!("WECOM_BOT_SECRET={secret}"));
+    std::fs::write(&env_path, lines.join("\n") + "\n")
+        .map_err(|e| format!("写入 .env 失败: {e}"))
+}
+
+// ---------------------------------------------------------------------------
 // 集成测试：本地 ws mock 模拟企微网关（subscribe ack / 推送 / 收回复帧）
 // ---------------------------------------------------------------------------
 

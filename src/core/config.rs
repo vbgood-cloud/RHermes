@@ -308,15 +308,16 @@ fn default_wecom_poll_interval() -> u64 { 5 }
 /// 企微接入模式（D19）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WeComMode {
-    /// 智能机器人 WebSocket 长连接（免回调）
+    /// 智能机器人 WebSocket 长连接（免回调）——唯一推荐模式
     Stream,
-    /// 旧链路：webhook 发送 + message/list 轮询（缺省回落，保兼容）
+    /// 旧链路：webhook 发送 + message/list 轮询（仅兼容存量配置读取，配置入口不再产出）
     Poll,
 }
 
 impl Default for WeComMode {
     fn default() -> Self {
-        Self::Poll
+        // D19 配置统一：缺省即长连接（API 模式）
+        Self::Stream
     }
 }
 
@@ -1283,15 +1284,14 @@ impl Config {
         // ── 通道配置 ──
         s.push_str("# ── 消息通道配置 ──\n\n");
 
-        // wecom
-        s.push_str("# 企业微信 Bot 通道\n[channels.wecom]\n");
+        // wecom（D19：智能机器人长连接，免回调；旧 webhook/自建应用字段已废弃）
+        s.push_str("# 企业微信智能机器人通道（长连接，免回调，无需公网）\n[channels.wecom]\n");
         s.push_str(&format!("enabled = {}\n", d.channels.wecom.enabled));
-        s.push_str("# Webhook URL（发送消息用）\n# webhook_url = \"\"\n");
-        s.push_str("# 企业 ID（接收消息用）\n# corp_id = \"\"\n");
-        s.push_str("# 应用 Agent ID（接收消息用）\n# agent_id = \"\"\n");
-        s.push_str("# Webhook 关键词\n# webhook_key = \"\"\n");
+        s.push_str("# 机器人 BotID（企微管理后台 → 智能机器人 → 创建，选择「使用长连接」）\n");
+        s.push_str(&format!("bot_id = {:?}\n", d.channels.wecom.bot_id));
+        s.push_str("# Secret 放同目录 .env: WECOM_BOT_SECRET=xxx（仅创建时可见）\n");
         s.push_str("# 允许的发送者列表（空=全部允许）\n# allow_from = []\n");
-        s.push_str(&format!("poll_interval_secs = {}\n\n", d.channels.wecom.poll_interval_secs));
+        s.push_str("# 长连接网关（默认官方，一般不用改）\n# ws_url = \"wss://openws.work.weixin.qq.com\"\n\n");
 
         // wechat
         s.push_str("# 微信个号 iLink Bot 通道\n[channels.wechat]\n");

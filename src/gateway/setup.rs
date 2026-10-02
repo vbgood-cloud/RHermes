@@ -111,49 +111,50 @@ pub fn run_gateway_setup(config_path: &Path) -> Result<(), String> {
         println!();
     }
 
-    // 企业微信
+    // 企业微信（D19：智能机器人长连接，免回调；不再使用 webhook/自建应用）
     let mut wecom = WeComConfig::default();
+    let mut wecom_secret_to_save: Option<String> = None;
     if enable_wecom {
-        println!("【步骤 2/3】配置企业微信通道参数");
-        println!("  ⚠ 需要先在企业微信管理后台创建自建应用和群机器人");
+        println!("【步骤 2/3】配置企业微信通道（智能机器人长连接）");
+        println!("  前置：企微管理后台 → 应用管理 → 智能机器人 → 创建机器人");
+        println!("  ⚠ 后台必须选择「使用长连接」，不要配置回调地址（两者互斥）");
         println!();
 
-        let webhook_url: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("群机器人 Webhook URL")
-            .default("".into())
+        let bot_id: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("机器人 BotID")
+            .default(String::new())
             .interact_text().map_err(|e| e.to_string())?;
 
-        println!();
-        println!("  以下信息用于接收消息（企业微信自建应用）");
-        let corp_id: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("企业 ID (CorpID)")
-            .default("".into())
-            .interact_text().map_err(|e| e.to_string())?;
+        let secret = dialoguer::Password::with_theme(&ColorfulTheme::default())
+            .with_prompt("机器人 Secret（仅创建时可见）")
+            .interact().map_err(|e| e.to_string())?;
 
-        let agent_id: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("应用 AgentId")
-            .default("".into())
-            .interact_text().map_err(|e| e.to_string())?;
-
-        println!();
-        println!("  Secret 将保存到 .env 文件（不会写入 config.toml）");
-        let secret: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("应用 Secret")
-            .default("".into())
-            .interact_text().map_err(|e| e.to_string())?;
-
-        let poll_interval: String = Input::with_theme(&ColorfulTheme::default())
-            .with_prompt("消息轮询间隔（秒）")
-            .default("5".into())
-            .interact_text().map_err(|e| e.to_string())?;
-
-        wecom.enabled = true;
-        wecom.webhook_url = webhook_url;
-        wecom.corp_id = corp_id;
-        wecom.agent_id = agent_id;
-        wecom.secret = secret;
-        wecom.poll_interval_secs = poll_interval.parse().unwrap_or(5);
-
+        // 即时试连：真连官方网关做 subscribe 认证
+        print!("⏳ 正在校验凭证（连接企微长连接网关）…");
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        let mut keep_config = true;
+        match crate::channel::wecom::try_connect_blocking(&bot_id, &secret) {
+            Ok(()) => println!("\r✅ 凭证有效，机器人已可上线                    "),
+            Err(e) => {
+                println!("\r⚠ 试连失败：{e}                    ");
+                println!("   常见原因：BotID/Secret 有误；后台选了回调模式；出口网络受限");
+                keep_config = Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("仍保存该配置？")
+                    .default(false)
+                    .interact().map_err(|e| e.to_string())?;
+                if !keep_config {
+                    println!("   已跳过企业微信配置");
+                }
+                println!();
+            }
+        }
+        if keep_config {
+            wecom.enabled = true;
+            wecom.mode = crate::core::WeComMode::Stream;
+            wecom.bot_id = bot_id;
+            wecom_secret_to_save = Some(secret);
+        }
         println!();
     }
 
@@ -218,16 +219,9 @@ pub fn run_gateway_setup(config_path: &Path) -> Result<(), String> {
 
     config.save(config_path).map_err(|e| format!("保存配置失败: {e}"))?;
 
-    // 保存 Secret 到 .env（仅企业微信）
-    if enable_wecom && !config.channels.wecom.secret.is_empty() {
-        let env_content = format!("WECOM_SECRET={}\n", config.channels.wecom.secret);
-        let env_path = config_path.parent().unwrap_or(Path::new(".")).join(".env");
-        // 追加，不覆盖已有的 API Key
-        let mut existing = std::fs::read_to_string(&env_path).unwrap_or_default();
-        if !existing.contains("WECOM_SECRET") {
-            existing.push_str(&env_content);
-            std::fs::write(&env_path, existing).map_err(|e| format!("写入 .env 失败: {e}"))?;
-        }
+    // 智能机器人 Secret 写入 .env（D19 长连接；写入点已在校验后，此处兜底保存）
+    if let Some(secret) = wecom_secret_to_save {
+        crate::channel::wecom::write_bot_secret_to_env(config_path, &secret)?;
     }
 
     println!("┌────────────────────────────────────────────┐");

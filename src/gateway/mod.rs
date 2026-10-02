@@ -530,7 +530,7 @@ fn channel_list(config_path: &Path) -> Result<(), String> {
     println!("  wecom  — 企业微信 Bot");
     println!("    启用: {}", if config.channels.wecom.enabled { "✅" } else { "⏹" });
     if config.channels.wecom.enabled {
-        println!("    webhook_url: {}", config.channels.wecom.webhook_url);
+        println!("    bot_id: {}（长连接模式）", config.channels.wecom.bot_id);
     }
     println!();
     println!("  telegram — Telegram Bot");

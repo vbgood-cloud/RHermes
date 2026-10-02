@@ -646,6 +646,15 @@ async fn handle_common_command(
                     if config.channels.telegram.enabled && config.channels.telegram.bot_token.is_empty() {
                         issues.push("Telegram 已启用但 bot_token 为空（在 .env 中设置 TELEGRAM_BOT_TOKEN）");
                     }
+                    // D19：企微统一长连接——启用即必须有 BotID + Secret
+                    if config.channels.wecom.enabled {
+                        if config.channels.wecom.bot_id.is_empty() {
+                            issues.push("企业微信已启用但 bot_id 为空（运行 rhermes gateway setup 重新配置，已切换长连接模式）");
+                        }
+                        if config.channels.wecom.bot_secret.is_empty() {
+                            issues.push("企业微信已启用但缺少机器人 Secret（在 .env 中设置 WECOM_BOT_SECRET）");
+                        }
+                    }
                     if issues.is_empty() {
                         println!("✅ 配置检查通过");
                     } else {

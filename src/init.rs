@@ -382,27 +382,17 @@ pub fn run_init() -> Result<(), Box<dyn std::error::Error>> {
                     println!("   ✅ Telegram 已启用");
                 }
                 1 => {
-                    // 企业微信
+                    // 企业微信（D19：智能机器人长连接，免回调；不再使用 webhook）
                     wecom_config.enabled = true;
-                    wecom_config.webhook_url = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt("Webhook URL（企业微信群机器人地址）")
-                        .default(wecom_config.webhook_url.clone())
+                    wecom_config.mode = crate::core::WeComMode::Stream;
+                    println!("   ℹ 前置：企微管理后台 → 智能机器人 → 创建（选择「使用长连接」）");
+                    wecom_config.bot_id = Input::with_theme(&ColorfulTheme::default())
+                        .with_prompt("机器人 BotID")
+                        .default(wecom_config.bot_id.clone())
                         .allow_empty(true)
                         .interact_text()?;
-                    wecom_config.corp_id = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt("企业 ID（corp_id，接收消息用，可留空）")
-                        .default(wecom_config.corp_id.clone())
-                        .allow_empty(true)
-                        .interact_text()?;
-                    wecom_config.agent_id = Input::with_theme(&ColorfulTheme::default())
-                        .with_prompt("应用 Agent ID（可留空）")
-                        .default(wecom_config.agent_id.clone())
-                        .allow_empty(true)
-                        .interact_text()?;
-                    if !wecom_config.corp_id.is_empty() {
-                        println!("   ℹ 应用 Secret 请写入 .env 文件: WECOM_SECRET=你的secret");
-                    }
-                    println!("   ✅ 企业微信已启用");
+                    println!("   ℹ 机器人 Secret 请写入 .env 文件: WECOM_BOT_SECRET=你的secret");
+                    println!("   ✅ 企业微信已启用（长连接模式）");
                 }
                 2 => {
                     // 微信个号
