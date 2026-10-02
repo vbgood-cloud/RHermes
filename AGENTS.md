@@ -84,6 +84,8 @@ src/
 - **数据目录**: 可移动模式 `home/`；所有路径通过 `PathManager` 获取
 - **全局状态**: `tools::set_global_*()` 函数设置单例（config/skill_engine/display_config）
 - **性能**: 大文件只读头部/尾部；`read_file` 受 `max_chars` 限制；Context 自动压缩
+- **临时诊断**: 诊断/探针脚本放系统临时目录（如 `%TEMP%`），**不放 `tests/`**——cargo 会把 `tests/` 下每个 `.rs` 编译为集成测试目标，临时文件的语法错误会阻断全量 `cargo test`
+- **敏感凭证**: 任何 API Key/Secret 不写入仓库文件（含测试、示例、日志）；临时验证走环境变量 + 运行时读取，用完即弃
 
 ## Notes
 
