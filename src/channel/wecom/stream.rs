@@ -53,13 +53,84 @@ pub trait WeComStreamApi: Send + Sync {
 #[derive(Clone)]
 pub struct SdkWecomStreamApi {
     client: WSClient,
+    /// 认证失败详情捕获（经自定义 Logger 收集 SDK 的 error 输出——
+    /// SDK 的 on_error/on_authenticated 回调均未接线，Logger 是唯一可靠出口）
+    auth_errors: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+/// 捕获型 Logger：只收 error 级消息（如「Authentication failed: errcode=853000…」），
+/// 其余级别丢弃（SDK 的 info/debug 很啰嗦）
+struct AuthCaptureLogger {
+    errors: Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl wecom_aibot_rust_sdk::types::Logger for AuthCaptureLogger {
+    fn debug(&self, _message: &str) {}
+    fn info(&self, _message: &str) {}
+    fn warn(&self, _message: &str) {}
+    fn error(&self, message: &str) {
+        self.errors.lock().unwrap().push(message.to_string());
+    }
+}
+
+/// 认证等待循环（同步上下文；两处共用：通道 connect_verified 与向导 try_connect）
+///
+/// 优先级：捕获到的认证失败详情（errcode 853000 等）> is_connected 成功 > 超时
+fn poll_auth_result(
+    client: &WSClient,
+    auth_errors: &Arc<std::sync::Mutex<Vec<String>>>,
+) -> Result<(), String> {
+    for _ in 0..80 {
+        // SDK 明确报认证失败（如 errcode=853000 invalid bot_id or secret）→ 立刻失败
+        if let Some(msg) = auth_errors
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|m| m.contains("Authentication failed"))
+        {
+            return Err(format!(
+                "企微服务端拒绝认证：{msg}\
+                 \n→ 请核对 BotID 与 Secret（Secret 是「长连接」专用密钥，\
+                 与接收 URL 方式的 Token/EncodingAESKey 不同，别拿混；\
+                 复制时注意完整、无多余空格；Secret 仅创建时可见，可重置后重试）"
+            ));
+        }
+        if client.is_connected() {
+            return Ok(()); // state == Authenticated（subscribe ack errcode=0）
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(
+        "认证未确认（服务端未接受订阅，连接被重置或无响应）。常见原因：① BotID/Secret 有误（Secret 仅创建时可见，注意完整复制）；\
+         ② 企微后台创建机器人时选择了「回调模式」而非「使用长连接」（两者互斥，需重建机器人）；\
+         ③ 已有另一实例占用了该机器人的唯一长连接"
+            .into(),
+    )
 }
 
 impl SdkWecomStreamApi {
     pub fn new(bot_id: &str, secret: &str, ws_url: &str) -> Self {
+        let auth_errors: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut opts = WSClientOptions::new(bot_id.to_string(), secret.to_string());
         opts.ws_url = Some(ws_url.to_string());
-        Self { client: WSClient::new(opts) }
+        opts.logger = Some(Arc::new(AuthCaptureLogger {
+            errors: Arc::clone(&auth_errors),
+        }));
+        Self {
+            client: WSClient::new(opts),
+            auth_errors,
+        }
+    }
+
+    /// 底层客户端引用（试连辅助用）
+    pub fn client_ref(&self) -> &WSClient {
+        &self.client
+    }
+
+    /// 认证错误捕获表引用（试连辅助用）
+    pub fn auth_errors_ref(&self) -> &Arc<std::sync::Mutex<Vec<String>>> {
+        &self.auth_errors
     }
 
     /// 建连并**等待认证确认**（真验证）。
@@ -83,23 +154,13 @@ impl SdkWecomStreamApi {
             .await;
 
         let client = self.client.clone();
+        let auth_errors = Arc::clone(&self.auth_errors);
         tokio::task::spawn_blocking(move || {
             let handle = tokio::runtime::Handle::current();
             handle
                 .block_on(client.connect())
                 .map_err(|e| format!("wecom 长连接失败: {e}"))?;
-            for _ in 0..80 {
-                if client.is_connected() {
-                    return Ok(()); // state == Authenticated（收到 subscribe ack errcode=0）
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Err(
-                "认证未确认（服务端未接受订阅，连接被重置或无响应）。常见原因：① BotID/Secret 有误（Secret 仅创建时可见，注意完整复制）；\
-                 ② 企微后台创建机器人时选择了「回调模式」而非「使用长连接」（两者互斥，需重建机器人）；\
-                 ③ 已有另一实例占用了该机器人的唯一长连接"
-                    .into(),
-            )
+            poll_auth_result(&client, &auth_errors)
         })
         .await
         .map_err(|_| "认证校验线程异常".to_string())?
@@ -297,25 +358,12 @@ pub fn try_connect_blocking(bot_id: &str, secret: &str) -> Result<(), String> {
             .build()
             .map_err(|e| format!("创建运行时失败: {e}"))?;
         let result = (|| -> Result<(), String> {
-            let mut opts = WSClientOptions::new(b.clone(), s.clone());
-            opts.ws_url = Some("wss://openws.work.weixin.qq.com".to_string());
-            let client = WSClient::new(opts);
-            rt.block_on(client.connect())
+            let api = SdkWecomStreamApi::new(&b, &s, "wss://openws.work.weixin.qq.com");
+            rt.block_on(api.client_ref().connect())
                 .map_err(|e| format!("wecom 长连接失败: {e}"))?;
-            for _ in 0..80 {
-                if client.is_connected() {
-                    client.disconnect(); // 试连即断，不占用唯一连接
-                    return Ok(());
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            client.disconnect();
-            Err(
-                "认证未确认（服务端未接受订阅，连接被重置或无响应）。常见原因：① BotID/Secret 有误（Secret 仅创建时可见，注意完整复制）；\
-                 ② 企微后台创建机器人时选择了「回调模式」而非「使用长连接」（两者互斥，需重建机器人）；\
-                 ③ 已有另一实例占用了该机器人的唯一长连接"
-                    .into(),
-            )
+            let result = poll_auth_result(api.client_ref(), api.auth_errors_ref());
+            api.client_ref().disconnect(); // 试连即断，不占用唯一连接
+            result
         })();
         let _ = rt.shutdown_timeout(std::time::Duration::from_secs(2));
         result
