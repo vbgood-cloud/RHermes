@@ -91,6 +91,7 @@ src/
 <!-- 临时记录、待办、快速笔记放在这里 -->
 - D17: 分层网络代理方案 — 详见 [`docs/decisions/D17-proxy.md`](docs/decisions/D17-proxy.md)
 - D18: Jev 决策模型集成方案（判断层） — 详见 [`docs/decisions/D18-jev-judge.md`](docs/decisions/D18-jev-judge.md)
+- D19: 企微机器人切换智能机器人长连接（stream 模式，免回调） — 详见 [`docs/decisions/D19-wecom-stream.md`](docs/decisions/D19-wecom-stream.md)
 
 ### 构建产物部署（每次编译后必须执行）
 
