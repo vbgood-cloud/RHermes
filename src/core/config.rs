@@ -280,43 +280,25 @@ pub struct WeComConfig {
     /// 长连接网关地址（默认官方 wss://openws.work.weixin.qq.com；测试可指向本地 mock）
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ws_url: String,
-    /// Webhook URL（发送消息用）
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub webhook_url: String,
-    /// 企业 ID（接收消息用）
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub corp_id: String,
-    /// 应用 Agent ID（接收消息用）
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub agent_id: String,
-    /// 应用 Secret（接收消息用，仅从 .env 读取）
-    #[serde(default, skip)]
-    pub secret: String,
-    /// Webhook 关键词（用于验证）
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub webhook_key: String,
     /// 允许的发送者列表（空=全部允许）
     #[serde(default)]
     pub allow_from: Vec<String>,
-    /// 消息轮询间隔（秒）
-    #[serde(default = "default_wecom_poll_interval")]
-    pub poll_interval_secs: u64,
+    // 旧 webhook/自建应用字段已移除（D19：只做 API 模式长连接）。
+    // 存量 config.toml 里的多余旧字段会被 serde 静默忽略，不影响加载。
 }
 
-fn default_wecom_poll_interval() -> u64 { 5 }
-
-/// 企微接入模式（D19）
+/// 企微接入模式（D19：仅 API 模式长连接）
+///
+/// 存量配置里的 `mode = "poll"` 经 `#[serde(other)]` 静默映射为 Stream。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WeComMode {
-    /// 智能机器人 WebSocket 长连接（免回调）——唯一推荐模式
+    /// 智能机器人 WebSocket 长连接（免回调）——唯一模式
+    #[serde(other)]
     Stream,
-    /// 旧链路：webhook 发送 + message/list 轮询（仅兼容存量配置读取，配置入口不再产出）
-    Poll,
 }
 
 impl Default for WeComMode {
     fn default() -> Self {
-        // D19 配置统一：缺省即长连接（API 模式）
         Self::Stream
     }
 }
@@ -329,13 +311,7 @@ impl Default for WeComConfig {
             bot_id: String::new(),
             bot_secret: String::new(),
             ws_url: String::new(),
-            webhook_url: String::new(),
-            corp_id: String::new(),
-            agent_id: String::new(),
-            secret: String::new(),
-            webhook_key: String::new(),
             allow_from: Vec::new(),
-            poll_interval_secs: default_wecom_poll_interval(),
         }
     }
 }
