@@ -61,12 +61,47 @@ impl SdkWecomStreamApi {
         opts.ws_url = Some(ws_url.to_string());
         Self { client: WSClient::new(opts) }
     }
+
+    /// 建连并**等待认证确认**（真验证）。
+    ///
+    /// SDK 的 `connect()` 在 WS 握手 + 发出 auth 帧后即返回 Ok——认证被拒时
+    /// 服务端会稍后直接 reset 连接（真机实测 ~100ms），表现为「假成功」。
+    /// 认证成功的可靠信号是 `is_connected()`（内部即 `state == Authenticated`，
+    /// 由 subscribe ack 置位）；本方法轮询该状态最多 8s，
+    /// 未确认即报错并给出三类定向排查指引。
+    pub async fn connect_verified(&self) -> Result<(), String> {
+        // 断线原因上日志（诊断互踢/网络抖动）
+        self.client
+            .on_disconnected(|reason| {
+                tracing::warn!("wecom 长连接断开: {reason}");
+            })
+            .await;
+
+        self.client
+            .connect()
+            .await
+            .map_err(|e| format!("wecom 长连接失败: {e}"))?;
+
+        for _ in 0..80 {
+            if self.client.is_connected() {
+                return Ok(()); // state == Authenticated（收到 subscribe ack errcode=0）
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Err(
+            "认证未确认（服务端未接受订阅，连接被重置或无响应）。常见原因：① BotID/Secret 有误（Secret 仅创建时可见，注意完整复制）；\
+             ② 企微后台创建机器人时选择了「回调模式」而非「使用长连接」（两者互斥，需重建机器人）；\
+             ③ 已有另一实例占用了该机器人的唯一长连接"
+                .into(),
+        )
+    }
 }
 
 #[async_trait]
 impl WeComStreamApi for SdkWecomStreamApi {
+    /// 语义：建连 + 等认证 ack（真验证，失败给定向指引）
     async fn connect(&self) -> Result<(), String> {
-        self.client.connect().await.map_err(|e| format!("wecom 长连接失败: {e}"))
+        self.connect_verified().await
     }
 
     async fn on_text_message<F: Fn(&WsFrame) + Send + Sync + 'static>(&self, handler: F) {
@@ -189,12 +224,12 @@ impl Channel for WeComStreamChannel {
         mut shutdown_rx: broadcast::Receiver<()>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
-            tracing::info!("WeComStreamChannel: 正在建立长连接…");
+            tracing::info!("WeComStreamChannel: 正在建立长连接（WS 握手 + 订阅认证）…");
             if let Err(e) = self.api.connect().await {
                 tracing::error!("WeComStreamChannel: {e}");
                 return;
             }
-            tracing::info!("WeComStreamChannel: 长连接已建立（免回调模式）");
+            tracing::info!("WeComStreamChannel: 长连接已建立（认证通过，免回调模式）");
 
             // 注册文本消息回调：解析 → 记录帧 → 注入路由
             let frames = Arc::clone(&self.latest_frames);
