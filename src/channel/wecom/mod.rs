@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 use crate::channel::{Channel, InboundMessage};
 use crate::core::Config;
 
-pub use stream::{SdkWecomStreamApi, WeComStreamApi, WeComStreamChannel};
+pub use stream::{NativeStreamApi, WeComStreamApi, WeComStreamChannel, WsFrame};
 pub use stream::{try_connect_blocking, write_bot_secret_to_env};
 
 /// 企微通道门面：凭证齐备走长连接；缺失则禁用并指路（不静默降级）

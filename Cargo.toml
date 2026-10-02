@@ -1,6 +1,6 @@
 ﻿[package]
 name = "rhermes"
-version = "0.7.36"
+version = "0.7.37"
 edition = "2024"
 description = "Reasonix 閻ㄥ嫮娓?Token 閼插矁鍊?+ Hermes 閻ㄥ嫯鍤滄潻娑樺婢堆嗗壋 + Rust 閻ㄥ嫰娴傚鈧柨鈧銊︾仸"
 authors = ["RHermes Contributors"]
@@ -78,10 +78,10 @@ bytes = "1"             # gossip / blobs 閻ㄥ嫬鐡ч懞鍌濇祰娴?
 anyhow = "1"            # 閺傛澘顤冪純鎴犵捕鐏炲倻娈戦柨娆掝嚖閼辨艾鎮庨敍鍫熸＆閺堝膩閸фぞ绮涘▽璺ㄦ暏 String 闁挎瑨顕ら敍?
 postcard = { version = "1", features = ["alloc"] }  # gossip 濞戝牊浼呯槐褍鍣炬惔蹇撳灙閸?
 liteparse = { version = "2.6", default-features = false }
-wecom-aibot-rust-sdk = "1.0.2"
 
 [build-dependencies]
 winresource = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+rustls = "0.23"
