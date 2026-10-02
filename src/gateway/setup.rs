@@ -125,28 +125,33 @@ pub fn run_gateway_setup(config_path: &Path) -> Result<(), String> {
             .default(String::new())
             .interact_text().map_err(|e| e.to_string())?;
 
-        let secret = dialoguer::Password::with_theme(&ColorfulTheme::default())
-            .with_prompt("机器人 Secret（仅创建时可见）")
-            .interact().map_err(|e| e.to_string())?;
-
-        // 即时试连：真连官方网关做 subscribe 认证
-        print!("⏳ 正在校验凭证（连接企微长连接网关）…");
-        use std::io::Write as _;
-        let _ = std::io::stdout().flush();
-        let mut keep_config = true;
-        match crate::channel::wecom::try_connect_blocking(&bot_id, &secret) {
-            Ok(()) => println!("\r✅ 凭证有效，机器人已可上线                    "),
-            Err(e) => {
-                println!("\r⚠ 试连失败：{e}                    ");
-                println!("   常见原因：BotID/Secret 有误；后台选了回调模式；出口网络受限");
-                keep_config = Confirm::with_theme(&ColorfulTheme::default())
-                    .with_prompt("仍保存该配置？")
-                    .default(false)
-                    .interact().map_err(|e| e.to_string())?;
-                if !keep_config {
-                    println!("   已跳过企业微信配置");
+        // Secret 用明文输入：粘贴时可核对完整性（853000 凭证错误多为复制不完整所致）
+        let secret: String = Input::with_theme(&ColorfulTheme::default())
+            .with_prompt("机器人 Secret（明文显示以便核对；注意周边环境）")
+            .default(String::new())
+            .interact_text().map_err(|e| e.to_string())?;
+        let mut keep_config = !secret.trim().is_empty();
+        if !keep_config {
+            println!("   ⚠ Secret 为空，已跳过企业微信配置");
+            println!();
+        } else {
+            // 即时试连：真连官方网关做 subscribe 认证
+            print!("⏳ 正在校验凭证（连接企微长连接网关）…");
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+            match crate::channel::wecom::try_connect_blocking(&bot_id, &secret) {
+                Ok(()) => println!("\r✅ 凭证有效，机器人已可上线                    "),
+                Err(e) => {
+                    println!("\r⚠ 试连失败：{e}                    ");
+                    keep_config = Confirm::with_theme(&ColorfulTheme::default())
+                        .with_prompt("仍保存该配置？")
+                        .default(false)
+                        .interact().map_err(|e| e.to_string())?;
+                    if !keep_config {
+                        println!("   已跳过企业微信配置");
+                    }
+                    println!();
                 }
-                println!();
             }
         }
         if keep_config {
