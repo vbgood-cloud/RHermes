@@ -11,7 +11,6 @@ pub mod agent;
 pub mod api;
 pub mod channel;
 pub mod core;
-pub mod cost;
 pub mod debug;
 pub mod edu;
 pub mod gateway;

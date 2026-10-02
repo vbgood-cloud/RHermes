@@ -69,7 +69,6 @@ src/
 ├── scheduler/        Cron 定时任务调度器
 ├── gateway/          守护进程模式
 ├── tui/mod.rs        ratatui 终端 UI (~2200 行)
-├── cost.rs           成本控制 (model tiers / 压缩)
 ├── debug.rs          调试日志缓冲区
 └── init.rs           交互式初始化向导
 ```
