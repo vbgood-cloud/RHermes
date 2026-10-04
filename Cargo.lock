@@ -5933,7 +5933,7 @@ dependencies = [
 
 [[package]]
 name = "rhermes"
-version = "0.7.39"
+version = "0.7.40"
 dependencies = [
  "anyhow",
  "argon2",
@@ -5970,7 +5970,6 @@ dependencies = [
  "reqwest 0.12.28",
  "rusqlite",
  "rust_xlsxwriter",
- "rustls",
  "scraper",
  "serde",
  "serde_json",
@@ -7191,11 +7190,9 @@ checksum = "edc5f74e248dc973e0dbb7b74c7e0d6fcc301c694ff50049504004ef4d0cdcd9"
 dependencies = [
  "futures-util",
  "log",
- "rustls",
- "rustls-native-certs",
- "rustls-pki-types",
+ "native-tls",
  "tokio",
- "tokio-rustls",
+ "tokio-native-tls",
  "tungstenite 0.24.0",
 ]
 
@@ -7500,9 +7497,8 @@ dependencies = [
  "http",
  "httparse",
  "log",
+ "native-tls",
  "rand 0.8.6",
- "rustls",
- "rustls-pki-types",
  "sha1",
  "thiserror 1.0.69",
  "utf-8",

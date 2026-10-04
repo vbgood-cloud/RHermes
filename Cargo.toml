@@ -1,6 +1,6 @@
 ﻿[package]
 name = "rhermes"
-version = "0.7.39"
+version = "0.7.40"
 edition = "2024"
 description = "Reasonix 閻ㄥ嫮娓?Token 閼插矁鍊?+ Hermes 閻ㄥ嫯鍤滄潻娑樺婢堆嗗壋 + Rust 閻ㄥ嫰娴傚鈧柨鈧銊︾仸"
 authors = ["RHermes Contributors"]
@@ -65,8 +65,7 @@ ureq = { version = "2", features = ["json"] }
 ratatui = "0.29"
 crossterm = "0.28"
 qrcodegen = "1.8.0"
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
-rustls = { version = "0.23", features = ["ring"] }  # D19: 企微长连接 TLS（显式 CryptoProvider）
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 axum = { version = "0.8", features = ["ws"] }
 tower-http = { version = "0.6", features = ["cors"] }
 iroh = "1.0"
