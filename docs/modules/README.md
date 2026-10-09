@@ -8,13 +8,15 @@
 
 | 文档 | 模块 | 文件 / 行数 | 一句话 |
 |------|------|:---:|------|
-| [`scheduler.md`](scheduler.md) | `src/scheduler/` | 1 / 218 | cron 定时跑 Agent 任务并推送到通道（仅 Gateway 模式） |
-| [`plugin.md`](plugin.md) | `src/plugin/` | 4 / 729 | 统一插件系统：Extism Wasm 沙盒 + SKILL.md，经 `run_plugin` 调用 |
-| [`mcp.md`](mcp.md) | `src/mcp/` | 8 / 1,824 | MCP 客户端：stdio / SSE / Direct 三传输，工具名 `mcp__<server>__<tool>` |
-| [`provider.md`](provider.md) | `src/provider/` | 4 / 938 | `Transport` trait + ProviderPool（熔断 + 主备降级，**非加权轮询**） |
-| [`judge.md`](judge.md) | `src/judge/` | 3 / 702 | Jev 判断层（D18）：fan-out 结构化判断，**失败一律回退** |
-| [`gateway.md`](gateway.md) | `src/gateway/` | 2 / 816 | 无 TUI 守护进程：多通道常驻 + 调度器 + 状态文件 |
-| [`channel.md`](channel.md) | `src/channel/` | 11 / 3,399 | `Channel` trait + `ChannelManager`；六渠道成熟度实测表 |
+| [`scheduler.md`](scheduler.md) | `src/scheduler/` | 1 / 219 | cron 定时跑 Agent 任务并推送到通道（仅 Gateway 模式） |
+| [`plugin.md`](plugin.md) | `src/plugin/` | 4 / 733 | 统一插件系统：Extism Wasm 沙盒 + SKILL.md，经 `run_plugin` 调用 |
+| [`mcp.md`](mcp.md) | `src/mcp/` | 8 / 1,832 | MCP 客户端：stdio / SSE / Direct 三传输，工具名 `mcp__<server>__<tool>` |
+| [`provider.md`](provider.md) | `src/provider/` | 4 / 942 | `Transport` trait + ProviderPool（熔断 + 主备降级，**非加权轮询**） |
+| [`judge.md`](judge.md) | `src/judge/` | 3 / 705 | Jev 判断层（D18）：fan-out 结构化判断，**失败一律回退** |
+| [`gateway.md`](gateway.md) | `src/gateway/` | 2 / 817 | 无 TUI 守护进程：多通道常驻 + 调度器 + 状态文件 |
+| [`channel.md`](channel.md) | `src/channel/` | 12 / 3,786 | `Channel` trait + `ChannelManager`；六渠道成熟度实测表 |
+
+> 上表「文件 / 行数」随代码变化，**权威数字见 [`../codegraph.md`](../codegraph.md)**（自动生成）。
 
 ## 其他已存在文档
 

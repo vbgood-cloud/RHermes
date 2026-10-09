@@ -223,10 +223,17 @@ rhermes init    # 配置微信通道并扫码登录
 ```
 详见 `docs/wechat-setup.md`。
 
-### 企业微信通道 ⚠️
+### 企业微信通道 ✅ 文本可用
 
-在 `config.toml` 配置 `[channels.wecom]`（`webhook_url` / `corp_id` / `agent_id`），`WECOM_SECRET` 放 `.env`。
-详见 `docs/wechat-setup.md` 第二节。
+```bash
+rhermes gateway setup    # 选「企业微信 Bot」→ 填 BotID → 填 Secret（明文显示便于核对）
+```
+
+- 走**智能机器人 WebSocket 长连接**（API 模式）：免公网回调、免 AES 加解密、支持单聊问答
+- 配置项：`[channels.wecom]` 的 `bot_id` + `.env` 的 `WECOM_BOT_SECRET`；`mode` 现只有 `stream`
+- ⚠️ 旧的 **webhook + 自建应用轮询链路已删除**（v0.7.34）：存量配置里的 `webhook_url` / `corp_id` / `agent_id` / `WECOM_SECRET` **不再生效**
+- ⚠️ 同一机器人只允许 1 个长连接，**一机一 bot**；当前为一问一答，暂无打字机流式效果
+- 详见 `docs/wechat-setup.md` 第二节与 `docs/decisions/D19-wecom-stream.md`
 
 ### QQ 通道 ⚠️ 未收尾
 

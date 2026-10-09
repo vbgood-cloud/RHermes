@@ -14,8 +14,8 @@
 | 基础架构 | 项目骨架 + 路径管理器 | ✅ |
 | | DeepSeek API 集成 + 三段式 Context | ✅ |
 | | 内置工具 + 并行调度 | ✅ 现 **33 个**（含 kb_* 8 / Office 5 / 文档解析 3） |
-| | Tool-Call Repair Pipeline | ⚠️ 三工序生效（Scavenge/Truncation/Storm）；**Flatten 未接入生产路径** |
-| | 成本控制体系 | ⚠️ `cost.rs` 已实现但**全项目零引用**（未集成） |
+| | Tool-Call Repair Pipeline | ⚠️ 实际生效 **Scavenge + Truncation 两工序**；**Flatten 未接入生产路径**（`RepairAction::Flattened`/`RestoredNested` 永不产生）；Storm 属护栏层（`guardrails.rs`） |
+| | 成本控制体系 | ❌ **已移除** —— `cost.rs`（560 行）于 **v0.7.36** 整体删除，其中五机制从未接入过生产路径 |
 | | Agent Loop + TUI 交互优化 | ✅ |
 | 自进化层 | 记忆系统 (SQLite+FTS5) | ✅ |
 | | 技能引擎 (Markdown) | ✅ |

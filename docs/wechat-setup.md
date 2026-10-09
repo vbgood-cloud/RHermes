@@ -69,74 +69,64 @@ poll_interval_secs = 2
 
 ---
 
-## 二、企业微信（WeCom Bot）
+## 二、企业微信（智能机器人 · 长连接）
 
-适合团队使用，通过企业微信群机器人接收通知，通过自建应用推送消息。
+企业微信走**智能机器人长连接**（官方称 API 模式）：程序主动连出 `wss://openws.work.weixin.qq.com`，**不需要公网 IP、不需要配回调 URL、业务层不做 AES 加解密**，且原生支持单聊问答。
+
+> ⚠️ **旧链路已整体移除**：`webhook_url`（群机器人）与 `corp_id` / `agent_id` / `WECOM_SECRET`（自建应用 `message/list` 轮询）自 **v0.7.34** 起**全部失效**。存量 `config.toml` 里的这些字段会被静默忽略——不报错，但也不生效。
 
 ### 前置准备
 
 1. 登录[企业微信管理后台](https://work.weixin.qq.com/wework_admin/frame)
-2. 创建一个**自建应用**（应用管理 → 创建应用）
-3. 获取以下信息：
-   - **CorpID**（我的企业 → 企业信息 → 企业 ID）
-   - **AgentId**（应用管理 → 你的应用 → AgentId）
-   - **Secret**（应用管理 → 你的应用 → Secret）
-4. 创建一个**群机器人**（群聊 → 右键 → 添加群机器人 → 获取 Webhook URL）
+2. 「应用管理 → **智能机器人**」创建一个机器人
+3. 接入方式必须选 **「使用长连接」**（与「回调地址」**互斥**，选错只能重建机器人）
+4. 记录 **BotID** 与 **Secret**（Secret 仅创建时显示一次）
+5. 设置**可见范围**，必须包含要使用的成员，否则消息不会路由到机器人
 
-### 1. 修改配置文件
+### 1. 一键配置（推荐）
+
+```bash
+rhermes gateway setup
+```
+
+选择「企业微信 Bot」后依次填 BotID、Secret（**明文显示**，便于粘贴核对），程序会**即时试连**并把结果直接反馈给你（服务端 errcode 原样透传）。成功后自动写入：
+
+- `config.toml` → `[channels.wecom]` 的 `enabled` / `mode` / `bot_id`
+- `.env` → `WECOM_BOT_SECRET`
+
+### 2. 手工配置
+
+`config.toml`：
 
 ```toml
 [channels.wecom]
 enabled = true
-
-# 发送消息：群机器人 Webhook URL
-webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
-
-# 接收消息：企业自建应用信息
-corp_id = "wwxxxxxxxxxxxx"
-agent_id = "1000001"
-
-# 消息轮询间隔（秒）
-poll_interval_secs = 5
-
-# 限制接收哪些用户的消息（留空=全部接收）
-allow_from = ["UserID1", "UserID2"]
+mode = "stream"           # 唯一取值（存量 "poll" 会被 serde 静默映射为 stream）
+bot_id = "wwwxxxxxxxx"     # 智能机器人 BotID（**不是** corpid）
+# ws_url = ""              # 可选：覆盖长连接网关地址（测试指向本地 mock）
+# allow_from = []          # 可选：允许的发送者 userid 列表，空 = 全部放行
 ```
 
-### 2. 配置 .env 文件
-
-在 `config.toml` 同级目录下的 `.env` 文件中添加：
+`.env`（与 `config.toml` 同级）：
 
 ```env
-WECOM_SECRET=your-secret-here
+WECOM_BOT_SECRET=your-secret-here
 ```
 
 ### 3. 启动
 
 ```bash
-rhermes
+rhermes gateway start      # 守护进程模式（推荐，长连接常驻）
 ```
 
 ### 注意事项
 
-- **发送消息**：通过 Webhook 发送到群聊，所有人可见
-- **接收消息**：通过自建应用的消息推送接口轮询，只有发给应用的消息才会被接收到
-- `allow_from`：按企业微信的 UserID 过滤，不配置则接收所有用户的消息
-
-### 完整配置示例
-
-```toml
-[channels.wecom]
-enabled = true
-webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=693a91f6-7d1e-4b2e-8d3c-5f9e0a1b2c3d"
-corp_id = "ww1234567890abcdef"
-agent_id = "1000001"
-poll_interval_secs = 5
-allow_from = ["ChenJie", "LiMing"]
-
-# .env
-# WECOM_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
+- **一机一 bot**：同一机器人**只允许 1 个长连接**，第二处连接会把前一个踢掉。不要在多台机器 / 多个实例上用同一套 BotID+Secret。
+- **成员侧**：企微客户端里单聊直接搜机器人；群里用「添加群机器人」。
+- **TLS 指纹**：企微网关按 TLS ClientHello 特征区别对待，Rust 侧**必须用 `native-tls`**。这是编译期固定的依赖特性——升级依赖时**不要**把 `tokio-tungstenite` 换回 `rustls`，否则表现为「连上即被服务端重置」。
+- **回复形态**：当前为**一问一答**（走 `aibot_send_msg` 主动发送），**暂无打字机流式效果**。
+- **连接状态**：`rhermes gateway status` 与启动状态表里的 wecom 状态取自长连接真实状态。若显示「未配置 BotID / WECOM_BOT_SECRET，通道已禁用」，说明凭证缺失——通道**不会**静默降级到其它链路。
+- 完整技术细节（协议、TLS 指纹确诊过程、未完成项）见 `docs/decisions/D19-wecom-stream.md`。
 
 ---
 
@@ -151,9 +141,9 @@ token_path = "home/wechat_token.txt"
 
 [channels.wecom]
 enabled = true
-webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
-corp_id = "wwxxxxxxxxxxxx"
-agent_id = "1000001"
+mode = "stream"
+bot_id = "wwwxxxxxxxx"
+# .env: WECOM_BOT_SECRET=xxxxxxxx
 ```
 
 三个通道（TUI、微信、企业微信）的消息会汇聚到同一个 Agent Loop，统一处理。
@@ -171,10 +161,13 @@ A: 检查终端日志（`rhermes.log`）中是否有错误信息。常见原因�
 - 微信版本不兼容（请更新微信到最新版）
 
 ### Q: 企业微信收不到消息？
-A: 检查配置：
-- `corp_id` 和 `secret` 是否正确
-- 应用是否在企业微信管理后台设置为"可见范围"
-- 先通过 Webhook 发送一条测试消息确认 Webhook URL 是否正确
+A: 按顺序排查：
+- `.env` 里的 `WECOM_BOT_SECRET` 是否**完整**（复制不全是最常见原因，服务端会回 `853000` 类凭证错误）
+- 机器人后台的接入方式是否选了 **「使用长连接」**（与回调地址互斥）
+- 机器人的**可见范围**是否包含你本人
+- 是否有**另一个实例**正占用同一个机器人的唯一长连接（会互相踢下线）
+- 连接本身是否成功：`rhermes gateway status` 看 wecom 的 `connected` 与 `detail`；日志（`rhermes.log`）里搜 `wecom`
+- 日志里若出现 `wecom 推送未进入路由（<原因>）`，括号内就是真实的丢弃原因（非文本消息 / 字段缺失 / 被 `allow_from` 过滤）
 
 ### Q: Token 过期了怎么办？
-A: 微信个号的 token 落盘持久化，正常情况长期可用、无需刷新。**若运行中 token 失效**（接口报错码含 `token` / `401` / 错误码），程序会**自动清除本地 token 并重新走扫码登录流程**——此时需要**重新用微信扫码**，无法无人值守自愈，因此长期挂机场景请在终端可见处运行。企业微信的 `access_token` 到期前自动刷新（默认按返回的 `expires_in` 提前续期），无需人工干预。
+A: 微信个号的 token 落盘持久化，正常情况长期可用、无需刷新。**若运行中 token 失效**（接口报错码含 `token` / `401` / 错误码），程序会**自动清除本地 token 并重新走扫码登录流程**——此时需要**重新用微信扫码**，无法无人值守自愈，因此长期挂机场景请在终端可见处运行。企业微信走长连接，**不涉及 access_token 轮换**（认证在 `aibot_subscribe` 一次性完成，断线由指数退避自动重连）。

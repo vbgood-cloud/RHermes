@@ -380,12 +380,16 @@
   - Token 持久化
 
 ### 6.4 企业微信通道
-- **描述**：企业微信 Bot 接入
-- **源文件**：`src/channel/wecom/mod.rs`
+- **描述**：企业微信智能机器人接入（API 模式长连接，免回调、免公网、免 AES 加解密）
+- **源文件**：`src/channel/wecom/mod.rs`（模式门面）、`src/channel/wecom/stream.rs`（原生长连接客户端）
+- **决策文档**：`docs/decisions/D19-wecom-stream.md`
 - **功能点**：
-  - Webhook 发送消息
-  - 接收消息轮询（企业微信回调）
-  - 发送者白名单过滤
+  - `aibot_subscribe`（BotID + Secret）认证，`ping` 30s 心跳，断线指数退避重连（1s→30s）
+  - 入站 `aibot_msg_callback` → 统一 inbound 管道；出站 `aibot_send_msg` 主动发送
+  - 发送者白名单过滤（`allow_from`，按 userid）
+  - 凭证缺失走 `Disabled` 变体（**不静默降级**），并如实上报连接状态
+  - ⚠️ **未实现**：流式打字机（Sink 未接线）、6 分钟流窗口 / errcode `846608` 降级
+  - ⚠️ 旧的 webhook + 自建应用轮询链路已于 **v0.7.34** 删除
 
 ### 6.5 Telegram Bot 通道
 - **描述**：Telegram Bot API 接入
@@ -486,17 +490,11 @@
 
 ---
 
-## 10. 成本控制 (cost/)
+## 10. 成本控制（已移除）
 
-- **描述**：五个互补机制控制 Token 花费
-- **源文件**：`src/cost.rs`
-- **功能点**：
-  - **Flash-First 分级** — auto / flash / pro 三级 preset
-  - **NEEDS_PRO 自动升级** — 模型自报告，flash 自动切 pro
-  - **辅助调用强制 Flash** — 摘要/压缩等辅助操作强制走 flash 模型
-  - **轮次自动压缩** — 工具结果 >3000 token 自动摘要
-  - **成本仪表盘** — 每轮/累计成本实时显示
-  - 模型分级：`Flash` / `Pro`
+- ⚠️ **该模块已于 v0.7.36（`47ba060`）整体删除** —— `src/cost.rs`，560 行。
+- 原设计的「五机制」（Flash-First 分级 / NEEDS_PRO 自动升级 / 辅助调用强制 Flash / 轮次自动压缩 / 成本仪表盘）**从未接入生产路径**，属全项目零引用的死代码。
+- 当前的用量可见性由 `api::Usage`（`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` / `cached_tokens` / `reasoning_tokens`）与 Provider 层统计承担。
 
 ---
 
@@ -641,15 +639,15 @@ rhermes edu teacher             # 启动教师模式
 
 | 维度 | 数量 |
 |------|------|
-| 顶层模块 | 15 个目录 + cost.rs / debug.rs / init.rs / lib.rs / main.rs |
-| 代码规模 | 110 个 `.rs` / 47,677 行 |
+| 顶层模块 | 15 个目录 + debug.rs / init.rs / lib.rs / main.rs |
+| 代码规模 | 110 个 `.rs` / 47,878 行 |
 | 内置工具 | 33 个（另 `run_plugin` 条件注册、`wasm_*`、`mcp__*` 动态） |
 | 搜索引擎 | 5 种（Bing/DuckDuckGo/SearXNG/Serper/百度） |
-| 通信通道 | 6 种在册；稳定可用 4 种（TUI/微信/企微/Telegram），QQ 未收尾、Web 半成品 |
+| 通信通道 | 6 种在册；可用 4 种（TUI/微信/企微/Telegram），QQ 未收尾、Web 半成品 |
 | MCP 传输 | 3 种（stdio/SSE/Direct） |
 | 教育子模块 | 25 个文件（21 个顶层 + net/ 4 个） |
-| 测试 | 414 单元 + 6 集成 = 420 |
+| 测试 | 静态计数 399 个单测（`src/`）+ 6 集成；v0.7.27 实测 414+6=420，**删除 `cost.rs` 后尚未重测** |
 | 危险命令黑名单 | 75 条（48 危险模式 + 27 链式绕过） |
 | 学习模式 | 3 种（explore/scaffold/locked） |
 | 代理模式 | 3 种（all/off/auto） |
-| 成本等级 | 3 级（auto/flash/pro） |
+| 成本等级 | ❌ 已移除（`cost.rs` 于 v0.7.36 整体删除） |

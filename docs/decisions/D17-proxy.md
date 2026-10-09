@@ -49,7 +49,7 @@ mode = "auto" → 按 rules 功能开关 + no_proxy 域名排除
 | 搜索工具 | `web_search` | `false` | DDG/Serper/Brave |
 | 网页抓取 | `web_fetch` | `false` | 任意 URL |
 | 微信通道 | `wechat` | `false` | iLink Bot |
-| 企微通道 | `wecom` | `false` | Webhook + 消息轮询 |
+| 企微通道 | `wecom` | `false` | 智能机器人长连接（API 模式，免回调） |
 | Telegram | `telegram` | `true` | Bot API（未来） |
 | 子进程 | `command` | `false` | HTTP\_PROXY 环境变量注入 |
 

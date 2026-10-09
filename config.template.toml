@@ -2,6 +2,9 @@
 #
 # 首次使用：运行 `rhermes config init` 生成此文件
 # API Key 等敏感信息请放入同目录的 .env 文件
+#
+# ⚠️ 本文件是**历史快照**，可能与当前代码不同步（权威模板以 `rhermes config init`
+#    的实时输出为准，见 `src/core/config.rs::generate_annotated_template()`）。
 
 # ── API 配置（向后兼容，等价于 providers.deepseek）──
 [api]
@@ -85,20 +88,15 @@ circuit_breaker_cooldown_secs = 30
 
 # ── 消息通道配置 ──
 [channels.wecom]
-# 是否启用企业微信 Bot
+# 是否启用企业微信智能机器人（长连接，免回调，无需公网）
 enabled = false
-# Webhook URL（发送消息用）
-webhook_url = ""
-# 企业 ID（接收消息用）
-corp_id = ""
-# 应用 Agent ID（接收消息用）
-agent_id = ""
-# Webhook 关键词
-webhook_key = ""
+# 机器人 BotID（企微管理后台 → 应用管理 → 智能机器人 → 创建，接入方式选「使用长连接」）
+bot_id = ""
+# Secret 放同目录 .env：WECOM_BOT_SECRET=xxx（仅创建时可见）
 # 允许的发送者列表（空=全部允许）
 allow_from = []
-# 消息轮询间隔（秒）
-poll_interval_secs = 5
+# 长连接网关（默认官方，一般不用改）
+# ws_url = "wss://openws.work.weixin.qq.com"
 
 [channels.wechat]
 # 是否启用微信 iLink Bot

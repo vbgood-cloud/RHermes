@@ -197,7 +197,7 @@ rhermes gateway status  # 查看运行状态
 > - **同一个微信登录态不要在多个程序里同时启用**（会互相抢占消息轮询）——一个部署挂一个即可。
 > - 二维码约 2 分钟过期，程序会自动重新获取，无需手动刷新；扫码无反应时先看 `rhermes.log`，多为代理问题。
 > - 网络受限时在 `[channels.wechat]` 配 `proxy`；`[proxy]` 段已默认把 `*.weixin.qq.com` 放进 `no_proxy`。
-> - 企业微信（WeCom）需先在管理后台建自建应用，拿到 `corp_id` / `agent_id` / `secret`（`secret` 写 `.env` 的 `WECOM_SECRET`），详见 `docs/wechat-setup.md`。
+> - 企业微信（WeCom）走**智能机器人长连接**（API 模式，免回调）：在管理后台先建「智能机器人」并把接入方式选为**「使用长连接」**，把 **BotID** 填进 `[channels.wecom] bot_id`、**Secret** 写进 `.env` 的 `WECOM_BOT_SECRET`（入口 `rhermes gateway setup`）。⚠️ 旧的 `corp_id` / `agent_id` / `WECOM_SECRET` / `webhook_url` 链路自 v0.7.34 起已失效，详见 `docs/wechat-setup.md` 第二节。
 
 ### 1.4 跑通你的第一个知识库（三步）
 

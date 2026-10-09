@@ -1,9 +1,9 @@
 # RHermes 架构总览
 
-> 多 Provider 终端 AI Agent · Rust 2024 edition · **110 个 `.rs` 文件 / 47,677 行** ·
+> 多 Provider 终端 AI Agent · Rust 2024 edition · **110 个 `.rs` 文件 / 47,878 行** ·
 > **33 个内置工具** + MCP 动态 + Wasm 插件 · 自进化技能系统 · Jev 判断层 · 知识库学习 · 去中心化教学班
 >
-> 本文对应当前代码：**v0.7.27**（`Cargo.toml`）。文中所有数字均按源码实测。
+> 本文对应当前代码：**v0.7.40**（`Cargo.toml`；⚠️ **最新已发布版为 v0.7.27** —— v0.7.28–v0.7.40 尚未推送/tag）。文中所有数字均按源码实测，权威计数见 `codegraph.md`。
 
 ---
 
@@ -40,7 +40,7 @@
 │  领域模块             knowledge/（知识库学习） edu/（去中心化教学班）    │
 ├─────────────────────────────────────────────────────────────────────┤
 │  基础设施             core/（config·context·path·http·prefix_cache·archive）│
-│                      cost.rs（成本控制）debug.rs（调试）init.rs（向导） │
+│                      judge/（判断层）debug.rs（调试） init.rs（向导） │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,28 +50,25 @@
 
 | 模块 | 文件 | 行数 | 职责 | 专项文档 |
 |------|:---:|-----:|------|---------|
-| `edu/` | 25 | 13,293 | 去中心化教学班（P2P/白名单/托管） | `edu-p2p-design.md` 等 8 篇 |
-| `tools/` | 17 | 6,861 | 工具注册/调度/内置实现/搜索/Office | 本文 §六 |
-| `agent/` | 11 | 6,768 | 智能体核心 | `guardrails.md` |
-| `channel/` | 11 | 3,399 | 六渠道接入 | `modules/channel.md` · `wechat-setup.md` |
-| `core/` | 7 | 3,247 | 配置/上下文/路径/HTTP/缓存/归档 | 本文 §十 |
-| `tui/` | 4 | 2,854 | 终端界面 | 本文 §三 |
-| `knowledge/` | 5 | 2,200 | 知识库存储/图谱/Bento | `learn-*.md` 3 篇 |
-| `mcp/` | 8 | 1,824 | MCP 客户端（三传输） | `modules/mcp.md` · 本文 §七 |
-| `api/` | 1 | 985 | OpenAI 兼容请求/响应/事件模型 | 本文 §五 |
-| `provider/` | 4 | 938 | Provider 池/熔断/传输/工厂 | `modules/provider.md` · 本文 §五 |
-| `gateway/` | 2 | 816 | 守护进程 + 配置向导 | `modules/gateway.md` · 本文 §三 |
-| `plugin/` | 4 | 729 | 统一插件系统（Extism/SKILL.md） | `modules/plugin.md` · 本文 §七 |
-| `judge/` | 3 | 702 | Jev 判断层 | `modules/judge.md` · 本文 §四.7 |
-| `scheduler/` | 1 | 218 | cron 定时任务 | `modules/scheduler.md` · 本文 §三 |
-| `bin/` | 2 | 8 | `rhermes-stu` / `rhermes-teacher` 入口 | — |
-| 根级 | — | 2,831 | `lib.rs`(1059) `init.rs`(876) `cost.rs`(560) `debug.rs`(336) `main.rs` | 本文 §十 |
-| **合计** | **110** | **47,677** | | |
+| `edu/` | 25 | 13,318 | 去中心化教学班（P2P/白名单/托管） | `edu-p2p-design.md` 等 8 篇 |
+| `agent/` | 11 | 7,045 | 智能体核心 | `guardrails.md` |
+| `tools/` | 17 | 6,878 | 工具注册/调度/内置实现/搜索/Office | 本文 §六 |
+| `channel/` | 12 | 3,786 | 六渠道接入 | `modules/channel.md` · `wechat-setup.md` |
+| `core/` | 7 | 3,267 | 配置/上下文/路径/HTTP/缓存/归档 | 本文 §十 |
+| `tui/` | 4 | 2,858 | 终端界面 | 本文 §三 |
+| 根级 | — | 2,277 | `lib.rs`(1068) `init.rs`(867) `debug.rs`(337) `main.rs`(5) | 本文 §十 |
+| `knowledge/` | 5 | 2,205 | 知识库存储/图谱/Bento | `learn-*.md` 3 篇 |
+| `mcp/` | 8 | 1,832 | MCP 客户端（三传输） | `modules/mcp.md` · 本文 §七 |
+| `api/` | 1 | 986 | OpenAI 兼容请求/响应/事件模型 | 本文 §五 |
+| `provider/` | 4 | 942 | Provider 池/熔断/传输/工厂 | `modules/provider.md` · 本文 §五 |
+| `gateway/` | 2 | 817 | 守护进程 + 配置向导 | `modules/gateway.md` · 本文 §三 |
+| `plugin/` | 4 | 733 | 统一插件系统（Extism/SKILL.md） | `modules/plugin.md` · 本文 §七 |
+| `judge/` | 3 | 705 | Jev 判断层 | `modules/judge.md` · 本文 §四.7 |
+| `scheduler/` | 1 | 219 | cron 定时任务 | `modules/scheduler.md` · 本文 §三 |
+| `bin/` | 2 | 10 | `rhermes-stu` / `rhermes-teacher` 入口 | — |
+| **合计** | **110** | **47,878** | | |
 
 > 📂 **模块级文档**见 `docs/modules/`：`scheduler.md` · `plugin.md` · `mcp.md` · `provider.md` · `judge.md` · `gateway.md` · `channel.md`。
-
-> ⚠️ `cost.rs` 的公开 API（`CostController` / `ModelTier` / `CostPreset` / `NeedsBreakdown` …）
-> **全项目零引用**（文件头带 `#![allow(dead_code)]`）—— 详见 §十五。
 
 ---
 
@@ -99,7 +96,7 @@ async fn send_typing(...)      // 默认空实现
 |------|:---:|---------|------|
 | TUI | ✅ | `tui/channel.rs` + 全局 `TUI_OUTBOUND` 队列 | `start()` 是 `pending()` 占位，真渲染在 `App::run()` |
 | 微信个号 | ✅ | iLink Bot：扫码 → `bot_token` → `get_updates` 长轮询（2s）；发送 4000 字节分片 | token 存 `home/wechat_token.txt`；二维码实际写 **BMP** 字节（函数名仍叫 `generate_qr_png`） |
-| 企业微信 | ⚠️ | 发：群机器人 Webhook（**忽略 chat_id**）；收：自建应用消息列表轮询（5s） | 收发不是同一会话通道 |
+| 企业微信 | ✅ | 智能机器人 **WebSocket 长连接**（API 模式，免回调）：`aibot_subscribe` 认证 → `aibot_msg_callback` 收 → `aibot_send_msg` 发 | ping 30s；断线指数退避重连 1s→30s；凭证缺失走 `Disabled`（不静默降级）；⚠️ TLS 必须 `native-tls`（rustls 指纹被网关拒）；⚠️ 打字机流式通路已备但 **Sink 未接线** |
 | Telegram | ✅ | `getUpdates` 长轮询 + MarkdownV2 + `sendChatAction` typing | **仅 gateway 模式注册** |
 | QQ | ⚠️ | app_id/secret → WSS Gateway + op10/11/0 协议；群 + C2C | 见下「已知缺口」 |
 | Web | ❌ | axum 内嵌页 + `POST /api/chat` | 半成品，见下 |
@@ -257,7 +254,7 @@ Gateway 模式下从 `config.scheduler.tasks` 读 cron 表达式，`cron::Schedu
 另有条件/动态注册：`run_plugin`（仅在真的加载到插件时）、`wasm_{name}`、`mcp__{server}__{tool}`。
 
 > ⚠️ 3 个 LiteParse 工具**无条件注册**，可用性取决于运行时 `init_liteparse()` 是否成功。
-> ⚠️ `lib.rs:977` 与 `gateway/mod.rs:286` 的硬编码 system prompt 仍写"可用工具（共 17 个）"——已与注册表脱钩。
+> ⚠️ **3 处**硬编码 system prompt 仍写"可用工具（共 17 个）"——已与注册表（实际 33 个）脱钩：`lib.rs:985` · `gateway/mod.rs:286` · `tui/mod.rs:510`。
 
 ### 6.3 安全边界
 
@@ -393,7 +390,6 @@ token 估算 `body.len() / 2`。
 | `core/prefix_cache.rs` | 三层 system prompt（Stable / Context / Volatile）冻结为 `Arc<[u8]>` |
 | `core/http_client.rs` | 代理感知客户端工厂：三模式 all/off/auto + `no_proxy` |
 | `core/archive.rs` | 压缩归档 `compressions/YYYY-MM-DD.jsonl`，摘要截断 500 字符 |
-| `cost.rs` | 成本控制五机制（⚠️ **未集成，死代码**，见 §十五） |
 | `debug.rs` | 会话调试环形缓冲 500 条 + `debug export` JSON 报告 |
 | `init.rs` | 交互式初始化向导（5 步 + 工作目录/代理/通道三段） |
 
@@ -510,7 +506,8 @@ rhermes-stu                   # 学生（含上述全部通用命令）
 
 | 项 | 位置 | 状态 |
 |----|------|------|
-| `cost.rs` 五机制 | `src/cost.rs` | ❌ **全项目零引用**（`#![allow(dead_code)]`），成本控制在 UI 上实际由 `api::Usage` 统计承担 |
+| ~~`cost.rs` 五机制~~ | ~~`src/cost.rs`~~ | ✅ **已于 v0.7.36（`47ba060`）整体删除**（560 行全项目零引用）；成本统计由 `api::Usage` 承担 |
+| `edu/p2p.rs` 大部分 | `src/edu/p2p.rs`（761 行） | ⚠️ **并非零引用**（`net/mod.rs` 用了 `encode_course_code` + `EDU_ALPN`），但 761 行中绝大多数未使用，宜收敛为 2 项导出 |
 | Repair 的 Flatten 工序 | `agent/repair.rs` | ⚠️ 生产路径不调用，仅单测覆盖 |
 | `ApiEvent::Thinking` / `ProviderMeta` | `provider/transport.rs` | ⚠️ 有消费者无生产者（读到的值进了空块） |
 | `DeepSeekClient` | `api/mod.rs:494` | ⚠️ 死代码，与 `provider::DeepSeekTransport` 重复 |

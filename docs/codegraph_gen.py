@@ -4,11 +4,26 @@
 1. docs/codegraph.md — 模块依赖图(Mermaid) + 类型定义 + pub API + 统计
 2. docs/codegraph.json — 机器可读的模块/依赖/符号数据
 """
-import os, re, json
+import os, re, json, datetime
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "src")
+
+# ── 0. 元数据：版本号取自 Cargo.toml，日期取当天（勿硬编码）──
+def _crate_version() -> str:
+    try:
+        with open(os.path.join(ROOT, "Cargo.toml"), encoding="utf-8", errors="replace") as f:
+            for line in f:
+                m = re.match(r'\s*version\s*=\s*"([^"]+)"', line)
+                if m:
+                    return m.group(1)
+    except OSError:
+        pass
+    return "unknown"
+
+CRATE_VERSION = _crate_version()
+GENERATED_ON = datetime.date.today().isoformat()
 
 # ── 1. 收集所有 .rs 文件 ──
 rs_files = []
@@ -73,8 +88,8 @@ for rel, d in info.items():
 
 # ── 5. 输出 JSON ──
 graph = {
-    "version": "0.7.0",
-    "generated": "2026-08-18",
+    "version": CRATE_VERSION,
+    "generated": GENERATED_ON,
     "totals": {
         "files": len(rs_files),
         "lines": sum(d["lines"] for d in info.values()),
@@ -93,6 +108,7 @@ with open(os.path.join(ROOT, "docs/codegraph.json"), "w", encoding="utf-8") as f
 # ── 6. 输出 Markdown（Mermaid 图）──
 md = []
 md.append("# RHermes Codegraph\n")
+md.append(f"> 版本: v{CRATE_VERSION} · 生成日期: {GENERATED_ON}\n")
 md.append("> 自动生成：`python3 docs/codegraph_gen.py`（或让 Agent 重新生成）—— **请勿手工编辑本文件**\n")
 
 total = graph["totals"]
@@ -104,6 +120,9 @@ md.append(f"| 总行数 | {total['lines']:,} |")
 md.append(f"| pub fn | {total['pub_fns']} |")
 md.append(f"| 单元测试 | {total['tests']} |")
 md.append(f"| 核心 trait | {' · '.join(total['traits'][:12])} |\n")
+md.append("> 「单元测试」= `src/` 内 `#[test]` / `#[tokio::test]` 属性的**静态计数**，")
+md.append("> 不含由宏批量生成的用例、`#[ignore]` 用例与 `tests/` 下的集成测试；")
+md.append("> 因此会小于 `cargo test` 实际执行数（以 `cargo test` 输出为准）。\n")
 
 md.append("## 模块依赖图\n")
 md.append("```mermaid")

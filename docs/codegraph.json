@@ -1,11 +1,11 @@
 {
-  "version": "0.7.0",
-  "generated": "2026-08-18",
+  "version": "0.7.40",
+  "generated": "2026-10-09",
   "totals": {
     "files": 110,
-    "lines": 47787,
-    "pub_fns": 725,
-    "tests": 414,
+    "lines": 47878,
+    "pub_fns": 705,
+    "tests": 399,
     "traits": [
       "Channel",
       "EventSink",
@@ -14,15 +14,16 @@
       "RegistrarClient",
       "SearchEngine",
       "Tool",
-      "Transport"
+      "Transport",
+      "WeComStreamApi"
     ]
   },
   "modules": {
     "agent": {
       "files": 11,
-      "lines": 6779,
+      "lines": 7045,
       "pub_fns": 107,
-      "tests": 65,
+      "tests": 68,
       "traits": [
         "EventSink",
         "MemoryProvider"
@@ -57,12 +58,13 @@
       "deps": []
     },
     "channel": {
-      "files": 11,
-      "lines": 3410,
-      "pub_fns": 41,
-      "tests": 11,
+      "files": 12,
+      "lines": 3786,
+      "pub_fns": 48,
+      "tests": 13,
       "traits": [
-        "Channel"
+        "Channel",
+        "WeComStreamApi"
       ],
       "deps": [
         "agent",
@@ -72,21 +74,13 @@
     },
     "core": {
       "files": 7,
-      "lines": 3254,
+      "lines": 3267,
       "pub_fns": 50,
       "tests": 36,
       "traits": [],
       "deps": [
         "tui"
       ]
-    },
-    "cost": {
-      "files": 1,
-      "lines": 561,
-      "pub_fns": 27,
-      "tests": 20,
-      "traits": [],
-      "deps": []
     },
     "debug": {
       "files": 1,
@@ -110,7 +104,7 @@
     },
     "gateway": {
       "files": 2,
-      "lines": 818,
+      "lines": 817,
       "pub_fns": 2,
       "tests": 0,
       "traits": [],
@@ -121,7 +115,7 @@
     },
     "init": {
       "files": 1,
-      "lines": 877,
+      "lines": 867,
       "pub_fns": 1,
       "tests": 0,
       "traits": [],
@@ -149,7 +143,7 @@
     },
     "lib": {
       "files": 1,
-      "lines": 1060,
+      "lines": 1068,
       "pub_fns": 4,
       "tests": 0,
       "traits": [],
@@ -374,7 +368,7 @@
       "tests": 19
     },
     "agent/router.rs": {
-      "lines": 1433,
+      "lines": 1699,
       "deps": [
         "agent",
         "channel",
@@ -389,7 +383,7 @@
         "SessionRouter"
       ],
       "pub_traits": [],
-      "tests": 0
+      "tests": 3
     },
     "agent/session.rs": {
       "lines": 1073,
@@ -646,18 +640,39 @@
       "tests": 6
     },
     "channel/wecom/mod.rs": {
-      "lines": 342,
+      "lines": 77,
       "deps": [
         "channel",
         "core"
       ],
-      "mods": [],
+      "mods": [
+        "stream"
+      ],
       "pub_fns": 1,
       "pub_structs": [
         "WeComChannel"
       ],
       "pub_traits": [],
       "tests": 0
+    },
+    "channel/wecom/stream.rs": {
+      "lines": 641,
+      "deps": [
+        "channel",
+        "core"
+      ],
+      "mods": [],
+      "pub_fns": 7,
+      "pub_structs": [
+        "WsFrame",
+        "WsFrameHeaders",
+        "NativeStreamApi",
+        "WeComStreamChannel"
+      ],
+      "pub_traits": [
+        "WeComStreamApi"
+      ],
+      "tests": 2
     },
     "core/archive.rs": {
       "lines": 83,
@@ -669,7 +684,7 @@
       "tests": 0
     },
     "core/config.rs": {
-      "lines": 2208,
+      "lines": 2220,
       "deps": [],
       "mods": [],
       "pub_fns": 10,
@@ -680,6 +695,7 @@
         "JevConfig",
         "ChannelsConfig",
         "WeComConfig",
+        "WeComMode",
         "WeChatConfig",
         "TelegramConfig",
         "QqConfig",
@@ -738,7 +754,7 @@
       "tests": 0
     },
     "core/mod.rs": {
-      "lines": 41,
+      "lines": 42,
       "deps": [],
       "mods": [
         "archive",
@@ -774,22 +790,6 @@
       ],
       "pub_traits": [],
       "tests": 4
-    },
-    "cost.rs": {
-      "lines": 561,
-      "deps": [],
-      "mods": [],
-      "pub_fns": 27,
-      "pub_structs": [
-        "ModelTier",
-        "CostPreset",
-        "CostBreakdown",
-        "NeedsProDetector",
-        "ResultCompressor",
-        "CostController"
-      ],
-      "pub_traits": [],
-      "tests": 20
     },
     "debug.rs": {
       "lines": 337,
@@ -1186,7 +1186,7 @@
       "tests": 0
     },
     "gateway/setup.rs": {
-      "lines": 250,
+      "lines": 249,
       "deps": [
         "core"
       ],
@@ -1197,7 +1197,7 @@
       "tests": 0
     },
     "init.rs": {
-      "lines": 877,
+      "lines": 867,
       "deps": [
         "core"
       ],
@@ -1326,7 +1326,7 @@
       "tests": 7
     },
     "lib.rs": {
-      "lines": 1060,
+      "lines": 1068,
       "deps": [
         "channel",
         "core",
@@ -1337,7 +1337,6 @@
         "api",
         "channel",
         "core",
-        "cost",
         "debug",
         "edu",
         "gateway",

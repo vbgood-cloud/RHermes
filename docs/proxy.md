@@ -69,7 +69,7 @@ create_proxied_client(config, feature, timeout)
 | 网页抓取 | `web_fetch` | `true` | `web_fetch` 工具 |
 | 判断层（Jev） | `jev` | —（缺省即 `false`） | D18 判断层 HTTP 客户端 |
 | 微信通道 | `wechat` | `false` | 微信 iLink Bot |
-| 企业微信 | `wecom` | `false` | 企业微信 Webhook + 消息轮询 |
+| 企业微信 | `wecom` | `false` | 企业微信智能机器人长连接（API 模式，免回调） |
 | Telegram | `telegram` | `true` | Telegram Bot API |
 | 子进程 | `command` | `false` | `run_command` 注入 HTTP_PROXY 环境变量 |
 

@@ -6,7 +6,7 @@
 
 [![Rust 2024](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.27-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
+[![Version](https://img.shields.io/badge/version-0.7.40-brightgreen.svg)](https://github.com/vbgood-cloud/RHermes)
 
 不满足于"又一个 AI 助手"。DeepSeek 前缀缓存压到极限、工具并行调度榨干 IO、自进化技能让 Agent 越长越强、Jev 判断层给高频决策降本增效——用 Rust 写的，就该零妥协。
 
@@ -122,7 +122,7 @@ rhermes config check            # 检查配置有没有写对
 |------|------|------|
 | **TUI** | ✅ 稳定 | 主入口；含 Markdown 渲染、流式输出、斜杠命令 |
 | **微信个号** | ✅ 稳定 | iLink Bot 扫码登录，收发/typing 全套 |
-| **企业微信** | ⚠️ 可用 | 发走群机器人 Webhook（忽略 chat_id）、收走自建应用轮询，二者非同一会话通道 |
+| **企业微信** | ✅ 文本可用 | 智能机器人 **WebSocket 长连接**（API 模式，免回调）；⚠️ 打字机流式未接线，当前为一问一答 |
 | **Telegram** | ✅ 稳定 | Long Polling + MarkdownV2 + typing；**仅 gateway 模式注册** |
 | **QQ** | ⚠️ 未收尾 | WSS+REST 收发已实现，但状态上报恒为"未连接"、不在 setup 向导与配置模板中，仅 gateway 模式可用 |
 | **Web** | ❌ 半成品 | `send_message` 为空实现、回复缓存无写入方、无任何调用点；**暂不可用** |
@@ -183,19 +183,22 @@ TYPESAFE_API_KEY=your-key        # 启用判断层才需要
 
 | 指标 | 值 |
 |------|:---|
-| 版本 | v0.7.27 |
-| 代码规模 | 110 个 `.rs` 文件（47,677 行，纯 Rust） |
+| 版本 | v0.7.40（⚠️ 本地未发布；**最新已发布版为 v0.7.27**，见 [CHANGELOG](docs/CHANGELOG.md) 顶部发布状态） |
+| 代码规模 | 110 个 `.rs` 文件（47,878 行，纯 Rust） |
 | 内置工具 | 33 个（+ 条件注册 `run_plugin`、`wasm_*`、`mcp__*`） |
-| 测试 | 414 个单元测试 + 6 个集成测试 = 420（另 3 个需内网判断端点的 `#[ignore]`） |
-| 顶层模块 | 15 个目录 + `cost.rs` / `debug.rs` / `init.rs` / `lib.rs` |
+| 测试 | 静态计数 399 个单测（`src/`）+ 6 个集成测试；v0.7.27 实测为 414+6=420，**删除 `cost.rs` 后尚未重测** |
+| 顶层模块 | 15 个目录 + `debug.rs` / `init.rs` / `lib.rs` / `main.rs` |
 | 支持渠道 | TUI / 微信 / 企业微信 / Telegram（QQ 未收尾、Web 半成品） |
 | 可执行程序 | rhermes / rhermes-stu / rhermes-teacher 三件套 |
 | AI Provider | omniRoute / OpenAI / DeepSeek / SiliconFlow / Zhipu / Moonshot / Ollama / Groq / New API / LM Studio |
 | 搜索引擎 | 5 种（Bing / DuckDuckGo / SearXNG / Serper / 百度） |
 
-### 近期亮点（v0.7.9 → v0.7.27）
+### 近期亮点（v0.7.9 → v0.7.40）
 
+- **v0.7.28–40** 企业微信**智能机器人长连接**（D19 · API 模式）：主动 wss 连出、免公网回调、免 AES 加解密；`aibot_subscribe` 认证 + ping 30s 心跳 + 指数退避重连；旧 webhook/轮询链路整体删除；⚠️ 确诊网关按 **TLS 指纹**区别对待 → 必须 `native-tls`
+- **v0.7.36** 删除死代码 `cost.rs`（560 行，全项目零引用）
 - **v0.7.23–27** learn 体验打磨：库名/图谱中文名不再被改写，答题后无响应修复，用户指南完善
+- **v0.7.28** 文档-代码一致性全量审计：修正 24 篇 + 新增 `docs/modules/` 8 篇
 - **v0.7.20–22** D18 判断层 P1–P3：记忆保存、技能巡检、修复可信度、学习反思、搜索预筛五处接入
 - **v0.7.14–15** SectionHost：驱动无关会话宿主，REPL 第一个迁移
 - **v0.7.16** 教师端 AI 答疑循环：自动应答学生提问并广播回班

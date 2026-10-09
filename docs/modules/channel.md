@@ -47,7 +47,7 @@ pub trait Channel: Send + Sync {
 | 通道 | 状态 | 收发 | 关键事实 |
 |------|------|------|---------|
 | **微信个号** `wechat` | ✅ 可用 | 收发 | iLink Bot API（`/ilink/bot/*`）；扫码登录；token 落盘 `token_path`（默认 `home/wechat_token.txt`）；运行中 token 失效会**自动清 token 并重新扫码**；轮询 2s；支持 `[channels.wechat] proxy`（会迁移到全局 `[proxy]`） |
-| **企业微信** `wecom` | ⚠️ 可用但受限 | 发（Webhook 群）/ 收（自建应用轮询） | `webhook_url` 发到群（所有人可见）；`corp_id`+`agent_id`+`.env` 的 `WECOM_SECRET` 轮询收；`access_token` 按 `expires_in` **提前 ≥7000s 续期**；`allow_from` 按 UserID 过滤；轮询 5s |
+| **企业微信** `wecom` | ✅ 文本可用 | 收发 | 智能机器人 **WebSocket 长连接**（API 模式，免回调）：`aibot_subscribe`(BotID+Secret) → `aibot_msg_callback` 收 → `aibot_send_msg` 发；ping 30s；断线指数退避重连 1s→30s；凭证缺失走 `Disabled` 变体（**不静默降级**，且必须覆写 `status()` 否则 gateway 空等 30s）；⚠️ TLS 必须 `native-tls`（rustls 指纹被网关拒）；⚠️ 打字机通路 `reply_chat()` 已备但 **Sink 未接线**，6 分钟窗口 / `846608` 降级未实现。**旧 webhook + 轮询链路已删除（v0.7.34）** |
 | **Telegram** `telegram` | ✅ 可用 | 收发 | Long Polling（`poll_timeout_secs`）；**唯一覆写 `send_formatted`（MarkdownV2 转义，解析失败回退纯文本）与 `send_typing` 的通道**；`allowed_chats` 白名单；token 从 `.env` 的 `TELEGRAM_BOT_TOKEN` |
 | **QQ** `qq` | ⚠️ **未收尾** | 收（私聊/群） | Bot API + `sandbox` 开关；`allowed_groups` / `allow_private_chat`（默认 true）。🔴 **`state_connected()` 硬编码返回 `false`** → `status()` 无法反映真实连接状态 |
 | **Web** `web` | ❌ 半成品 | — | `WebChannel` 存在于代码中，但 **全项目没有任何地方构造它**（`ChannelsConfig` 无 `web` 字段）；`send_message` 为**空实现**；`/api/reply` 无写入方。**当前不可用** |
@@ -64,11 +64,10 @@ poll_interval_secs = 2
 
 [channels.wecom]
 enabled = true
-webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
-corp_id = "wwxxxx"
-agent_id = "1000001"
-allow_from = ["UserID1"]
-poll_interval_secs = 5
+mode = "stream"                          # 唯一取值；存量 "poll" 被 serde(other) 映射为 stream
+bot_id = "wwwxxxxxxxx"                   # 智能机器人 BotID（非 corpid）
+allow_from = ["UserID1"]                 # 空 = 全部放行
+# ws_url = "wss://openws.work.weixin.qq.com"
 
 [channels.telegram]
 enabled = true
@@ -81,7 +80,7 @@ allow_private_chat = true
 sandbox = false
 ```
 
-`.env`：`WECOM_SECRET` / `TELEGRAM_BOT_TOKEN` / `QQ_BOT_APP_ID` / `QQ_BOT_APP_SECRET`。
+`.env`：`WECOM_BOT_SECRET`（企微智能机器人 Secret） / `TELEGRAM_BOT_TOKEN` / `QQ_BOT_APP_ID` / `QQ_BOT_APP_SECRET`。
 
 ## 已知边界
 
