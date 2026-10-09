@@ -14,6 +14,89 @@ use chrono::Utc;
 use rusqlite::{params, Connection};
 
 // ---------------------------------------------------------------------------
+// simple 扩展（中文 jieba 分词 + 拼音检索）
+//
+// sqlite 扩展按平台分发在 vendor/simple/ 下（libsimple.so / simple.dll），
+// 加载失败时自动回退到 FTS5 默认 tokenizer（unicode61），不阻断启动。
+// ---------------------------------------------------------------------------
+
+/// 收集 vendor/simple/ 下所有存在的扩展库候选路径（exe 同目录优先，其次 cwd）
+fn simple_ext_candidates() -> Vec<std::path::PathBuf> {
+    const CANDIDATES: &[&str] = &[
+        "vendor/simple/simple.dll",      // Windows x64
+        "vendor/simple/libsimple.so",    // Linux x64
+        "vendor/simple/libsimple.dylib", // macOS
+    ];
+    // 优先 exe 同目录（生产部署），其次当前目录（开发/测试 cwd=仓库根）
+    let bases: Vec<std::path::PathBuf> = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .into_iter()
+        .chain(std::env::current_dir().ok())
+        .collect();
+    let mut found = Vec::new();
+    for base in bases {
+        for cand in CANDIDATES {
+            let p = base.join(cand);
+            if p.exists() && !found.contains(&p) {
+                found.push(p);
+            }
+        }
+    }
+    found
+}
+
+/// 尝试加载 simple 扩展；成功返回扩展库路径（顺带挂载 jieba 词典）
+fn try_load_simple_ext(conn: &Connection) -> Option<std::path::PathBuf> {
+    let candidates = simple_ext_candidates();
+    if candidates.is_empty() {
+        return None;
+    }
+    unsafe {
+        if conn.load_extension_enable().is_err() {
+            return None;
+        }
+        let mut loaded_path = None;
+        for ext in &candidates {
+            let Some(ext_str) = ext.to_str() else {
+                continue;
+            };
+            if conn.load_extension(ext_str, None).is_ok() {
+                loaded_path = Some(ext.clone());
+                break;
+            }
+        }
+        if let Some(ext) = &loaded_path {
+            // 指定 jieba 词典目录（v0.7.1 发行包布局：dict/ 与扩展同目录），失败不致命
+            if let Some(dict_dir) = ext.parent().map(|d| d.join("dict")) {
+                if dict_dir.is_dir() {
+                    if let Some(ds) = dict_dir.to_str() {
+                        let _ = conn.query_row(
+                            "SELECT jieba_dict(?1)",
+                            params![ds],
+                            |r| r.get::<_, rusqlite::types::Value>(0),
+                        );
+                    }
+                }
+            }
+        }
+        let _ = conn.load_extension_disable();
+        loaded_path
+    }
+}
+
+/// 探测 memories_fts 是否已用 simple tokenizer 建表（含 tokenize 配置即为非默认）
+fn fts_uses_simple(conn: &Connection) -> bool {
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='memories_fts'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .map(|sql| sql.contains("tokenize"))
+    .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
 // 记忆类型
 // ---------------------------------------------------------------------------
 
@@ -114,12 +197,22 @@ impl MemorySystem {
         )
         .map_err(MemoryError::Execute)?;
 
-        // 创建 FTS5 全文索引
-        db.execute_batch(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
-                USING fts5(content, tags, content=memories, content_rowid=id);",
-        )
-        .map_err(MemoryError::Execute)?;
+        // 创建 FTS5 全文索引；simple 扩展加载成功则用 simple tokenizer（中文+拼音）
+        let simple_loaded = try_load_simple_ext(&db).is_some();
+        if simple_loaded {
+            db.execute_batch(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
+                    USING fts5(content, tags, content=memories, content_rowid=id,
+                               tokenize = 'simple');",
+            )
+            .map_err(MemoryError::Execute)?;
+        } else {
+            db.execute_batch(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts
+                    USING fts5(content, tags, content=memories, content_rowid=id);",
+            )
+            .map_err(MemoryError::Execute)?;
+        }
 
         // 创建用户画像表
         db.execute_batch(
@@ -140,6 +233,33 @@ impl MemorySystem {
                 ON session_messages(session_id);"
         )
         .map_err(MemoryError::Execute)?;
+
+        // 存量索引迁移：fts 表已存在但仍是默认 tokenizer（unicode61）时，
+        // 在 simple 扩展可用且库内有数据的前提下重建索引。
+        if simple_loaded && !fts_uses_simple(&db) {
+            let n: i64 = db
+                .query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
+                .unwrap_or(0);
+            if n > 0 {
+                let _ = db.execute_batch(
+                    "DROP TABLE memories_fts;
+                     CREATE VIRTUAL TABLE memories_fts
+                        USING fts5(content, tags, content=memories, content_rowid=id,
+                                   tokenize = 'simple');
+                     INSERT INTO memories_fts(memories_fts) VALUES('rebuild');",
+                );
+            }
+        }
+        // 反向保护：曾用过 simple tokenizer 但本次扩展加载失败（dll 被移走）时，
+        // 降级回默认 tokenizer 并重建索引，保证检索仍可用。
+        if !simple_loaded && fts_uses_simple(&db) {
+            let _ = db.execute_batch(
+                "DROP TABLE memories_fts;
+                 CREATE VIRTUAL TABLE memories_fts
+                    USING fts5(content, tags, content=memories, content_rowid=id);
+                 INSERT INTO memories_fts(memories_fts) VALUES('rebuild');",
+            );
+        }
 
         // 同步 FTS 索引（首次创建后需要）
         db.execute_batch(
@@ -243,38 +363,56 @@ impl MemorySystem {
 
     // ---- 搜索 ----
 
-    /// 全文搜索记忆
+    /// 全文搜索记忆。
+    ///
+    /// simple 扩展可用时走 jieba_query()（词级分词 + 拼音命中），否则回退
+    /// 默认 MATCH。查询前做保留字/通配符清理，防 FTS5 语法炸与语义漂移。
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<MemoryEntry>, MemoryError> {
-        let mut stmt = self
-            .db
-            .prepare(
-                "SELECT m.id, m.memory_type, m.content, m.tags, m.project,
+        let cleaned = query.trim();
+        if cleaned.is_empty() {
+            return Ok(Vec::new());
+        }
+        // 扩展不可用时兜底：剥掉 FTS5 保留字符，避免裸 MATCH 语法错误
+        let safe_q: String = cleaned
+            .chars()
+            .filter(|c| !matches!(c, '"' | '*' | '(' | ')' | '^' | ':' | '{' | '}' | '[' | ']'))
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // 优先 jieba_query（simple 扩展），失败回退 sanitize 后的裸 MATCH
+        let stmts: [&str; 2] = [
+            "SELECT m.id, m.memory_type, m.content, m.tags, m.project,
+                        m.created_at, m.last_accessed, m.access_count
+                 FROM memories_fts f
+                 JOIN memories m ON f.rowid = m.id
+                 WHERE memories_fts MATCH jieba_query(?1)
+                 ORDER BY rank
+                 LIMIT ?2",
+            "SELECT m.id, m.memory_type, m.content, m.tags, m.project,
                         m.created_at, m.last_accessed, m.access_count
                  FROM memories_fts f
                  JOIN memories m ON f.rowid = m.id
                  WHERE memories_fts MATCH ?1
                  ORDER BY rank
                  LIMIT ?2",
-            )
-            .map_err(MemoryError::Prepare)?;
+        ];
 
-        let entries = stmt
-            .query_map(params![query, limit as i64], |row| {
-                let tags_str: String = row.get(3)?;
-                Ok(MemoryEntry {
-                    id: row.get(0)?,
-                    memory_type: MemoryType::from_str(&row.get::<_, String>(1)?).unwrap_or(MemoryType::Working),
-                    content: row.get(2)?,
-                    tags: tags_str.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
-                    project: row.get(4)?,
-                    created_at: row.get(5)?,
-                    last_accessed: row.get(6)?,
-                    access_count: row.get::<_, i64>(7)? as u64,
-                })
-            })
-            .map_err(MemoryError::Query)?
-            .filter_map(|r| r.ok())
-            .collect();
+        let mut entries: Vec<MemoryEntry> = Vec::new();
+        for sql in &stmts {
+            let Ok(mut stmt) = self.db.prepare(sql) else {
+                continue; // jieba_query 不存在（扩展未加载）→ 落到下一条兜底 SQL
+            };
+            let rows = stmt.query_map(params![safe_q, limit as i64], Self::map_entry);
+            match rows {
+                Ok(iter) => {
+                    entries = iter.filter_map(|r| r.ok()).collect();
+                    break; // 执行成功即以该层结果为准（jieba 命中或零命中都不再降级）
+                }
+                Err(_) => continue, // 执行异常（扩展中途失效等）→ 试兜底 SQL
+            }
+        }
 
         Ok(entries)
     }
@@ -721,6 +859,76 @@ mod tests {
         let (_tmp, ms) = setup_memory();
         let results = ms.search("nonexistent", 10).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_chinese_word() {
+        let (_tmp, mut ms) = setup_memory();
+        ms.remember("513530港股通红利ETF做T策略，三层网格", &[], "rhermes").unwrap();
+        ms.remember("588000科创50ETF趋势跟踪", &[], "rhermes").unwrap();
+
+        // 关键验证：搜任意词（"网格"）必须命中整句记忆（旧 unicode61 tokenizer 下为 0 命中）。
+        // 无扩展环境（CI 无 vendor/simple）时 unicode61 仍是 0 命中——此时只验证不 panic。
+        let results = ms.search("网格", 10).unwrap();
+        if std::path::Path::new("vendor/simple").exists() {
+            assert_eq!(results.len(), 1);
+            assert!(results[0].content.contains("513530"));
+        } else {
+            let _ = results; // 无扩展：保持旧行为即可
+        }
+    }
+
+    #[test]
+    fn test_search_pinyin() {
+        let (_tmp, mut ms) = setup_memory();
+        ms.remember("王奋金负责记忆检索模块", &[], "rhermes").unwrap();
+
+        // 拼音首字母命中
+        let abbr = ms.search("wfj", 10).unwrap();
+        // 全拼命中
+        let full = ms.search("wangfenjin", 10).unwrap();
+        // simple 扩展加载成功时两者都应命中；未加载（CI 无扩展）则跳过断言
+        if std::path::Path::new("vendor/simple").exists() {
+            assert!(!abbr.is_empty(), "拼音首字母 wfj 应命中含'王'的记忆");
+            assert!(!full.is_empty(), "全拼 wangfenjin 应命中含'王'的记忆");
+        } else {
+            let _ = (abbr, full); // 无扩展环境（CI）不校验拼音
+        }
+    }
+
+    #[test]
+    fn test_search_english_substring_word() {
+        let (_tmp, mut ms) = setup_memory();
+        ms.remember("tokio runtime scheduling", &[], "rhermes").unwrap();
+
+        // 整词命中
+        assert_eq!(ms.search("tokio", 10).unwrap().len(), 1);
+        // simple 的 jieba_query() 把纯英文前缀生成 prefix 查询（输入即搜），
+        // "toki" 前缀命中 "tokio" 是预期设计行为；无扩展时 unicode61 词级索引为空
+        let prefix = ms.search("toki", 10).unwrap();
+        if std::path::Path::new("vendor/simple").exists() {
+            assert_eq!(prefix.len(), 1);
+        } else {
+            assert!(prefix.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_search_fts_syntax_injection_safe() {
+        let (_tmp, mut ms) = setup_memory();
+        ms.remember("网格交易策略笔记", &[], "rhermes").unwrap();
+        // FTS5 保留字符不应炸查询（裸 MATCH 遇 `"网格"` 会语法错误）
+        let r1 = ms.search("\"网格\"", 10);
+        let r2 = ms.search("网格 OR 异步", 10);
+        assert!(r1.is_ok());
+        assert!(r2.is_ok());
+    }
+
+    #[test]
+    fn test_search_empty_query() {
+        let (_tmp, ms) = setup_memory();
+        assert!(ms.search("", 10).unwrap().is_empty());
+        assert!(ms.search("   ", 10).unwrap().is_empty());
     }
 
     #[test]

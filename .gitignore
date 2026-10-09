@@ -36,3 +36,7 @@ tmpclaude-*
 # 构建产物 / 临时目录 / 参赛材料
 .tmp*/
 outputs/
+
+# simple FTS 扩展（二进制，不入库，见 vendor/simple/README）
+vendor/
+vendor_simple.zip
